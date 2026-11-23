@@ -158,7 +158,8 @@ enum Command {
         #[command(subcommand)]
         command: OpCommand,
     },
-    /// Change the actor register of an enforcing repository: add, retire, or revoke a key
+    /// Change the actor register of an enforcing repository: add, retire, or revoke a key, or add
+    /// a human or an agent
     Register {
         #[command(subcommand)]
         command: RegisterCommand,
@@ -202,6 +203,38 @@ enum RegisterCommand {
     AddAgent(RegisterAddAgentArgs),
     /// Sign, as the sponsor, the entry of an agent; the signature goes to the standard output
     Cosign(RegisterCosignArgs),
+    /// Add a further human with an entry of their own: their key and their role
+    AddHuman(RegisterAddHumanArgs),
+}
+
+#[derive(Debug, Args)]
+struct RegisterAddHumanArgs {
+    /// A directory of the repository: the one that contains `.stemma`, or one below it
+    #[arg(
+        short = 'C',
+        long = "repository",
+        value_name = "DIR",
+        default_value = "."
+    )]
+    repository: PathBuf,
+
+    /// The file of the Ed25519 public key of the new human (a `.pub` file)
+    #[arg(value_name = "KEY_FILE")]
+    key_file: PathBuf,
+
+    /// The identifier of the new human, who has no entry in the register yet
+    #[arg(long, value_name = "ID")]
+    human: String,
+
+    /// The role of the new human: `member` or `owner`
+    #[arg(long, value_name = "ROLE", default_value = "member")]
+    role: String,
+
+    /// Who runs the command: `human <id>` or
+    /// `agent <id> model=<model> session=<session> sponsor=<sponsor>`; required unless the
+    /// environment sets STEMMA_ACTOR. Only an owner adds a human
+    #[arg(long, env = ACTOR_ENV, value_name = "ACTOR")]
+    actor: Option<OsString>,
 }
 
 #[derive(Debug, Args)]
@@ -4423,6 +4456,7 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
         RegisterCommand::Revoke(args) => ("Revoked", args),
         RegisterCommand::AddAgent(args) => return register_add_agent(args, out),
         RegisterCommand::Cosign(args) => return register_cosign(args, out),
+        RegisterCommand::AddHuman(args) => return register_add_human(args, out),
     };
     let actor = actor(args.actor)?;
     let repository = open(&args.repository)?;
@@ -4546,15 +4580,20 @@ fn write_register(path: &Path, register: &Register) -> Result<(), CliError> {
 }
 
 fn parse_agent(id: &str, flag: &str) -> Result<Identity, CliError> {
-    format!("agent {id}")
-        .parse::<Identity>()
-        .map_err(|error| CliError::Register(format!("{flag} {id:?}: {error}")))
+    parse_identifier("agent", id, flag)
 }
 
-fn parse_sponsor(id: &str, flag: &str) -> Result<Identity, CliError> {
-    format!("human {id}")
-        .parse::<Identity>()
-        .map_err(|error| CliError::Register(format!("{flag} {id:?}: {error}")))
+fn parse_human(id: &str, flag: &str) -> Result<Identity, CliError> {
+    parse_identifier("human", id, flag)
+}
+
+/// The identity of a flag that takes the bare identifier, without the kind in front of it.
+fn parse_identifier(kind: &str, id: &str, flag: &str) -> Result<Identity, CliError> {
+    format!("{kind} {id}").parse::<Identity>().map_err(|_| {
+        CliError::Register(format!(
+            "{flag} {id:?}: expected an identifier of visible ASCII without a space"
+        ))
+    })
 }
 
 fn parse_agent_role(text: &str) -> Result<Role, CliError> {
@@ -4599,7 +4638,7 @@ fn register_add_agent(args: RegisterAddAgentArgs, out: &mut dyn Write) -> Result
     let repository = open(&args.repository)?;
     let key = read_public_key(&args.key_file)?;
     let agent = parse_agent(&args.agent, "--agent")?;
-    let sponsor = parse_sponsor(&args.sponsor, "--sponsor")?;
+    let sponsor = parse_human(&args.sponsor, "--sponsor")?;
     let role = parse_agent_role(&args.role)?;
     let text = fs::read_to_string(&args.cosign).map_err(|error| {
         CliError::Register(format!(
@@ -4625,6 +4664,48 @@ fn register_add_agent(args: RegisterAddAgentArgs, out: &mut dyn Write) -> Result
     write_register(&path, &register)?;
     let line = format!(
         "Added {agent} with sponsor {sponsor} to {}; commit the file.\n",
+        register::FILE
+    );
+    out.write_all(line.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|source| {
+            CliError::RegisterNotWritten(format!(
+                "the register file was changed, but the result could not be written: {source}"
+            ))
+        })
+}
+
+/// `register add-human`: adds the entry of a further human to the register file of the working
+/// copy. Only an owner does it. The proof is the one of every change of the register: the file is
+/// level 3, so the entry counts once a human owner has approved the commit. The new human signs
+/// nothing; the key file names the key that will speak for them.
+fn register_add_human(args: RegisterAddHumanArgs, out: &mut dyn Write) -> Result<(), CliError> {
+    let actor = actor(args.actor)?;
+    let repository = open(&args.repository)?;
+    let key = read_public_key(&args.key_file)?;
+    let human = parse_human(&args.human, "--human")?;
+    let role = match args.role.as_str() {
+        "member" => Role::Member,
+        "owner" => Role::Owner,
+        text => {
+            return Err(CliError::Register(format!(
+                "--role {text:?}: expected `member` or `owner`"
+            )))
+        }
+    };
+    let (_repository, path, mut register) = load_register(repository)?;
+    if !register.is_owner(&actor) {
+        return Err(CliError::Register(format!(
+            "{actor} is not an owner, so it does not add a human"
+        )));
+    }
+    register
+        .add_human(human.clone(), role, key)
+        .map_err(|error| CliError::Register(error.to_string()))?;
+    write_register(&path, &register)?;
+    let line = format!(
+        "Added {human} as {} to {}; commit the file.\n",
+        role.name(),
         register::FILE
     );
     out.write_all(line.as_bytes())

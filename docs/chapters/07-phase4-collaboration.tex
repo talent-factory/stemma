@@ -1188,9 +1188,15 @@ Die Art steht im Stub, aber nicht im Hash des Eintrags (ADR-011).
 Einen Beweis schreiben die Freigabe, das Ergebnis einer Prüfung und der Owner-Override;
 die weiteren Operationen, deren Regel vom Akteur abhängt, folgen mit den restlichen Teilen von
 Phase~4.
-Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke}
-und \type{register add-agent} ändern die Datei im Arbeitsverzeichnis;
+Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke},
+\type{register add-human} und \type{register add-agent} ändern die Datei im Arbeitsverzeichnis;
 die Änderung ist ein gewöhnlicher Commit der Stufe~3.
+Einen weiteren Menschen nimmt ein Owner mit \type{register add-human} auf:
+Der Befehl liest die Datei des öffentlichen Schlüssels und legt den Eintrag mit der Rolle
+\type{member} oder \type{owner} an der Stelle an, die die Reihenfolge der Datei verlangt.
+Der Beweis ist die Signatur des Owners, der den Commit der Stufe~3 freigibt;
+der neue Mensch signiert nichts, und eine Mitzeichnung wie beim Agenten gibt es nicht,
+weil niemand für einen Menschen bürgt.
 Den Eintrag eines Agenten bereitet \type{register cosign} vor: Der Sponsor signiert, und ein Owner
 legt den Eintrag mit der Signatur an.
 Ob ein Akteur den Eintrag ändern darf, entscheidet vorerst die Behauptung des Akteurs:
@@ -1204,10 +1210,9 @@ Das Repository \type{notizen} hat auf \type{main} die Commits \quotation{Erste F
 \quotation{Gruss erweitern}.
 Daniel nimmt es in den durchsetzenden Modus (\type{enforce}), legt das Register an und trägt den
 Agenten \type{claude} mit seinem Schlüssel ein; Daniel ist sein Sponsor.
-Ana ist als zweite Person eingetragen und prüft.
-Das Programm hat noch keinen Befehl, der einen weiteren Menschen aufnimmt;
-der Owner hat den Eintrag von Ana in \type{.stemma-actors/register} von Hand ergänzt,
-in der Reihenfolge, die die Datei verlangt, und ihn wie jede Änderung des Registers committet.
+Ana ist als zweite Person eingetragen und prüft:
+Daniel, der Owner, nimmt sie mit \type{register add-human} und ihrem öffentlichen Schlüssel
+als Mitglied auf und committet den Eintrag wie jede Änderung des Registers.
 Damit schreibt die Sitzung die Einträge 1 bis 9: die zwei Commits aus
 \in{Kapitel}[chap:phase1] und die Einrichtung des Registers.
 
@@ -1223,6 +1228,8 @@ $ stemma register add-agent ../keys/claude.pub --agent claude \
 >     --sponsor daniel --cosign ../cosign.sig
 Added agent claude with sponsor human daniel to
   .stemma-actors/register; commit the file.
+$ stemma register add-human ../keys/ana.pub --human ana
+Added human ana as member to .stemma-actors/register; commit the file.
 $ stemma commit -m "Agent und Ana registriert"
 $ stemma op verify
 Checked 9 entries of the operation log: the hash chain holds.
@@ -1233,12 +1240,16 @@ anchor 9:b3:675e…5a71
 Der Sponsor signiert den Eintrag des Agenten mit \type{register cosign};
 \type{add-agent} prüft die Signatur, ändert die Datei im Arbeitsverzeichnis und schreibt keinen
 Eintrag, bis \type{commit} die Datei festhält.
+\type{add-human} verlangt keine Signatur von Ana, nur ihre Schlüsseldatei;
+der Eintrag zählt, sobald der Commit des Owners ihn trägt.
 Danach prüft \type{op verify} die Hash-Kette und das Register.
 Die Nummer eines Pull Requests ist die Nummer seines Eintrags \type{pr-open}.
 Die Einträge dazwischen gehören zu Schritten, die der Text nicht abdruckt:
 Branches und Commits für die späteren Beispiele sowie Prüfungen und Freigaben.
 Die Ausgaben stammen aus einem echten Lauf in einem frischen Verzeichnis;
-nur der Abbruch in \in{Abschnitt}[sec:workflow-crash] ist eingespritzt.
+nur der Abbruch in \in{Abschnitt}[sec:workflow-crash] ist eingespritzt,
+und den Aufruf von \type{add-human} zeigt der Text mit der Zeile, die der Befehl ausgibt:
+In jenem Lauf stand der Eintrag von Ana schon in der Datei, Byte für Byte derselbe.
 Die IDs sind gekürzt und die Pfade stehen als \type{/home/daniel/...};
 ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
 Der Text nennt die Nummern der Einträge im Operation Log.

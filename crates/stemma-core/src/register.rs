@@ -28,6 +28,10 @@
 //! owner with an active key exists. Only a human can be an owner. The number after `retired` or
 //! `revoked` is the number of the first log entry that the key no longer counts for.
 //!
+//! An owner adds a further human with [`Register::add_human`]: an entry with a role and a first
+//! key, without a sponsor and without a co-signature. The owner signs the entry by approving the
+//! commit that carries the file (level 3).
+//!
 //! # Agents
 //!
 //! An agent has an entry of its own, with its own keys and role (ADR-004, STEMMA-222). The entry
@@ -219,7 +223,8 @@ pub enum Role {
 }
 
 impl Role {
-    const fn name(self) -> &'static str {
+    /// The word of the role in the register file: `owner` or `member`.
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Owner => "owner",
             Self::Member => "member",
@@ -359,6 +364,47 @@ impl Register {
                 }],
             }],
         })
+    }
+
+    /// Adds the entry of a further human: the role and the first key. A human has no sponsor and
+    /// no co-signature; the owner who calls this signs the entry by approving the commit that
+    /// carries the file. The entry takes its place in the order of the file.
+    ///
+    /// # Errors
+    ///
+    /// [`RegisterError::NotAHuman`] if `human` is an agent, [`RegisterError::EntryKnown`],
+    /// [`RegisterError::KeyKnown`] if any entry holds the key already, and
+    /// [`RegisterError::TooManyEntries`]. The register stays as it was on an error.
+    pub fn add_human(
+        &mut self,
+        human: Identity,
+        role: Role,
+        key: PublicKey,
+    ) -> Result<(), RegisterError> {
+        if human.kind != IdentityKind::Human {
+            return Err(RegisterError::NotAHuman);
+        }
+        if self.entry(&human).is_some() {
+            return Err(RegisterError::EntryKnown(human));
+        }
+        if self.holds(&key) {
+            return Err(RegisterError::KeyKnown);
+        }
+        if self.entries.len() >= MAX_ENTRIES {
+            return Err(RegisterError::TooManyEntries);
+        }
+        self.entries.push(RegisterEntry {
+            identity: human,
+            role,
+            sponsor: None,
+            cosign: None,
+            keys: vec![KeyEntry {
+                key,
+                state: KeyState::Active,
+            }],
+        });
+        self.entries.sort_by(|a, b| a.identity.cmp(&b.identity));
+        Ok(())
     }
 
     /// Adds the entry of an agent: its role, its sponsor, the co-signature of the sponsor, and its
@@ -1251,6 +1297,8 @@ pub enum RegisterError {
     ZeroPosition,
     /// The identity is a human, and the call needs an agent.
     NotAnAgent,
+    /// The identity is an agent, and the call needs a human.
+    NotAHuman,
     /// The register has an entry for the identity already.
     EntryKnown(Identity),
     /// The register has [`MAX_ENTRIES`] entries.
@@ -1283,6 +1331,7 @@ impl fmt::Display for RegisterError {
             ),
             Self::ZeroPosition => f.write_str("a position in the log starts at 1"),
             Self::NotAnAgent => f.write_str("the identity is not an agent"),
+            Self::NotAHuman => f.write_str("the identity is not a human"),
             Self::EntryKnown(identity) => {
                 write!(f, "the register has an entry for {identity} already")
             }
@@ -2447,6 +2496,86 @@ mod tests {
             check_proofs(&metadata, &register(), &stubs),
             Err(CheckError::Proof { number: 2, .. })
         ));
+    }
+
+    #[test]
+    fn a_further_human_takes_its_place_in_the_order_of_the_file() {
+        let mut register = with_bot();
+        let ana = Identity::human("ana").unwrap();
+        let zoe = Identity::human("zoe").unwrap();
+        register
+            .add_human(zoe.clone(), Role::Owner, Seeded::new(5).public())
+            .unwrap();
+        register
+            .add_human(ana.clone(), Role::Member, Seeded::new(4).public())
+            .unwrap();
+        // Humans by identifier, then the agent: the order that the reader asks for.
+        let order: Vec<String> = register
+            .entries()
+            .iter()
+            .map(|entry| entry.identity().to_string())
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "human ana",
+                "human daniel",
+                "human mia",
+                "human zoe",
+                "agent bot"
+            ]
+        );
+        let read = Register::parse(register.encode().as_bytes()).unwrap();
+        assert_eq!(read, register);
+        let entry = read.entry(&ana).unwrap();
+        assert_eq!(entry.role(), Role::Member);
+        assert_eq!(entry.sponsor(), None);
+        assert!(entry.cosign().is_none());
+        assert_eq!(entry.keys()[0].state, KeyState::Active);
+        assert_eq!(read.entry(&zoe).unwrap().role(), Role::Owner);
+    }
+
+    #[test]
+    fn a_further_human_needs_a_new_identifier_and_a_new_key() {
+        let ana = Identity::human("ana").unwrap();
+        let cases = [
+            // An agent is added with a sponsor, by `add_agent`.
+            (bot(), Seeded::new(4).public(), RegisterError::NotAHuman),
+            // Mia has an entry.
+            (
+                mia(),
+                Seeded::new(4).public(),
+                RegisterError::EntryKnown(mia()),
+            ),
+            // The key of Mia names Mia and nobody else.
+            (ana, Seeded::new(2).public(), RegisterError::KeyKnown),
+        ];
+        for (human, key, error) in cases {
+            let mut changed = register();
+            assert_eq!(changed.add_human(human, Role::Member, key), Err(error));
+            assert_eq!(changed, register());
+        }
+    }
+
+    #[test]
+    fn a_full_register_takes_no_further_human() {
+        // Daniel and Mia hold the keys of the seeds 1 and 2; every other seed fills the register.
+        let mut register = register();
+        for seed in (0..=u8::MAX).filter(|seed| !(1..=2).contains(seed)) {
+            let human = Identity::human(&format!("h{seed}")).unwrap();
+            register
+                .add_human(human, Role::Member, Seeded::new(seed).public())
+                .unwrap();
+        }
+        assert_eq!(register.entries().len(), MAX_ENTRIES);
+        let key = PublicKey::from_openssh(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMt6BisKCOOMdkWowXYqXUrS1zKF4aE6QenzZ1SSB/Md",
+        )
+        .unwrap();
+        assert_eq!(
+            register.add_human(Identity::human("last").unwrap(), Role::Member, key),
+            Err(RegisterError::TooManyEntries)
+        );
     }
 
     fn bot() -> Identity {
