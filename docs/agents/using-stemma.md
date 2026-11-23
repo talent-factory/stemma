@@ -118,7 +118,8 @@ not that the command worked.
 A repository that began with `init --owner-key`, or that a human led there with `enforce`, has a
 register of actors (ADR-011) and signs approvals and check results.
 Everything above holds there too. This section adds what changes for an agent.
-The reference has the synopsis and the failures of each command (`docs/chapters/12-cli-reference.tex`); this file says which ones an agent calls.
+The reference has the synopsis and the failures of each command
+(`docs/chapters/12-cli-reference.tex`); this file says which ones an agent calls.
 
 **State of the lease.** The lease is not yet wired into the write commands. `commit`, `track`,
 `switch`, `merge`, and `rebase` neither take nor renew a lease, and none of them checks one. Only
