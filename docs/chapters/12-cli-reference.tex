@@ -1112,6 +1112,12 @@ die Spitze nicht der einzige Elternteil des Working-Copy-Commits ist
 und die Spitze nicht dessen Change-ID trägt.
 Die letzte Bedingung nimmt einen abgebrochenen \type{commit} aus,
 den dessen Wiederholung abschliesst (ADR-010).
+Nennt der neueste Eintrag des Worktrees eine Bewegung des Working-Copy-Commits, die nicht
+stattfand (ein \type{merge}, ein \type{rebase} oder ein Wechsel auf eine ältere Spitze brach
+nach dem Schreiben der Dateien ab), zieht der Befehl nicht nach:
+Ein Snapshot würde diese Dateien als Änderungen speichern.
+Er endet mit Exit-Code 1, nennt den Eintrag und schreibt nichts;
+zuerst ist der abgebrochene Befehl zu wiederholen.
 
 Die Ausgabe nennt den Eintrag und wie sich der Wechsel zurücksetzen lässt:
 
@@ -3156,9 +3162,14 @@ Schrieb der Snapshot einen Eintrag, steht vor der zweiten Zeile
 \type{Saved the working copy first as entry N};
 nach ihr folgen für mitgenommene Änderungen und Konflikte die Zeilen eines Wechsels
 (Abschnitt \type{switch}).
-Bleibt der Worktree stehen, beginnt eine Zeile mit
+Bleibt der Worktree stehen, ohne dass der zweite Schritt etwas schrieb, beginnt eine Zeile mit
 \type{The worktree NAME at VERZEICHNIS has main checked out},
 nennt den Grund und den Befehl \type{stemma switch main}, und der Befehl endet mit Exit-Code 0.
+Das gilt für eine Arbeitskopie eines anderen Akteurs, für ein Verzeichnis, das sich nicht
+öffnen lässt, und für einen Wechsel, der vor dem Schreiben ablehnt: Eine unverfolgte Datei steht
+im Weg, die Sperre der Referenzen ist gehalten, oder ein Befehl des Worktrees ist abgebrochen.
+Lässt sich der Zustand eines Worktrees nicht lesen und hat kein lesbarer \type{main}
+ausgecheckt, nennt eine Zeile ihn, denn er könnte der gesuchte sein.
 Stand der Working-Copy-Commit schon auf der Spitze oder hat kein Worktree \type{main}
 ausgecheckt, bleibt es bei der Zeile des Merges.
 
@@ -3187,13 +3198,12 @@ Ein erneuter \type{pr merge} mergt nach einer gescheiterten Bewegung neu und sch
 sonst die Bewegung von \type{main} ab;
 ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
 denn die erste zählt ohne Beweis nicht.
-Exit-Code 3 meldet auch einen Merge, der gilt, während der Worktree mit \type{main} nicht
-folgte, weil der Wechsel scheiterte: Eine unverfolgte Datei steht im Weg einer Datei der neuen
-Spitze, die Sperre der Referenzen ist gehalten, oder das Dateisystem versagte.
+Exit-Code 3 meldet auch einen Merge, der gilt, während der Wechsel im Worktree mit \type{main}
+seinen Eintrag schrieb und danach scheiterte, oder gemacht ist, ohne dass sein Spülen feststeht.
 Die Zeile des Merges steht dann auf der Standardausgabe,
 und die Meldung beginnt mit \type{pull request N is merged}.
 Diesen Aufruf wiederholt man nicht, denn der Pull Request ist nicht mehr offen;
-\type{switch main} im Worktree zieht ihn nach, sobald die Ursache behoben ist.
+nach einem gescheiterten Wechsel schliesst \type{switch main} im Worktree ihn ab.
 Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
 Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
 

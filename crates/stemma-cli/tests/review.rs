@@ -648,17 +648,54 @@ fn a_worktree_of_another_actor_stays_behind_and_its_owner_brings_it_along() {
 }
 
 #[test]
-fn a_file_in_the_way_ends_the_merge_with_3_and_the_merge_stands() {
+fn a_file_in_the_way_leaves_the_worktree_behind_and_the_merge_stands() {
     let (dir, number) = ready_to_merge_on_main();
     // Not tracked, and where the change has a file of its own.
     write(dir.path(), "b.txt", "mine\n");
+    let before = common::entry_count(dir.path());
 
-    let merged = run(
+    let merged = ok(
         dir.path(),
         &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
     );
 
-    assert_eq!(merged.code, 3, "{}", merged.stderr);
+    // The second step wrote nothing, so the command is complete: only the two entries of the gate.
+    assert_eq!(common::entry_count(dir.path()), before + 2);
+    assert!(
+        merged.stdout.contains("Merged pull request")
+            && merged
+                .stdout
+                .contains("has main checked out, but it did not follow:")
+            && merged
+                .stdout
+                .contains("`stemma switch main` there brings it along"),
+        "{}",
+        merged.stdout
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "mine\n"
+    );
+    let listed = ok(dir.path(), &["pr", "list"]);
+    assert!(listed.stdout.contains("merged feat"), "{}", listed.stdout);
+    // Once the file is out of the way, the switch brings the working copy along.
+    fs::remove_file(dir.path().join("b.txt")).unwrap();
+    ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
+}
+
+#[test]
+fn a_switch_that_stops_after_its_entry_ends_the_merge_with_3_and_the_merge_stands() {
+    let (dir, number) = ready_to_merge_on_main();
+
+    // Writing `b.txt` into the working directory fails, after the entry of the switch.
+    let merged = common::run_failing(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+        &[("write", dir.path())],
+    );
+
+    assert_eq!(merged.code, 3, "{}{}", merged.stdout, merged.stderr);
     assert!(
         merged.stdout.contains("Merged pull request"),
         "{}",
@@ -670,21 +707,13 @@ fn a_file_in_the_way_ends_the_merge_with_3_and_the_merge_stands() {
             .contains(&format!("pull request {number} is merged"))
             && merged
                 .stderr
-                .contains("the worktree main did not follow `main`")
-            && merged
-                .stderr
-                .contains("`stemma switch main` there brings it along"),
+                .contains("the worktree main did not follow `main`"),
         "{}",
         merged.stderr
     );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
-        "mine\n"
-    );
     let listed = ok(dir.path(), &["pr", "list"]);
     assert!(listed.stdout.contains("merged feat"), "{}", listed.stdout);
-    // Once the file is out of the way, the switch brings the working copy along.
-    fs::remove_file(dir.path().join("b.txt")).unwrap();
+    // The same switch finishes what stopped.
     ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
     assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
 }

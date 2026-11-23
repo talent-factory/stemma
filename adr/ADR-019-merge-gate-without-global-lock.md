@@ -126,9 +126,14 @@ says so, when
 - another actor owns its working copy: only the owner saves a working copy (ADR-010), the step
   takes nothing over, and an agent never does;
 - its directory is gone, was moved, or holds another working copy now;
-- the switch fails, for example because a file that is not tracked is in the way of a file of the
-  new tip. The command ends with code 3 then, as an entry is written and a part is missing; the
-  two cases above end with code 0.
+- the switch is refused before it writes: a file that is not tracked is in the way of a file of
+  the new tip, the lock is held, or a command of the worktree stopped after its files (ADR-010);
+- the switch writes its entry and fails after it.
+
+The exit code follows the rule of the other commands. The first three cases wrote nothing of the
+second step, so the command is complete and ends with code 0. The last case ends with code 3, as
+an entry is written and a part is missing; so does a switch that is made while its flush is not
+known. A worktree whose state cannot be read is named in the output, as it may be the one.
 
 A stop between `pr-merge` and the step leaves the same state. In all of these cases the owner
 runs `switch main` in the worktree: a switch to the branch that HEAD names brings a working copy

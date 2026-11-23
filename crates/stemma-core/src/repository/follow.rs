@@ -29,8 +29,15 @@ use crate::{Actor, Authorizer};
 #[derive(Debug)]
 #[must_use]
 pub enum Followed {
-    /// No worktree that can be read has `main` checked out. Nothing was written.
+    /// No worktree has `main` checked out. Nothing was written.
     NoWorktree,
+    /// No worktree that can be read has `main` checked out, but the state of some linked
+    /// worktrees cannot be read: one of them may have `main` checked out and stay on the old
+    /// tip. Nothing was written.
+    Unknown {
+        /// The names of the worktrees whose state cannot be read, sorted.
+        damaged: Vec<String>,
+    },
     /// The working-copy commit of the worktree stands on the tip of `main` already. Nothing was
     /// written.
     UpToDate {
@@ -73,7 +80,10 @@ pub enum Behind {
     /// The directory holds another repository or another worktree now. Nothing was written.
     Replaced,
     /// The switch that brings the working copy along failed: a file that is not tracked is in the
-    /// way, the lock is held, or the file system failed. The error says how far it came.
+    /// way, the lock is held, a command of the worktree stopped after its files
+    /// ([`SwitchError::Stopped`]), or the file system failed. The error says how far it came:
+    /// [`SwitchError::entry`] and [`SwitchError::snapshot`] name what it wrote, and
+    /// [`SwitchError::made`] says that the working copy did follow and only a flush is not known.
     Failed(Box<SwitchError>),
 }
 
@@ -108,8 +118,15 @@ impl Repository {
     /// owner is read before anything is written. It is read without the lock, so a take-over in
     /// between is found by the snapshot of the switch and ends in [`Behind::Failed`].
     ///
-    /// A worktree whose state cannot be read is left out of the search: if it is the one that has
-    /// `main` checked out, the result is [`Followed::NoWorktree`].
+    /// A worktree whose state cannot be read is left out of the search. If no readable worktree
+    /// has `main` checked out and some are unreadable, the result is [`Followed::Unknown`] with
+    /// their names, as one of them may be the one; without unreadable ones it is
+    /// [`Followed::NoWorktree`].
+    ///
+    /// A worktree in which a command stopped after its files (a merge, a rebase, or a switch onto
+    /// an older tip, whose entry is written while the working-copy pointer is old) is not brought
+    /// along: a snapshot would save those files as changes. The switch refuses with
+    /// [`SwitchError::Stopped`], which arrives as [`Behind::Failed`], and nothing is written.
     ///
     /// # Errors
     ///
@@ -122,12 +139,17 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Followed, WorktreeError> {
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
-        let (rows, _damaged) = self.scan_worktrees()?;
+        let (rows, damaged) = self.scan_worktrees()?;
         let Some(row) = rows
             .into_iter()
             .find(|row| row.head == Head::Branch(main.clone()))
         else {
-            return Ok(Followed::NoWorktree);
+            if damaged.is_empty() {
+                return Ok(Followed::NoWorktree);
+            }
+            let mut damaged: Vec<String> = damaged.into_iter().map(|(name, _)| name).collect();
+            damaged.sort();
+            return Ok(Followed::Unknown { damaged });
         };
         let behind = |reason| Followed::Behind {
             worktree: row.name.clone(),
@@ -595,6 +617,24 @@ mod tests {
             "{followed:?}"
         );
         assert!(!linked.path().join("b.txt").exists());
+    }
+
+    #[test]
+    fn a_worktree_that_cannot_be_read_is_named_when_no_other_has_main() {
+        let (dir, place) = (TempDir::new(), TempDir::new());
+        let (repository, _linked) = with_linked(&dir, &place, &daniel());
+        let _ = move_main(&repository);
+        let state = repository.metadata_dir().join("worktrees").join("side");
+        fs::write(state.join("HEAD"), "not a head\n").expect("damage HEAD");
+
+        let followed = repository
+            .follow_main(&daniel(), &AllowAll)
+            .expect("follow");
+
+        assert!(
+            matches!(&followed, Followed::Unknown { damaged } if damaged == &["side".to_owned()]),
+            "{followed:?}"
+        );
     }
 
     #[test]

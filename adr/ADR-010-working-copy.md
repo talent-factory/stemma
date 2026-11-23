@@ -160,7 +160,11 @@ art, not a template (ADR-015).
     copy was brought to the tip of the branch. A working copy has stayed behind when the branch
     has a commit, the tip is not the only parent of `W`, and the tip does not have the change ID
     of `W`. The last condition leaves out a `commit` that stopped between its two moves, which
-    the repeat of `commit` finishes.
+    the repeat of `commit` finishes. A working copy is not brought along while the newest entry
+    of its worktree names a move of `W` that did not happen (a `merge`, a `rebase`, or a switch
+    onto an older tip that stopped after its files): the snapshot would save those files as
+    changes of `W`. The command refuses with code 1, names the entry, and writes nothing; a
+    stopped switch onto the same tip is finished as the repeat below.
   - **A stop after the files is repeated by the same command.** The entry is written before the
     files, so a stop leaves the files of `T` in the directory and the pointers old, as for a
     restore. A snapshot would save those files as changes of `W` and `W` would then be refused as

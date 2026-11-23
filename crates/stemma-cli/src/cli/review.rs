@@ -655,11 +655,13 @@ fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> 
 
 /// Merges a pull request through the gate, and then brings the worktree that has `main` checked
 /// out to the new tip (STEMMA-261). The gate moves the branch only; the second step is a switch
-/// to `main` in that worktree, with an entry of its own. A worktree of another actor, and one
-/// whose directory cannot be opened, stay behind with a line that says so, and the command still
-/// ends with 0: the merge is complete. If the switch fails, the result of the merge is written
-/// first and the command ends with 3; repeating it does not help, as the pull request is merged.
-/// `switch main` in the worktree brings it along in every one of these cases.
+/// to `main` in that worktree, with an entry of its own. A worktree stays behind with a line that
+/// says so, and the command still ends with 0, whenever the second step wrote nothing: the
+/// working copy belongs to another actor, its directory cannot be opened, or the switch was
+/// refused (a file in the way, a held lock, a command of the worktree that stopped). The merge is
+/// complete then. If the switch wrote an entry and failed after it, or is made and not known to be
+/// on disk, the result of the merge is written first and the command ends with 3; repeating it
+/// does not help, as the pull request is merged. `switch main` in the worktree brings it along.
 fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let who = actor(args.common.actor)?;
     let level = RiskLevel::from_number(args.level).expect("the parser limits the level to 0..=3");
@@ -709,24 +711,55 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
             ));
             None
         }
+        // The switch wrote an entry and did not finish, or it is made and a flush is not known.
         Ok(Followed::Behind {
             worktree,
             reason: Behind::Failed(error),
             ..
-        }) => Some(failed(format!(
-            "the worktree {} did not follow `main`: {error}; `stemma switch main` there brings \
-             it along",
-            mask_controls(&worktree)
-        ))),
+        }) if error.entry().is_some() || error.snapshot().is_some() => {
+            let name = mask_controls(&worktree);
+            if !error.made() {
+                Some(failed(format!(
+                    "the worktree {name} did not follow `main`: {error}; `stemma switch main` \
+                     there brings it along"
+                )))
+            } else {
+                if let Some(entry) = error.entry() {
+                    text.push_str(&format!(
+                        "{}Brought the working copy of the worktree {name} to the tip of main \
+                         as entry {}\nTo undo it: stemma op restore {}\n",
+                        saved_text(error.snapshot()),
+                        entry.number(),
+                        entry.number()
+                    ));
+                }
+                Some(failed(format!(
+                    "the worktree {name} followed `main`, and that is not known to be on disk: \
+                     {error}"
+                )))
+            }
+        }
         Ok(Followed::Behind {
             worktree,
             path,
             reason,
         }) => {
+            // Nothing of the second step was written: the worktree stays as it was.
+            let why = match &reason {
+                Behind::Failed(error) => format!("but it did not follow: {error}"),
+                other => format!("and {other}"),
+            };
             text.push_str(&format!(
-                "The worktree {} at {} has main checked out, and {reason}; {stays}.\n",
+                "The worktree {} at {} has main checked out, {why}; {stays}.\n",
                 mask_controls(&worktree),
                 mask_controls(&path.display().to_string())
+            ));
+            None
+        }
+        Ok(Followed::Unknown { damaged }) => {
+            text.push_str(&format!(
+                "The state of the worktree {} cannot be read; if it has main checked out, {stays}.\n",
+                mask_controls(&damaged.join(", "))
             ));
             None
         }
