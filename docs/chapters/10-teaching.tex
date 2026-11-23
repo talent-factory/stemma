@@ -27,10 +27,12 @@ Zwei Agenten, die denselben Branch ändern, überschreiben einander;
 die Lease gibt einem Akteur das Recht, einen Branch zu schreiben, und läuft von selbst ab,
 damit ein abgestürzter Agent den Branch nicht für immer sperrt
 (\in{Abschnitt}[sec:workflow-lease]).
+Heute schützt sie die Eröffnung eines Pull Requests; die übrigen schreibenden Befehle
+erwerben und erneuern sie noch nicht (\in{Abschnitt}[sec:phase4-open]).
 Ein Agent, der seine eigene Änderung freigibt, prüft nichts;
 das Selbstfreigabeverbot schliesst den Eröffner und jeden Schreiber eines Commits
-der Änderung aus, und die Neuzählung vertraut keinem Eintrag, der von anderer Hand stammen könnte
-(\in{Kapitel}[chap:phase4]).
+der Änderung aus, und die Neuzählung prüft jede Freigabe noch einmal,
+auch wenn ein Eintrag von anderer Hand stammen könnte (\in{Kapitel}[chap:phase4]).
 Ein Mensch kann nicht jede Änderung gleich genau prüfen;
 die Risikostufen legen fest, wie viele Freigaben ein Pfad verlangt
 und ab wann ein Mensch entscheidet (\in{Abschnitt}[sec:policy-file]).
@@ -38,7 +40,7 @@ Ein Agent, der einen fehlschlagenden Test lockert statt den Code zu reparieren,
 fällt der Prüfung nicht auf, weil danach alles grün ist;
 darum hebt das Entfernen oder Abschwächen von Tests und Prüfungen die Stufe auf mindestens 2.
 Ein Schlüssel, der kompromittiert wurde, macht die Freigaben ungültig, die er signiert hat,
-und die Kaskade entzieht zugleich die Schlüssel der Agenten seines Sponsors
+und gehört er einem Sponsor, entzieht die Kaskade zugleich die Schlüssel seiner Agenten
 (\in{Abschnitt}[sec:register]).
 
 Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten.
@@ -317,8 +319,9 @@ Tabelle; dasselbe Verfahren wie \type{git bisect} \stopxcell
 \stopxrow
 \startxrow
 \startxcell Stufe einer Änderung: das Maximum der Stufen aller berührten Pfade, je Pfad das
-Maximum der Zeilen der Policy, die ihn nennen, mindestens die feste Stufe 3 für die Policy
-und das Register; eine Änderung ohne Pfad hat Stufe 0;
+Maximum der Zeilen der Policy, die ihn nennen, oder Stufe 2, wenn keine Zeile ihn nennt,
+und mindestens die feste Stufe 3 für die Policy und das Register;
+eine Änderung ohne Pfad hat Stufe 0;
 Kosten $O(p\,l)$ Mustervergleiche für $p$ berührte Pfade und $l$ Zeilen \stopxcell
 \startxcell \type{Policy::level_of}, \type{Policy::level_of_path} (\type{policy.rs}) \stopxcell
 \startxcell Nicht im Buch; Maximum über eine Folge (Abschnitt 1.1), Mustervergleich wie bei der
@@ -329,9 +332,10 @@ Ausschlussdatei (Abschnitt 5.4) \stopxcell
 Reihenfolge der Einträge; eine Freigabe zählt, wenn sie den heutigen Kopf nennt, ihr Prüfer weder
 Eröffner noch Schreiber eines Commits der Änderung ist, ihr Beweis hält und ihre Identität
 nicht schon zählt; die Schreiber sind die Autoren und die Akteure der Einträge, die einen Commit
-zuerst unter einen Branch, ein Tag oder die Arbeitskopie brachten, gefunden durch einen
-Durchlauf, der jeden Commit einmal liest; Kosten $O(a\,w)$ für $a$ Freigaben und $w$ Schreiber,
-dazu eine Prüfung der Signatur je Freigabe \stopxcell
+zuerst unter einen Branch, ein Tag oder den Working-Copy-Commit brachten, gefunden durch einen
+Durchlauf, der jeden Commit einmal liest; eine Freigabe, deren Eintrag vor der Eröffnung steht,
+zählt nie; Kosten $O(a\,(w+a))$ für $a$ Freigaben und $w$ Schreiber,
+dazu eine Prüfung der Signatur je Freigabe und der Durchlauf für die Schreiber \stopxcell
 \startxcell \type{recount}, \type{approvals} (\type{pull.rs}), \type{self_approval}
 (\type{allowed.rs}), \type{pull_authors} (\type{repository/pull.rs}) \stopxcell
 \startxcell Nicht im Buch; Mengen und Hashtabellen (Abschnitt 3.4); ein Durchlauf über das Log
@@ -340,7 +344,7 @@ wie bei den Ausgängen weiter oben \stopxcell
 \startxrow
 \startxcell Domänentrennung der signierten Bytes: vor der Nutzlast stehen Kennung, Typ und Version
 in drei Zeilen, dazu ein einziger Namensraum für alle Beweise; eine Signatur für einen Typ oder
-eine Version gilt nie für einen anderen, und die Nutzlast beginnt nach der dritten Zeilenschaltung,
+eine Version gilt nie für einen anderen, und die Nutzlast beginnt nach der dritten Zeilenumbruch,
 sodass die Trennung eindeutig ist; Kosten linear in der Länge der Nutzlast \stopxcell
 \startxcell \type{signed_bytes}, \type{sign}, \type{verify} (\type{signature.rs}),
 \type{approval_payload} (\type{pull.rs}) \stopxcell
@@ -350,7 +354,8 @@ sodass die Trennung eindeutig ist; Kosten linear in der Länge der Nutzlast \sto
 \startxrow
 \startxcell Lease als Zustand mit träger Erneuerung: eine Datei je Branch mit Halter und Ablauf,
 als Ganzes ersetzt; die Regel ist eine reine Funktion von Datei, Akteur und Zeit mit fünf Fällen;
-erneuert wird nur, wenn der Halter schreibt, und der Ablauf wird nie früher als zuvor;
+erneuert wird nur, wenn der Halter schreibt (heute nur bei \type{lease take}),
+und der Ablauf wird nie früher als zuvor;
 kein Dienst beendet eine Lease, sie gilt nach dem Ablauf als frei; Kosten $O(1)$ \stopxcell
 \startxcell \type{claim}, \type{Lease::renewed} (\type{lease.rs}) \stopxcell
 \startxcell Nicht im Buch; verwandt mit dem gegenseitigen Ausschluss weiter oben, aber mit einer
@@ -594,8 +599,11 @@ Warum ist dieser Fall beim Gate möglich, etwa durch einen Test, der nicht immer
 \item (DUA) Die Stufe einer Änderung ist das Maximum über ihre Pfade,
 die Stufe eines Pfades das Maximum über die Zeilen der Policy, die ihn nennen
 (\in{Abschnitt}[sec:policy-file]).
-Zeigen Sie, dass eine zusätzliche Zeile die Stufe einer Änderung nie senkt,
-und dass das Ergebnis nicht von der Reihenfolge der Zeilen oder der Pfade abhängt.
+Zeigen Sie, dass eine zusätzliche Zeile die Stufe eines Pfades nie senkt,
+den schon eine Zeile nennt, und dass das Ergebnis nicht von der Reihenfolge der Zeilen
+oder der Pfade abhängt.
+Zeigen Sie dann, dass eine Zeile die Stufe eines Pfades senken kann, den noch keine nennt,
+und erklären Sie das aus der Stufe 2, die ein unbenannter Pfad hat.
 Vergleichen Sie die Regel mit der Regel \quotation{die letzte passende Zeile gewinnt},
 wie sie die Ignore-Datei von Git kennt: Welchen Angriff erlaubt diese Regel,
 wenn die Zeilen der Policy von mehreren Händen stammen?
@@ -611,7 +619,7 @@ Welche Eigenschaft der Hashfunktion braucht dieser Schluss?
 Geben Sie die Kosten in der Zahl der Freigaben und der Schreiber an.
 \item (DUA) Die Schreiber einer Änderung sind die Autoren ihrer Commits
 und die Akteure der Einträge, die einen Commit zuerst unter einen Branch, ein Tag
-oder die Arbeitskopie brachten.
+oder den Working-Copy-Commit brachten.
 Konstruieren Sie einen Verlauf, in dem ein Agent einen Commit unter dem Namen eines anderen
 Akteurs schreibt und danach seine eigene Änderung freigibt,
 wenn die Regel nur den Namen des Autors prüft.
@@ -620,11 +628,13 @@ Warum zählt ein späteres Verschieben eines Branches auf einen Commit,
 den schon ein Branch erreichte, nicht als Schreiben,
 und welcher Ablauf des Prüfers wäre sonst unmöglich?
 \item (DUA) Eine Freigabe signiert die Bytes \type{pull <Nummer>}, \type{commit <ID>}.
-Konstruieren Sie ohne Kopfzeile einen Eintrag des Logs oder eine Mitzeichnung eines Sponsors,
-deren Nutzlast dieselben Bytes hat, und zeigen Sie, was der Angreifer damit erreicht.
+Heute hat keine andere Nutzlast diese Bytes: Ein Eintrag des Logs signiert seinen Hash,
+eine Mitzeichnung des Sponsors Agent, Rolle und Sponsor.
+Nehmen Sie an, ein künftiger Typ hätte eine Nutzlast, die mit den Bytes einer Freigabe
+übereinstimmt, und zeigen Sie ohne Kopfzeile, was der Angreifer damit erreicht.
 Zeigen Sie dann, dass die Kopfzeile aus Kennung, Typ und Version den Fall schliesst
 (\in{Abschnitt}[sec:signatures]) und dass die Trennung der Nutzlast vom Kopf eindeutig ist,
-weil Kennung, Typ und Version keine Zeilenschaltung enthalten.
+weil Kennung, Typ und Version keinen Zeilenumbruch enthalten.
 Typ und Version stehen in den signierten Bytes und nicht im SSHSIG-Namensraum.
 Nennen Sie einen Vorteil und einen Nachteil dieser Wahl.
 \item (DUA) Die Regel der Lease hat fünf Fälle (\in{Abschnitt}[sec:workflow-lease]).
@@ -636,12 +646,15 @@ Eine Erneuerung schreibt keinen Eintrag ins Log.
 Was verliert das Log dadurch, und was würde es bei jedem Schreiben kosten?
 \item (AISE) Schreiben Sie die Policy für ein kleines Repository mit Quellcode, Tests,
 Dokumentation und einer Datei mit Zugangsdaten.
-Lassen Sie einen Agenten versuchen, ein Muster zu finden, das die Policy-Datei selbst auf Stufe 0
-senkt oder ein Verzeichnis der Stufe 2 entzieht, ohne dass der Leser es abweist.
+Prüfen Sie die Policy mit einem Test im Kern (\type{Policy::parse}, \type{Policy::level_of});
+kein Befehl wertet sie heute aus.
+Lassen Sie einen Agenten versuchen, ein Muster zu finden, das die Policy-Datei
+oder das Verzeichnis des Registers unter Stufe 3 senkt, ohne dass der Leser es abweist.
 Halten Sie fest, welche Muster der Leser ablehnt und welche die Auswertung auf Stufe 3 hebt,
 und begründen Sie, warum eine Policy die Anforderungen einer Stufe heben, aber nie senken darf.
 \item (AISE) Lassen Sie einen Agenten einen scheiternden Test beheben,
-und prüfen Sie seinen Diff gegen die Signale für abgeschwächte Tests (ADR-004, Regel 10).
+und prüfen Sie seinen Diff gegen die Signale für abgeschwächte Tests (ADR-004, Regel 10),
+etwa mit \type{weakened::analyze} in einem Test des Kerns; kein Befehl ruft sie heute auf.
 Welche Signale schlagen an, und welche Abschwächung bleibt unerkannt
 (etwa ein Vergleich, der von \type{==} auf \type{>=} wechselt,
 oder eine Assertion im Rumpf von \type{proptest!})?
@@ -649,7 +662,7 @@ Entwerfen Sie eine Anweisung für den Agenten und eine Prüfung für den Mensche
 die dieses Loch schliessen.
 \item (AISE) Zwei Agenten desselben Sponsors schreiben und prüfen eine Änderung.
 Das Selbstfreigabeverbot gilt für die Identität, und zwei Agenten eines Sponsors
-sind zwei Prüfungen.
+zählen als zwei Freigaben.
 Begründen Sie, ob das unabhängig genug ist, wenn beide dasselbe Modell nutzen
 und denselben Auftrag erhalten haben.
 Schlagen Sie eine strengere Regel vor und prüfen Sie,
@@ -663,7 +676,8 @@ Warum löst das Ausmustern eines Schlüssels keine Kaskade aus,
 und welchen Schaden hätte eine Kaskade bei jeder Rotation?
 \item (AISE) Ein Agent stürzt ab, während er die Lease eines Branches hält,
 und ein zweiter Agent übernimmt den Branch nach dem Ablauf.
-Der erste Agent läuft später weiter und schreibt, als gehöre ihm der Branch noch.
+Der erste Agent läuft später weiter und verlangt die Lease, als gehöre ihm der Branch noch
+(\type{lease take}; \type{commit} prüft die Lease heute nicht).
 Welche Fälle der Regel treffen ihn, und was sieht er in der Fehlermeldung?
 Entwerfen Sie ein Protokoll für Agenten, das den Branch vor jedem Schreiben prüft,
 und protokollieren Sie einen Versuch, in dem zwei echte Agenten den Branch wechseln.
@@ -672,6 +686,8 @@ und protokollieren Sie einen Versuch, in dem zwei echte Agenten den Branch wechs
 Halten Sie fest, an welchen Stellen der Agent auf einen Menschen wartet,
 welche Regel jede Stelle auslöst (Stufe, Freigabe, Lease) und wo Sie als Mensch
 mit einer Regel allein nicht auskommen, sondern urteilen müssen.
+Heute nimmt \type{pr merge} die Stufe aus \type{--level} und verlangt keine Freigabe;
+vergleichen Sie, was Sie sehen, mit dem Zielzustand von ADR-004.
 \stopitemize
 
 \section[sec:agents]{Wie Stemma mit Agenten entsteht}
@@ -921,7 +937,7 @@ ohne sie nach dem Muster der Lehre zu erklären, dass die Tabelle der Algorithme
 kannte und dass die Übungen sie nicht abdeckten.
 Diese Lücke war in den Prüfschleifen der einzelnen Scheiben nicht aufgefallen,
 weil jede Scheibe für sich richtig war.
-Danach liefen mehrere Agenten in eigenen Worktrees nebeneinander an den Kapiteln:
+Danach liefen mehrere Agenten in eigenen Git-Worktrees nebeneinander an den Kapiteln:
 Aufgaben, die dieselbe Datei ändern, ordnet die Planung nacheinander,
 und der Mensch prüft jeden Pull Request einzeln, bevor er mergt.
 
