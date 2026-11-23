@@ -9,6 +9,8 @@
 //! held (try again), and 3 if an entry is written and the rest of the command could not finish: a
 //! proof that is not written, a lease file that is not replaced, or a merge whose move is not
 //! flushed. What to do after 3 depends on the command: `pr merge` repeated finishes the move,
+//! unless the message says that the pull request is merged and a worktree did not follow `main`
+//! (then `switch main` in that worktree brings it along);
 //! a repeated `pr approve` or `check record` writes a second entry (the first does not count
 //! without its proof), and a repeated `lease` command decides again from the lease file. The key
 //! of `check record` and `lease override` is tried against the register before anything is
@@ -31,12 +33,17 @@ use stemma_core::policy::RiskLevel;
 use stemma_core::pull::{NotCounted, PullState};
 use stemma_core::refs::BranchName;
 use stemma_core::register::{self, Identity, Mode, ProofFile, Register};
-use stemma_core::repository::{CheckError, GateError, LeaseError, PullError, Repository, Revision};
+use stemma_core::repository::{
+    Behind, CheckError, Followed, GateError, LeaseError, PullError, Repository, Revision,
+};
 use stemma_core::signature::{self, PayloadKind, SshKeygen};
 use stemma_core::store::{ObjectStore, StoreError};
 use stemma_core::{Actor, AllowAll};
 
-use super::{actor, mask_controls, open, parse_revision, short_id, CliError, ACTOR_ENV};
+use super::{
+    actor, handled_text, mask_controls, open, parse_revision, saved_text, short_id, CliError,
+    ACTOR_ENV,
+};
 
 /// Why a command of the review path fails: the message, and the exit code that it ends with.
 #[derive(Debug)]
@@ -646,6 +653,15 @@ fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> 
     write_out(out, &text, Some(entry.number()))
 }
 
+/// Merges a pull request through the gate, and then brings the worktree that has `main` checked
+/// out to the new tip (STEMMA-261). The gate moves the branch only; the second step is a switch
+/// to `main` in that worktree, with an entry of its own. A worktree stays behind with a line that
+/// says so, and the command still ends with 0, whenever the second step wrote nothing: the
+/// working copy belongs to another actor, its directory cannot be opened, or the switch was
+/// refused (a file in the way, a held lock, a command of the worktree that stopped). The merge is
+/// complete then. If the switch wrote an entry and failed after it, or is made and not known to be
+/// on disk, the result of the merge is written first and the command ends with 3; repeating it
+/// does not help, as the pull request is merged. `switch main` in the worktree brings it along.
 fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let who = actor(args.common.actor)?;
     let level = RiskLevel::from_number(args.level).expect("the parser limits the level to 0..=3");
@@ -654,7 +670,7 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let merged = repository
         .merge_gate(args.number, level, register.as_ref(), &who, &AllowAll)
         .map_err(gate_error)?;
-    let text = if merged.repaired {
+    let mut text = if merged.repaired {
         format!(
             "Recorded the merge of pull request {}: main held the change already, at {}.\n",
             args.number,
@@ -668,7 +684,99 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
             short_id(merged.tip)
         )
     };
-    write_out(out, &text, Some(merged.merged.number()))
+    let stays = "it stays on the old tip, and `stemma switch main` there brings it along";
+    let failed = |message: String| {
+        ReviewError::incomplete(format!(
+            "pull request {} is merged (entry {}), but {message}",
+            args.number,
+            merged.merged.number()
+        ))
+    };
+    let late = match repository.follow_main(&who, &AllowAll) {
+        Ok(Followed::NoWorktree | Followed::UpToDate { .. }) => None,
+        Ok(Followed::Done {
+            worktree,
+            snapshot,
+            entry,
+            handled,
+        }) => {
+            text.push_str(&format!(
+                "{}Brought the working copy of the worktree {} to the tip of main as entry {}\n\
+                 {}To undo it: stemma op restore {}\n",
+                saved_text(snapshot.as_deref()),
+                mask_controls(&worktree),
+                entry.number(),
+                handled_text(&handled, true),
+                entry.number()
+            ));
+            None
+        }
+        // The switch wrote an entry and did not finish, or it is made and a flush is not known.
+        Ok(Followed::Behind {
+            worktree,
+            reason: Behind::Failed(error),
+            ..
+        }) if error.entry().is_some() || error.snapshot().is_some() => {
+            let name = mask_controls(&worktree);
+            if !error.made() {
+                Some(failed(format!(
+                    "the worktree {name} did not follow `main`: {error}; `stemma switch main` \
+                     there brings it along"
+                )))
+            } else {
+                if let Some(entry) = error.entry() {
+                    text.push_str(&format!(
+                        "{}Brought the working copy of the worktree {name} to the tip of main \
+                         as entry {}\nTo undo it: stemma op restore {}\n",
+                        saved_text(error.snapshot()),
+                        entry.number(),
+                        entry.number()
+                    ));
+                }
+                Some(failed(format!(
+                    "the worktree {name} followed `main`, and that is not known to be on disk: \
+                     {error}"
+                )))
+            }
+        }
+        Ok(Followed::Behind {
+            worktree,
+            path,
+            reason,
+        }) => {
+            // Nothing of the second step was written: the worktree stays as it was.
+            let why = match &reason {
+                Behind::Failed(error) => format!("but it did not follow: {error}"),
+                other => format!("and {other}"),
+            };
+            text.push_str(&format!(
+                "The worktree {} at {} has main checked out, {why}; {stays}.\n",
+                mask_controls(&worktree),
+                mask_controls(&path.display().to_string())
+            ));
+            None
+        }
+        Ok(Followed::Unknown { damaged }) => {
+            text.push_str(&format!(
+                "The state of the worktree {} cannot be read; if it has main checked out, {stays}.\n",
+                mask_controls(&damaged.join(", "))
+            ));
+            None
+        }
+        Err(error) => Some(failed(format!(
+            "the worktree that has `main` checked out could not be looked for: {error}; \
+             `stemma switch main` there brings it along"
+        ))),
+    };
+    match late {
+        // The message of the error names the entry of the merge too, so a failure to write the
+        // result is not reported on top of it.
+        Some(error) => {
+            let _ = out.write_all(text.as_bytes());
+            Err(error.into())
+        }
+        None => write_out(out, &text, Some(merged.merged.number())),
+    }
 }
 
 fn pr_list(args: PrListArgs, out: &mut dyn Write) -> Result<(), CliError> {

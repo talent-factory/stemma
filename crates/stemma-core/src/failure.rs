@@ -410,6 +410,7 @@ impl Classify for SwitchError {
             | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
+            | Self::Stopped { .. }
             | Self::NoStart(_) => FailureKind::Other,
         }
     }

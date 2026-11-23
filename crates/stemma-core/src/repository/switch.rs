@@ -9,6 +9,12 @@
 //! changes is carried by the rewrite of [`rewrite`](super::rewrite) (`T + (W - P)`, same change
 //! ID), so a conflict is data of the new commit and never stops the switch; [`Changes::Discard`]
 //! drops the changes instead. [`Repository::plan_switch`] shows the result and writes nothing.
+//!
+//! A switch to the branch that HEAD names already has one thing to do if the working-copy commit
+//! does not stand on the tip of that branch: it brings the working copy along. This is the state
+//! that a command of another worktree leaves when it moves the branch, as the merge gate does with
+//! `main` (ADR-019, STEMMA-261). HEAD stays, and the entry holds the move of the working-copy
+//! commit only.
 
 use std::error::Error;
 use std::fmt;
@@ -79,7 +85,8 @@ pub enum Handled {
 #[derive(Debug)]
 #[must_use]
 pub enum Planned {
-    /// HEAD names the branch already: the switch would do nothing.
+    /// HEAD names the branch already, and the working-copy commit stands on its tip: the switch
+    /// would do nothing.
     AlreadyOn(BranchName),
     /// The switch would move pointers and files.
     Would(Box<SwitchPlan>),
@@ -97,6 +104,7 @@ pub struct SwitchPlan {
     handled: Handled,
     checkout: CheckoutPlan,
     repeats: bool,
+    head_stays: bool,
 }
 
 impl SwitchPlan {
@@ -129,15 +137,24 @@ impl SwitchPlan {
     pub fn repeats(&self) -> bool {
         self.repeats
     }
+
+    /// Whether HEAD names the branch already, so that the switch would only bring the working
+    /// copy to the tip of the branch.
+    pub fn head_stays(&self) -> bool {
+        self.head_stays
+    }
 }
 
 /// How a switch ended.
 #[derive(Debug)]
 #[must_use]
 pub enum Switched {
-    /// HEAD names the branch already. Nothing was read or written, and the log has no entry.
+    /// HEAD names the branch already, and the working-copy commit stands on its tip. Nothing was
+    /// written, and the log has no entry.
     AlreadyOn(BranchName),
-    /// HEAD, the working-copy commit, and (for a new branch) the branch moved.
+    /// HEAD, the working-copy commit, and (for a new branch) the branch moved. For a switch to
+    /// the branch that HEAD names already, whose working-copy commit did not stand on the tip,
+    /// only the working-copy commit moved, and the entry names no move of HEAD.
     Done {
         /// The entry of the snapshot that came first, if the directory had unsaved changes.
         snapshot: Option<Box<Entry>>,
@@ -162,6 +179,8 @@ struct Resolved {
     tip: CommitId,
     /// The branch that the switch makes, with its commit.
     created: Option<(BranchName, CommitId)>,
+    /// Whether HEAD names the branch already and only the working copy is brought to its tip.
+    head_stays: bool,
 }
 
 impl Resolved {
@@ -193,8 +212,15 @@ impl Repository {
     /// tree `T + (W - P)`, where a conflict is data of the commit and no failure), and
     /// [`Changes::Discard`] makes the empty commit, so the changes stay in the log only.
     ///
-    /// A switch to the branch that HEAD names is [`Switched::AlreadyOn`] and writes nothing. If the
-    /// trees are equal, only the pointers move.
+    /// A switch to the branch that HEAD names is [`Switched::AlreadyOn`] and writes nothing, if
+    /// the working-copy commit stands on the tip of the branch: the tip is its only parent, the
+    /// branch has no commit yet, or the tip is the commit that a stopped `commit` named (it has
+    /// the change ID of the working-copy commit, and the repeat of `commit` finishes it). In any
+    /// other case another command moved the branch and left this working copy behind, as the
+    /// merge gate does with `main` (ADR-019). The switch then brings the working copy along by
+    /// the steps above: the snapshot, the next working-copy commit on the tip (`changes` decides
+    /// as for any switch), the files, and the pointer. HEAD stays, so the entry holds the move of
+    /// the working-copy commit only. If the trees are equal, only the pointers move.
     ///
     /// If the newest entry of the log is a switch with the same result that did not take effect
     /// (the files were written and a pointer did not move), the call is its repeat: it takes no
@@ -445,17 +471,27 @@ impl Repository {
             handled,
             checkout,
             repeats,
+            head_stays: resolved.head_stays,
         })))
     }
 
-    /// Reads the target. The inner `Err` is the branch that HEAD names already.
+    /// Reads the target. The inner `Err` is the branch that HEAD names already and whose tip the
+    /// working-copy commit stands on ([`behind`](Self::behind) says when it does not).
     fn resolve(&self, target: &SwitchTarget) -> Result<Result<Resolved, BranchName>, SwitchError> {
         let refs = self.refs();
         let head = refs.head().map_err(SwitchError::Refs)?;
         match target {
             SwitchTarget::Existing(name) => {
                 if head == Head::Branch(name.clone()) {
-                    return Ok(Err(name.clone()));
+                    return Ok(match self.behind(name)? {
+                        Some(tip) => Ok(Resolved {
+                            head,
+                            tip,
+                            created: None,
+                            head_stays: true,
+                        }),
+                        None => Err(name.clone()),
+                    });
                 }
                 let tip = refs
                     .branch(name)
@@ -465,6 +501,7 @@ impl Repository {
                     head: Head::Branch(name.clone()),
                     tip,
                     created: None,
+                    head_stays: false,
                 }))
             }
             SwitchTarget::Create { name, start } => {
@@ -483,6 +520,7 @@ impl Repository {
                     head: Head::Branch(name.clone()),
                     tip,
                     created: Some((name.clone(), tip)),
+                    head_stays: false,
                 }))
             }
             SwitchTarget::Detach(revision) => {
@@ -491,9 +529,82 @@ impl Repository {
                     head: Head::Detached(tip),
                     tip,
                     created: None,
+                    head_stays: false,
                 }))
             }
         }
+    }
+
+    /// The tip of the branch `name`, which HEAD names, if the working-copy commit does not stand
+    /// on it: a command of another worktree moved the branch, as the merge gate does with `main`
+    /// (ADR-019), and this working copy stayed behind.
+    ///
+    /// `None` in every other case: the branch has no commit yet, the tip is the only parent of
+    /// the working-copy commit, or the tip has the change ID of the working-copy commit. The last
+    /// case is a `commit` that stopped between its two moves; its repeat finishes it, and a carry
+    /// onto a commit of the same change is refused anyway.
+    ///
+    /// # Errors
+    ///
+    /// [`SwitchError::Stopped`] if the working copy stayed behind and a command of this worktree
+    /// stopped after its files (see `refuse_stopped`), and the errors of reading.
+    fn behind(&self, name: &BranchName) -> Result<Option<CommitId>, SwitchError> {
+        let refs = self.refs();
+        let Some(tip) = refs.branch(name).map_err(SwitchError::Refs)? else {
+            return Ok(None);
+        };
+        let current = refs.working_copy().map_err(SwitchError::Refs)?;
+        let working = read_any_commit(self.objects(), current).map_err(SwitchError::Read)?;
+        if working.parents() == [tip] {
+            return Ok(None);
+        }
+        let named = read_any_commit(self.objects(), tip).map_err(SwitchError::Read)?;
+        if named.change() == working.change() {
+            return Ok(None);
+        }
+        self.refuse_stopped(current, tip)?;
+        Ok(Some(tip))
+    }
+
+    /// Refuses to bring a working copy along while the newest entry of this worktree (a
+    /// `take-over` does not count) names a move of the working-copy commit `current` that did
+    /// not happen: the command of that entry stopped after it wrote its files, and a snapshot
+    /// would save them as changes of `current`. One case is let through: a `switch` whose commit
+    /// stands on `tip`, which [`stopped_switch`](Self::stopped_switch) finishes without a
+    /// snapshot. A stopped `merge`, `rebase`, or `op restore`, and a stopped switch onto an
+    /// older tip, end in [`SwitchError::Stopped`].
+    fn refuse_stopped(&self, current: CommitId, tip: CommitId) -> Result<(), SwitchError> {
+        let entries = self.oplog().entries().map_err(SwitchError::Log)?;
+        let here = self.refs_store().worktree_name();
+        let Some((number, change)) = entries
+            .iter()
+            .rev()
+            .filter_map(|entry| entry.change().map(|change| (entry.number(), change)))
+            .find(|(_, change)| {
+                change.worktree_name() == here && change.operation().as_str() != TAKE_OVER
+            })
+        else {
+            return Ok(());
+        };
+        let Some(moved) = change.working_copy() else {
+            return Ok(());
+        };
+        let (Some(&old), Some(&next)) = (moved.before(), moved.after()) else {
+            return Ok(());
+        };
+        if old != current || next == current {
+            return Ok(());
+        }
+        if change.operation().as_str() == OPERATION {
+            let commit = read_any_commit(self.objects(), next).map_err(SwitchError::Read)?;
+            if commit.parents() == [tip] {
+                return Ok(());
+            }
+        }
+        Err(SwitchError::Stopped {
+            entry: number,
+            operation: change.operation().as_str().to_owned(),
+        })
     }
 
     /// Refuses `switch -c` for a branch that exists. A switch that stopped after it made the
@@ -841,6 +952,16 @@ pub enum SwitchError {
         /// The failure.
         source: Box<SwitchError>,
     },
+    /// The working copy stayed behind its branch, but the newest entry of this worktree is a
+    /// command that stopped after its files were written: the working-copy commit did not move.
+    /// A snapshot would save those files as changes of the old working-copy commit, so the
+    /// working copy is not brought along until that command is repeated. Nothing was written.
+    Stopped {
+        /// The number of the entry of the command that stopped.
+        entry: u64,
+        /// The operation of that entry, such as `merge`.
+        operation: String,
+    },
 }
 
 impl SwitchError {
@@ -867,6 +988,7 @@ impl SwitchError {
             | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
+            | Self::Stopped { .. }
             | Self::NoStart(_) => None,
         }
     }
@@ -942,6 +1064,11 @@ impl fmt::Display for SwitchError {
             ),
             Self::Name(error) => error.fmt(f),
             Self::NoSuchCommit(id) => write!(f, "the store has no commit {id}"),
+            Self::Stopped { entry, operation } => write!(
+                f,
+                "the working copy stayed behind its branch, but the `{operation}` of entry \
+                 {entry} stopped before the working-copy commit moved; repeat that command first"
+            ),
             Self::BranchExists(name) => write!(
                 f,
                 "the branch `{name}` exists already; `stemma switch {name}` changes to it"
@@ -1040,6 +1167,7 @@ impl Error for SwitchError {
             | Self::Name(_)
             | Self::NoSuchCommit(_)
             | Self::BranchExists(_)
+            | Self::Stopped { .. }
             | Self::NoStart(_) => None,
         }
     }
@@ -2272,5 +2400,204 @@ mod tests {
             None
         }
         find(dir, suffix).unwrap_or_else(|| panic!("no file ending with {suffix}"))
+    }
+
+    /// Writes the pointer of a branch as a command of another worktree leaves it: the branch
+    /// moves, and no working copy is looked at (the merge gate, ADR-019).
+    fn move_branch(repository: &Repository, branch: &str, to: CommitId) {
+        let path = repository
+            .metadata_dir()
+            .join("refs")
+            .join("heads")
+            .join(branch);
+        fs::write(path, format!("{to}\n")).unwrap();
+    }
+
+    /// `main` holds `a.txt`, and HEAD names it; `main` then moves to a commit that adds `b.txt`,
+    /// and the working copy stays behind. Returns the new tip.
+    fn main_moved_ahead(dir: &TempDir, repository: &Repository) -> CommitId {
+        first_commit(dir, repository);
+        let _ = done(switch(repository, &create("feature")));
+        write(dir, "b.txt", "two");
+        track_and_commit(repository, &["b.txt"], "second");
+        let tip = repository.refs().branch(&name("feature")).unwrap().unwrap();
+        let _ = done(switch(repository, &existing("main")));
+        move_branch(repository, "main", tip);
+        tip
+    }
+
+    #[test]
+    fn a_switch_to_the_branch_of_head_brings_a_working_copy_that_stayed_behind_to_the_tip() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let tip = main_moved_ahead(&dir, &repository);
+        let before = entries(&repository);
+
+        let planned = repository
+            .plan_switch(&existing("main"), Changes::Carry, &actor(), &AllowAll)
+            .unwrap();
+        let Planned::Would(plan) = planned else {
+            panic!("expected a plan, got {planned:?}");
+        };
+        assert!(plan.head_stays());
+        assert_eq!(plan.commit(), tip);
+        assert_eq!(plan.checkout().writes().len(), 1);
+        assert_eq!(entries(&repository), before);
+
+        let (saved, entry, next) = done(switch(&repository, &existing("main")));
+
+        assert!(saved.is_none());
+        assert_eq!(read(&dir, "b.txt"), "two");
+        assert_eq!(
+            read_commit(repository.objects(), next).unwrap().parents(),
+            [tip]
+        );
+        assert_eq!(
+            repository.refs().head().unwrap(),
+            Head::Branch(name("main"))
+        );
+        // One entry, and it moves the working-copy commit only.
+        assert_eq!(entries(&repository), before + 1);
+        let change = entry.change().unwrap();
+        assert!(change.head().is_none());
+        assert!(change.branches().is_empty());
+        assert!(change.working_copy().is_some());
+        // On the tip, the same switch has nothing to do.
+        assert!(matches!(
+            switch(&repository, &existing("main")),
+            Ok(Switched::AlreadyOn(_))
+        ));
+        assert_eq!(entries(&repository), before + 1);
+    }
+
+    /// [`main_moved_ahead`], and a switch to `main` that stops while it writes `b.txt`: its entry
+    /// is written, and the working-copy pointer is old. Returns the tip.
+    fn stopped_bring_along(dir: &TempDir, repository: &Repository) -> CommitId {
+        let tip = main_moved_ahead(dir, repository);
+        let root = dir.path().to_path_buf();
+        let denied = Rc::new(RefCell::new(None));
+        let arm = Rc::clone(&denied);
+        super::super::snapshot::pause::at_next(
+            super::super::snapshot::pause::Stage::Moves,
+            move || {
+                *arm.borrow_mut() = Some(fault::deny_writes_in(&root));
+            },
+        );
+        let error = switch(repository, &existing("main")).unwrap_err();
+        drop(denied);
+        assert!(
+            matches!(error, SwitchError::CheckoutFailed { .. }),
+            "{error}"
+        );
+        tip
+    }
+
+    #[test]
+    fn a_stopped_bring_along_is_finished_by_the_same_switch_without_a_snapshot() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let tip = stopped_bring_along(&dir, &repository);
+
+        let (saved, _, next) = done(switch(&repository, &existing("main")));
+
+        assert!(saved.is_none());
+        assert_eq!(read(&dir, "b.txt"), "two");
+        assert_eq!(
+            read_commit(repository.objects(), next).unwrap().parents(),
+            [tip]
+        );
+    }
+
+    #[test]
+    fn a_stopped_bring_along_is_not_carried_onto_a_tip_that_moved_again() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let tip = stopped_bring_along(&dir, &repository);
+        // `main` moves once more, as after a second merge of the gate.
+        let old = read_commit(repository.objects(), tip).unwrap();
+        let later = old.rewrite(old.tree(), actor(), now(), "later");
+        let later = repository.objects().put_commit(&later).unwrap();
+        move_branch(&repository, "main", later);
+        let before = entries(&repository);
+        let working = repository.refs().working_copy().unwrap();
+
+        let error = switch(&repository, &existing("main")).unwrap_err();
+
+        // No snapshot saves the files of the stopped switch as changes of the old commit.
+        assert!(
+            matches!(&error, SwitchError::Stopped { operation, .. } if operation == "switch"),
+            "{error}"
+        );
+        assert_eq!(entries(&repository), before);
+        assert_eq!(repository.refs().working_copy().unwrap(), working);
+        assert!(matches!(
+            repository.plan_switch(&existing("main"), Changes::Carry, &actor(), &AllowAll),
+            Err(SwitchError::Stopped { .. })
+        ));
+    }
+
+    #[test]
+    fn the_changes_of_a_working_copy_that_stayed_behind_are_carried_or_discarded() {
+        for changes in [Changes::Carry, Changes::Discard] {
+            let dir = TempDir::new();
+            let repository = repository(&dir);
+            let tip = main_moved_ahead(&dir, &repository);
+            write(&dir, "a.txt", "mine");
+
+            let (saved, _, next) = done(switch_with(&repository, &existing("main"), changes));
+
+            assert!(saved.is_some());
+            assert_eq!(read(&dir, "b.txt"), "two");
+            let expected = match changes {
+                Changes::Carry => "mine",
+                Changes::Discard => "one",
+            };
+            assert_eq!(read(&dir, "a.txt"), expected);
+            assert_eq!(
+                read_commit(repository.objects(), next).unwrap().parents(),
+                [tip]
+            );
+        }
+    }
+
+    #[test]
+    fn a_commit_that_stopped_between_its_moves_is_not_a_working_copy_that_stayed_behind() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        first_commit(&dir, &repository);
+        write(&dir, "a.txt", "two");
+        let _ = repository.snapshot(&actor(), &AllowAll).unwrap();
+        // The state after the first move of `commit`: the branch names the working-copy commit
+        // with its message, and the working-copy pointer has not moved.
+        let working = repository.refs().working_copy().unwrap();
+        let old = read_commit(repository.objects(), working).unwrap();
+        let named = old.rewrite(old.tree(), actor(), now(), "stopped");
+        let named = repository.objects().put_commit(&named).unwrap();
+        move_branch(&repository, "main", named);
+        let before = entries(&repository);
+
+        assert!(matches!(
+            switch(&repository, &existing("main")),
+            Ok(Switched::AlreadyOn(_))
+        ));
+        assert!(matches!(
+            repository.plan_switch(&existing("main"), Changes::Carry, &actor(), &AllowAll),
+            Ok(Planned::AlreadyOn(_))
+        ));
+        assert_eq!(entries(&repository), before);
+        assert_eq!(repository.refs().working_copy().unwrap(), working);
+    }
+
+    #[test]
+    fn a_branch_without_a_commit_is_already_on() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let before = entries(&repository);
+
+        assert!(matches!(
+            switch(&repository, &existing("main")),
+            Ok(Switched::AlreadyOn(_))
+        ));
+        assert_eq!(entries(&repository), before);
     }
 }

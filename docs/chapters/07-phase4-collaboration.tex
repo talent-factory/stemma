@@ -1368,9 +1368,13 @@ $ stemma pr list
 $ export STEMMA_ACTOR="human daniel"
 $ stemma pr merge 14
 Merged pull request 14 into main: d7918d8efff6 on top of 8ca6710700ac.
+Brought the working copy of the worktree main to the tip of main as entry 20
+To undo it: stemma op restore 20
 $ stemma branch
   agent-arbeit bb8f06cf1089 Agent: Gruss und Bibliothek
 * main         d7918d8efff6 Merge pull request 14 (agent-arbeit)
+$ ls src
+lib.rs  main.rs
 \stoptyping
 
 Der Eintrag 17 ist die Freigabe, der Eintrag 18 \type{gate-merge} mit der Bewegung von \type{main}
@@ -1378,36 +1382,56 @@ von \type{b3:8ca6…0cd7} nach \type{b3:d791…d510}, der Eintrag 19 \type{pr-me
 Die Änderung landet als Squash-Commit auf der Spitze (ADR-006);
 \type{pr list} zeigt den Pull Request nun als \type{merged}.
 
-Das Gate bewegt nur \type{main}.
-Der Working-Copy-Commit und das Arbeitsverzeichnis des Haupt-Worktrees bleiben auf dem alten Stand:
-\type{src/lib.rs} fehlt, und \type{status} meldet ein sauberes Arbeitsverzeichnis.
-Ein \type{commit} lehnt ab, weil \type{main} und der Elternteil des Working-Copy-Commits
-auseinanderlaufen, und \type{rebase main} und \type{switch main} melden \quotation{Already up to
-date} und \quotation{Already on main}
-(in einem Probelauf geprüft, hier nicht abgedruckt).
-Den Haupt-Worktree zieht man nach, indem man HEAD von \type{main} löst und wieder setzt
-(\in{Abbildung}[fig:gate-catch-up]):
+Das Gate bewegt nur \type{main}: Es hält keine Sperre, während es arbeitet,
+und wartet auf kein Arbeitsverzeichnis (ADR-019).
+Nach \type{pr-merge} steht der Haupt-Worktree deshalb zunächst auf dem alten Stand.
+Der Elternteil seines Working-Copy-Commits ist nicht mehr die Spitze, \type{src/lib.rs} fehlt,
+und ein \type{commit} würde ablehnen, weil \type{main} und der Elternteil auseinanderlaufen.
+Darum zieht \type{pr merge} in einem zweiten Schritt den Worktree nach, der \type{main}
+ausgecheckt hat (\in{Abbildung}[fig:gate-catch-up]).
+Der Schritt ist ein \type{switch} auf \type{main} in diesem Worktree:
+Ein Snapshot sichert ungesicherte Änderungen, auf der Spitze entsteht ein neuer
+Working-Copy-Commit, und die Checkout-Schicht bringt das Arbeitsverzeichnis auf dessen Baum.
+Der Eintrag 20 (\type{switch}) nennt nur die Bewegung des Working-Copy-Commits; HEAD bleibt.
+\type{op restore 20} nimmt den Schritt zurück und lässt den Merge, wie er ist.
+Hat der Working-Copy-Commit Änderungen, gehen sie als $T + (W - P)$ mit wie bei \type{merge}
+und \type{rebase}, und ein Konflikt dabei ist Daten des neuen Commits
+(\in{Kapitel}[chap:phase3]).
 
-\starttyping
-$ stemma switch --detach main
-Detached HEAD at main as entry 20
-To undo it: stemma op restore 20
-$ stemma switch main
-Switched to branch main as entry 21
-To undo it: stemma op restore 21
-$ ls src
-lib.rs  main.rs
-\stoptyping
-
-\startplacefigure[title={Der Haupt-Worktree holt \type{main} nach dem Merge-Gate ein},
+\startplacefigure[title={Der Haupt-Worktree folgt \type{main} nach dem Merge-Gate},
     reference=fig:gate-catch-up,location=here]
 \externalfigure[images/gate-catch-up.pdf][width=\textwidth]
 \stopplacefigure
 
-Der erste Wechsel bringt den Working-Copy-Commit und das Arbeitsverzeichnis auf die Spitze und
-setzt HEAD auf den Commit; der zweite setzt HEAD wieder auf den Branch.
-Beide schreiben je einen Eintrag (20 und 21) und lassen sich mit \type{op restore} zurücknehmen.
-Einen eigenen Befehl dafür gibt es noch nicht (siehe \in{Kapitel}[chap:outlook]).
+\startinfobox
+{\bf Wenn der Worktree nicht folgt.}
+Der Merge gilt in jedem dieser Fälle;
+\type{pr merge} hält ihn wegen einer Arbeitskopie weder auf noch nimmt es ihn zurück.
+\startitemize
+\item Die Arbeitskopie gehört einem anderen Akteur, etwa wenn ein Agent mergt,
+während Daniel auf \type{main} steht.
+Nur der Eigentümer sichert eine Arbeitskopie (ADR-010), und \type{pr merge} übernimmt keine.
+Der Worktree bleibt stehen, die Ausgabe nennt ihn und seinen Eigentümer,
+und der Befehl endet mit Exit-Code 0.
+\item Das Verzeichnis des Worktrees fehlt oder wurde verschoben.
+Auch dann bleibt er stehen, und der Befehl endet mit Exit-Code 0.
+\item Der Wechsel lehnt ab, bevor er schreibt: Eine unverfolgte Datei steht im Weg einer Datei der
+neuen Spitze, die Sperre der Referenzen ist gehalten,
+oder im Worktree ist ein Befehl nach dem Schreiben seiner Dateien abgebrochen.
+Die Ausgabe nennt den Grund, und der Befehl endet mit Exit-Code 0.
+\item Der Wechsel scheitert, nachdem sein Eintrag im Log steht.
+Der Befehl endet mit Exit-Code 3 und der Meldung, dass der Pull Request gemergt ist.
+\item Der Prozess endet zwischen \type{pr-merge} und dem Wechsel.
+\stopitemize
+Der Eigentümer holt den Worktree dann mit \type{stemma switch main} nach:
+Zeigt HEAD schon auf den Branch und steht der Working-Copy-Commit nicht auf dessen Spitze,
+zieht \type{switch} die Arbeitskopie nach, statt \type{Already on main} zu melden.
+Ein zweiter \type{pr merge} hilft nicht, denn der Pull Request ist nicht mehr offen.
+\stopinfobox
+
+Die Sitzung ist mit einer Fassung des Programms aufgezeichnet, die den Haupt-Worktree noch mit
+zwei Wechseln von Hand nachzog (Einträge 20 und 21).
+Die Nummern der folgenden Abläufe, ab dem Eintrag 22, stammen aus dieser Aufzeichnung.
 
 {\bf Die Garantien.}
 Scheitert ein Befehl vor dem Gate, bleibt \type{main} unverändert;
@@ -1627,17 +1651,17 @@ Grössen er ändert.
 \stopxrow
 \startxrow
 \startxcell \type{pr merge} \stopxcell
-\startxcell unverändert \stopxcell
-\startxcell unverändert, nun veraltet \stopxcell
+\startxcell Dateien der Spitze, im Worktree mit \type{main} \stopxcell
+\startxcell neuer Commit auf der Spitze \stopxcell
 \startxcell \type{main} \stopxcell
-\startxcell \type{gate-merge}, \type{pr-merge} \stopxcell
+\startxcell \type{gate-merge}, \type{pr-merge}, \type{switch} \stopxcell
 \stopxrow
 \startxrow
-\startxcell \type{switch --detach}, \type{switch} \stopxcell
+\startxcell \type{switch main}, wenn der Worktree nicht folgte \stopxcell
 \startxcell Dateien der Spitze \stopxcell
 \startxcell neuer Commit auf der Spitze \stopxcell
-\startxcell HEAD \stopxcell
-\startxcell zwei Einträge \type{switch} \stopxcell
+\startxcell keiner \stopxcell
+\startxcell \type{switch} \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{lease take} nach Ablauf \stopxcell

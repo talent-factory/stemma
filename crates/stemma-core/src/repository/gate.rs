@@ -20,6 +20,10 @@
 //! purge may remove objects that no reference reaches (ADR-014), so `M` is looked up under the
 //! lock; if it is gone, or if `main` moved (`Stale`), or if another change holds the lock
 //! (`Locked`), the gate starts again at step 1 with the new tip.
+//!
+//! The gate moves the branch and no working copy. The worktree that has `main` checked out stays
+//! on the old tip until [`follow_main`](Repository::follow_main) brings it along, which the
+//! command calls after the gate (STEMMA-261).
 
 use std::error::Error;
 use std::fmt;
@@ -366,6 +370,10 @@ impl Repository {
     /// [`MAX_ATTEMPTS`] times; after a `Locked` it waits a few milliseconds first. Every failed
     /// attempt leaves the objects of its merge in the store. No reference reaches them, and a
     /// purge collects them (ADR-014). The error `Contended` names the reason of the last attempt.
+    ///
+    /// No working copy is read or written, in the normal path and in the repair path alike: the
+    /// worktree that has `main` checked out keeps its working-copy commit on the old tip. The
+    /// caller brings it along with [`follow_main`](Self::follow_main) after this call returned.
     ///
     /// # The window between the move and `pr-merge`
     ///

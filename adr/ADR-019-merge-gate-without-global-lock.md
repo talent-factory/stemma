@@ -105,6 +105,41 @@ the branch onto the tip changes nothing and records `pr-merge` without a move (t
 A repeated attempt is cheap because only the tree merge and the table are repeated, and a check
 is repeated only for levels 2 and 3.
 
+### The worktree of `main` follows after the swap
+
+The gate moves the branch and reads no working copy: a merge must not wait for the directory of
+anyone, and the lock covers the entries and the move only. The worktree that has `main` checked
+out is therefore on the old tip after the swap, with a working-copy commit whose parent is no
+longer the tip (decided in STEMMA-261).
+
+The command brings it along in a second step, after `pr-merge` and outside the lock of the gate
+(`Repository::follow_main`). The step is a `switch` to `main` in that worktree (ADR-010): a
+snapshot, the next working-copy commit on the tip, one entry `switch` that moves the working-copy
+commit only, and the files. A working-copy commit that holds changes is carried as `T + (W - P)`,
+and a conflict of the carry is data of the new commit, as for `merge`, `rebase`, and `switch`.
+The worktree can be the one of the command or another one; another one is reached through the
+directory that its state names.
+
+The step never blocks or undoes the merge. The worktree stays on the old tip, and the command
+says so, when
+
+- another actor owns its working copy: only the owner saves a working copy (ADR-010), the step
+  takes nothing over, and an agent never does;
+- its directory is gone, was moved, or holds another working copy now;
+- the switch is refused before it writes: a file that is not tracked is in the way of a file of
+  the new tip, the lock is held, or a command of the worktree stopped after its files (ADR-010);
+- the switch writes its entry and fails after it.
+
+The exit code follows the rule of the other commands. The first three cases wrote nothing of the
+second step, so the command is complete and ends with code 0. The last case ends with code 3, as
+an entry is written and a part is missing; so does a switch that is made while its flush is not
+known. A worktree whose state cannot be read is named in the output, as it may be the one.
+
+A stop between `pr-merge` and the step leaves the same state. In all of these cases the owner
+runs `switch main` in the worktree: a switch to the branch that HEAD names brings a working copy
+that stayed behind to the tip (ADR-010). A second `pr merge` does not help, as the pull request
+is merged.
+
 ### Bounds for retries and for the unverified window
 
 The gate applies the two bounds, and the pause at a red tip below, after the rule table and
