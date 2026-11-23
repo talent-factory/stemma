@@ -9,6 +9,9 @@ Der Kurs DUA, Datenstrukturen und Algorithmen, findet in Stemma Inhaltsadressier
 und Merkle-Graphen, Hash-Ketten, absturzsicheres Schreiben, Tiefensuche und Erreichbarkeit
 sowie Musterabgleich mit dynamischer Programmierung, ab Phase~2 den Myers-Diff
 und ab Phase~3 die Merge-Basis in einem Graphen, die Summe von Trees und den Zeilen-Merge.
+Phase~4 fügt fünf kleine Verfahren hinzu: die Bisektion über ein rotes Fenster,
+die Stufe einer Änderung als Maximum über ihre Pfade, die Neuzählung der Freigaben,
+die Trennung der Domänen in signierten Bytes und die Lease als Zustand mit träger Erneuerung.
 Welche Algorithmen des Codes im Kursbuch stehen, zeigt \in{Tabelle}[tab:algorithms].
 
 Der Kurs AISE, AI Assisted Software Engineering, findet Akteure mit Sponsor und die Herkunft
@@ -18,6 +21,29 @@ Freigaben und Risikostufen dazu.
 In Phase~3 zeigen die Konflikte als Daten, dass ein Agent, der abbricht, keine zerbrochene
 Arbeitskopie hinterlässt, und der Worktree je Akteur,
 dass parallele Agenten einander nicht stören.
+Die Funktionen von Phase~4 beantworten je ein Problem, das erst auftritt,
+wenn mehrere Agenten gemeinsam an einem Repository schreiben.
+Zwei Agenten, die denselben Branch ändern, überschreiben einander;
+die Lease gibt einem Akteur das Recht, einen Branch zu schreiben, und läuft von selbst ab,
+damit ein abgestürzter Agent den Branch nicht für immer sperrt
+(\in{Abschnitt}[sec:workflow-lease]).
+Heute schützt sie die Eröffnung eines Pull Requests; die übrigen schreibenden Befehle
+erwerben und erneuern sie noch nicht (\in{Abschnitt}[sec:workflow-pr]).
+Ein Agent, der seine eigene Änderung freigibt, prüft nichts;
+das Selbstfreigabeverbot schliesst den Eröffner und jeden Schreiber eines Commits
+der Änderung aus, und die Neuzählung prüft jede Freigabe noch einmal,
+weil ein Eintrag von anderer Hand stammen könnte (\in{Kapitel}[chap:phase4]).
+Ein Mensch kann nicht jede Änderung gleich genau prüfen;
+die Risikostufen legen fest, wie viele Freigaben ein Pfad verlangt
+und ab wann ein Mensch entscheidet (\in{Abschnitt}[sec:policy-file]).
+Ein Agent, der einen fehlschlagenden Test lockert statt den Code zu reparieren,
+fällt der Prüfung nicht auf, weil danach alles grün ist;
+darum hebt das Entfernen oder Abschwächen von Tests und Zusicherungen die Stufe auf mindestens 2.
+Wird ein kompromittierter Schlüssel widerrufen, werden die Freigaben ungültig,
+die er signiert hat, und gehört er einem Sponsor,
+entzieht die Kaskade zugleich die Schlüssel seiner Agenten
+(\in{Abschnitt}[sec:register]).
+
 Die Agentenfunktionen von Phase~2 beantworten je ein Problem der Arbeit mit Agenten.
 \type{diff --exit-code} gibt einem Skript die Antwort \quotation{gibt es Änderungen?}
 ohne das Parsen von Text.
@@ -283,6 +309,60 @@ Grenzen für Kandidaten und Vergleiche \stopxcell
 \startxcell Abschnitt 3.4, Hashtabellen; Heuristiken in
 \type{docs/research/moved-lines-heuristics.md} \stopxcell
 \stopxrow
+\startxrow
+\startxcell Bisektion über ein rotes Fenster: Der erste schlechte Commit zwischen der letzten
+grünen und der ersten roten Spitze wird durch Halbieren gefunden, in $O(\log n)$ Läufen des Tests
+für $n$ Commits; sie setzt einen Verlauf voraus, der erst gut und dann schlecht ist;
+das Gate selbst bisektiert nicht, es liefert nur das Fenster \stopxcell
+\startxcell \type{bisect} (\type{bounds.rs}) \stopxcell
+\startxcell Abschnitt 1.1 und 3.1, binäre Suche, hier über einen Verlauf statt über eine
+Tabelle; dasselbe Verfahren wie \type{git bisect} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Stufe einer Änderung: das Maximum der Stufen aller berührten Pfade, je Pfad das
+Maximum der Zeilen der Policy, die ihn nennen, oder Stufe 2, wenn keine Zeile ihn nennt,
+und mindestens die feste Stufe 3 für die Policy und das Register;
+eine Änderung ohne Pfad hat Stufe 0;
+Kosten $O(p\,l)$ Mustervergleiche für $p$ berührte Pfade und $l$ Zeilen \stopxcell
+\startxcell \type{Policy::level_of}, \type{Policy::level_of_path} (\type{policy.rs}) \stopxcell
+\startxcell Nicht im Buch; Maximum über eine Folge (Abschnitt 1.1), Mustervergleich wie bei der
+Ausschlussdatei (Abschnitt 5.4) \stopxcell
+\stopxrow
+\startxrow
+\startxcell Neuzählung der Freigaben: eine reine Funktion über die Freigaben im Log in der
+Reihenfolge der Einträge; eine Freigabe zählt, wenn sie den heutigen Kopf nennt,
+ihr Reviewer weder Eröffner noch Schreiber eines Commits der Änderung ist, ihr Beweis hält
+und ihre Identität nicht schon zählt; die Schreiber sind die Autoren
+und die Akteure der Einträge, die einen Commit
+zuerst unter einen Branch, ein Tag oder den Working-Copy-Commit brachten, gefunden durch einen
+Durchlauf, der jeden Commit einmal liest; eine Freigabe, deren Eintrag vor der Eröffnung steht,
+zählt nie; Kosten $O(a\,(w+a))$ für $a$ Freigaben und $w$ Schreiber,
+dazu eine Prüfung der Signatur je Freigabe und der Durchlauf für die Schreiber \stopxcell
+\startxcell \type{recount}, \type{approvals} (\type{pull.rs}), \type{self_approval}
+(\type{allowed.rs}), \type{pull_authors} (\type{repository/pull.rs}) \stopxcell
+\startxcell Nicht im Buch; Mengen und Hashtabellen (Abschnitt 3.4); ein Durchlauf über das Log
+wie bei den Ausgängen weiter oben \stopxcell
+\stopxrow
+\startxrow
+\startxcell Domänentrennung der signierten Bytes: vor der Nutzlast stehen Präfix, Typ und Version
+in drei Zeilen, dazu ein einziger Namensraum für alle Beweise; eine Signatur für einen Typ oder
+eine Version gilt nie für einen anderen, und die Nutzlast beginnt nach dem dritten Zeilenumbruch,
+sodass die Trennung eindeutig ist; Kosten linear in der Länge der Nutzlast \stopxcell
+\startxcell \type{signed_bytes}, \type{sign}, \type{verify} (\type{signature.rs}),
+\type{approval_payload} (\type{pull.rs}) \stopxcell
+\startxcell Nicht im Buch; Signaturen gehören zur Kryptografie; SSHSIG ist das Format von
+\type{ssh-keygen -Y sign} (ADR-003, ADR-020) \stopxcell
+\stopxrow
+\startxrow
+\startxcell Lease als Zustand mit träger Erneuerung: eine Datei je Branch mit Inhaber und Ablauf,
+als Ganzes ersetzt; die Regel ist eine reine Funktion von Datei, Akteur und Zeit mit fünf Fällen;
+erneuert wird nur, wenn der Inhaber schreibt (heute nur bei \type{lease take}),
+und der Ablauf wird nie früher als zuvor;
+kein Dienst beendet eine Lease, sie gilt nach dem Ablauf als frei; Kosten $O(1)$ \stopxcell
+\startxcell \type{claim}, \type{Lease::renewed} (\type{lease.rs}) \stopxcell
+\startxcell Nicht im Buch; verwandt mit dem gegenseitigen Ausschluss weiter oben, aber mit einer
+Frist statt der Prüfung des Betriebssystems \cite[silberschatz2018os] \stopxcell
+\stopxrow
 \stopxtable
 \stopplacetable
 \page
@@ -504,6 +584,114 @@ Begründen Sie, welche Form für Agenten mehr Fehler sichtbar macht, und protoko
 einen Versuch mit einem Agenten, der einen Konflikt aus Ihrem Beispiel löst.
 \stopitemize
 
+\subsection{Phase 4}
+
+Die Übungen der Phase 4 stützen sich auf \in{Kapitel}[chap:phase4];
+die Verfahren stehen in \in{Tabelle}[tab:algorithms].
+
+\startitemize[n]
+\item (DUA) \type{bisect} sucht den ersten schlechten Commit eines Fensters
+(\in{Abschnitt}[sec:merge-gate]).
+Zeigen Sie mit der Invariante \quotation{der erste schlechte Commit liegt zwischen \type{low}
+und \type{high}, und der Commit an \type{high} ist schlecht}, dass die Schleife richtig endet,
+und dass sie bei $n$ Commits höchstens $\lceil \log_2 n \rceil$ Läufe des Tests braucht.
+Geben Sie ein Fenster an, in dem ein Commit besteht, nachdem ein früherer scheiterte,
+und zeigen Sie, was \type{bisect} dann liefert und welche Aussage davon übrig bleibt.
+Warum ist dieser Fall beim Gate möglich, etwa durch einen Test, der nicht immer gleich ausgeht?
+\item (DUA) Die Stufe einer Änderung ist das Maximum über ihre Pfade,
+die Stufe eines Pfades das Maximum über die Zeilen der Policy, die ihn nennen
+(\in{Abschnitt}[sec:policy-file]).
+Zeigen Sie, dass eine zusätzliche Zeile die Stufe eines Pfades nie senkt,
+den schon eine Zeile nennt, und dass das Ergebnis nicht von der Reihenfolge der Zeilen
+oder der Pfade abhängt.
+Zeigen Sie dann, dass eine Zeile die Stufe eines Pfades senken kann, den noch keine nennt,
+und erklären Sie das aus der Stufe 2, die ein unbenannter Pfad hat.
+Vergleichen Sie die Regel mit der Regel \quotation{die letzte passende Zeile gewinnt},
+wie sie die Ignore-Datei von Git kennt: Welchen Angriff erlaubt diese Regel,
+wenn die Zeilen der Policy von mehreren Händen stammen?
+Warum hat ein Rename die Stufe des höheren der beiden Pfade?
+Geben Sie die Kosten in $p$ und $l$ an.
+\item (DUA) Die Neuzählung der Freigaben ist eine reine Funktion über das Log
+(\in{Kapitel}[chap:phase4]).
+Zeigen Sie, dass sie höchstens eine Freigabe je Identität zählt
+und dass die Reihenfolge der Einträge entscheidet, welche:
+Ein früherer Eintrag mit ungültigem Beweis nimmt dem späteren den Platz nicht.
+Warum zählt eine Freigabe, die einen früheren Kopf nannte, nach einem weiteren Commit nicht mehr?
+Welche Eigenschaft der Hashfunktion braucht dieser Schluss?
+Geben Sie die Kosten in der Zahl der Freigaben und der Schreiber an.
+\item (DUA) Die Schreiber einer Änderung sind die Autoren ihrer Commits
+und die Akteure der Einträge, die einen Commit zuerst unter einen Branch, ein Tag
+oder den Working-Copy-Commit brachten.
+Konstruieren Sie einen Verlauf, in dem ein Agent einen Commit unter dem Namen eines anderen
+Akteurs schreibt und danach seine eigene Änderung freigibt,
+wenn die Regel nur den Namen des Autors prüft.
+Zeigen Sie, dass der Eintrag im Log den Fall schliesst.
+Warum zählt ein späteres Verschieben eines Branches auf einen Commit,
+den schon ein Branch erreichte, nicht als Schreiben,
+und welcher Ablauf des Reviewers wäre sonst unmöglich?
+\item (DUA) Eine Freigabe signiert die Bytes \type{pull <Nummer>}, \type{commit <ID>}.
+Heute hat keine andere Nutzlast diese Bytes: Ein Eintrag des Logs signiert seinen Hash,
+eine Mitzeichnung des Sponsors Agent, Rolle und Sponsor.
+Nehmen Sie an, ein künftiger Typ hätte eine Nutzlast, die mit den Bytes einer Freigabe
+übereinstimmt, und zeigen Sie ohne Kopfzeile, was der Angreifer damit erreicht.
+Zeigen Sie dann, dass die Kopfzeile aus Präfix, Typ und Version den Fall schliesst
+(\in{Abschnitt}[sec:signatures]) und dass die Trennung der Nutzlast von der Kopfzeile eindeutig ist,
+weil Präfix, Typ und Version keinen Zeilenumbruch enthalten.
+Typ und Version stehen in den signierten Bytes und nicht im SSHSIG-Namensraum.
+Nennen Sie einen Vorteil und einen Nachteil dieser Wahl.
+\item (DUA) Die Regel der Lease hat fünf Fälle (\in{Abschnitt}[sec:workflow-lease]).
+Zeigen Sie, dass zu jeder Zeit höchstens ein Akteur eine gültige Lease eines Branches hält,
+wenn die Datei als Ganzes ersetzt wird und der Wechsel unter der Sperre der Referenzen geschieht.
+Welche Annahme über die Uhren der Akteure braucht die Regel,
+und was geschieht, wenn zwei Rechner um eine Minute abweichen?
+Eine Erneuerung schreibt keinen Eintrag ins Log.
+Was verliert das Log dadurch, und was würde es bei jedem Schreiben kosten?
+\item (AISE) Schreiben Sie die Policy für ein kleines Repository mit Quellcode, Tests,
+Dokumentation und einer Datei mit Zugangsdaten.
+Prüfen Sie die Policy mit einem Test im Kern (\type{Policy::parse}, \type{Policy::level_of});
+kein Befehl wertet sie heute aus.
+Lassen Sie einen Agenten versuchen, ein Muster zu finden, das die Policy-Datei
+oder das Verzeichnis des Registers unter Stufe 3 senkt, ohne dass der Leser es abweist.
+Halten Sie fest, welche Muster der Leser ablehnt und welche die Auswertung auf Stufe 3 hebt,
+und begründen Sie, warum eine Policy die Anforderungen einer Stufe heben, aber nie senken darf.
+\item (AISE) Lassen Sie einen Agenten einen scheiternden Test beheben,
+und prüfen Sie seinen Diff gegen die Signale für abgeschwächte Tests (ADR-004, Regel 10),
+etwa mit \type{weakened::analyze} in einem Test des Kerns; kein Befehl ruft sie heute auf.
+Welche Signale schlagen an, und welche Abschwächung bleibt unerkannt
+(etwa ein Vergleich, der von \type{==} auf \type{>=} wechselt,
+oder eine Assertion im Rumpf von \type{proptest!})?
+Entwerfen Sie eine Anweisung für den Agenten und eine Prüfung für den Menschen,
+die dieses Loch schliessen.
+\item (AISE) Zwei Agenten desselben Sponsors schreiben und prüfen eine Änderung.
+Das Selbstfreigabeverbot gilt für die Identität, und zwei Agenten eines Sponsors
+zählen als zwei Freigaben.
+Begründen Sie, ob das unabhängig genug ist, wenn beide dasselbe Modell nutzen
+und denselben Auftrag erhalten haben.
+Schlagen Sie eine strengere Regel vor und prüfen Sie,
+welche Fälle sie über das Ziel hinaus trifft;
+vergleichen Sie sie mit der Regel für den Schreiber eines Prüfergebnisses (ADR-019).
+\item (AISE) Der Schlüssel eines Sponsors gilt als kompromittiert, und er wird widerrufen.
+Zeichnen Sie, welche Schlüssel, welche Freigaben und welche Einträge des Logs dadurch
+ihre Geltung verlieren und welche nicht, und was ein Pull Request tun muss, der gerade
+auf Freigaben wartet (\in{Abschnitt}[sec:register]).
+Warum löst das Ausmustern eines Schlüssels keine Kaskade aus,
+und welchen Schaden hätte eine Kaskade bei jeder Rotation?
+\item (AISE) Ein Agent stürzt ab, während er die Lease eines Branches hält,
+und ein zweiter Agent übernimmt den Branch nach dem Ablauf.
+Der erste Agent läuft später weiter und verlangt die Lease, als gehöre ihm der Branch noch
+(\type{lease take}; \type{commit} prüft die Lease heute nicht).
+Welche Fälle der Regel treffen ihn, und was sieht er in der Fehlermeldung?
+Entwerfen Sie ein Protokoll für Agenten, das den Branch vor jedem Schreiben prüft,
+und protokollieren Sie einen Versuch, in dem zwei echte Agenten den Branch wechseln.
+\item (AISE) Bringen Sie mit einem Agenten eine kleine Änderung als Pull Request nach \type{main}
+(\in{Abschnitt}[sec:workflow-pr]): öffnen, freigeben lassen, vom Gate prüfen und mergen.
+Halten Sie fest, an welchen Stellen der Agent auf einen Menschen wartet,
+welche Regel jede Stelle auslöst (Stufe, Freigabe, Lease) und wo Sie als Mensch
+mit einer Regel allein nicht auskommen, sondern urteilen müssen.
+Heute nimmt \type{pr merge} die Stufe aus \type{--level} und verlangt keine Freigabe;
+vergleichen Sie, was Sie sehen, mit dem Zielzustand von ADR-004.
+\stopitemize
+
 \section[sec:agents]{Wie Stemma mit Agenten entsteht}
 
 Stemma wird von einem Menschen und mehreren Agenten gemeinsam entwickelt.
@@ -711,6 +899,49 @@ Die Oberfläche dient dem Menschen, der die Arbeit eines Agenten prüft.
 Ein Skript nimmt \type{diff} ohne \type{--tui}, dessen Text die Referenz bleibt;
 ist die Ausgabe kein Terminal, endet \type{--tui} mit Exit-Code 1,
 statt auf eine Taste zu warten, die nie kommt.
+
+\subsection{Phase 4: Entscheidungen, Prüfung und Entwurf der Policy}
+
+Die Phase 4 baut die Regeln, die das Projekt für Agenten braucht, in Stemma selbst:
+Lease, Freigaben, Risikostufen, das Merge-Gate.
+Das Projekt wendet sie auf sich selbst noch nicht an.
+Pull Requests laufen weiter über Git und GitHub, und der Mensch mergt.
+Was die Phase über die Arbeit mit Agenten zeigt, liegt deshalb in den Entscheidungen
+und in der Art, wie sie entstanden.
+
+Das Merge-Gate ohne globale Sperre (ADR-019) entstand zuerst als Entscheidung
+und danach in Scheiben.
+Der Kopf des ADR führt Buch darüber, was umgesetzt ist
+und was dem Aufrufer des Gates bleibt, bis die Scheibe dazu fertig ist:
+die Freigaben, die Registrierung der Autoren und der Befehl.
+Ein Agent, der eine spätere Scheibe übernimmt, liest daraus den Stand
+und muss ihn nicht aus dem Code erraten.
+Zwei Abhängigkeiten der Phase kamen mit einem ADR: die Bibliothek für SSHSIG (ADR-020, Stufe 3,
+weil sie Signaturen prüft) und die Hervorhebung der Syntax in der Oberfläche (ADR-021, Stufe 2).
+Der Mensch nahm beide an und trug das Datum ein.
+Beide ADRs nennen unter den offenen Punkten, was der Agent nicht geprüft hat:
+die Eigentümer der Crates auf crates.io und den Bau unter Windows.
+Ein Agent, der eine Lücke seiner Prüfung benennt, gibt dem Menschen das Urteil zurück,
+das ihm zusteht.
+
+Der Entwurf der Policy dieses Repositorys (\type{.stemma-policy}) zeigt eine Grenze
+agentischer Arbeit.
+Er folgt der Tabelle der Pfade in ADR-004,
+und die erste Zeile der Datei sagt, dass er ein Entwurf ist, nicht signiert und nicht in Kraft.
+Die Datei hat Stufe 3: Der Owner prüft sie, ändert sie nach Bedarf und signiert sie mit seinem
+Schlüssel.
+Ob das Repository danach im durchsetzenden Modus läuft, entscheidet er getrennt.
+Die Regeln, die Agenten binden, gelten also erst, wenn ein Mensch sie signiert hat.
+Das Verzeichnis \type{.claude/} bleibt absichtlich auf Stufe 2, weil Agenten dort arbeiten.
+
+Die Durchsicht nach der Phase fand, dass \in{Kapitel}[chap:phase4] Verfahren einführte,
+ohne sie nach dem Muster der Lehre zu erklären, dass die Tabelle der Algorithmen die Phase nicht
+kannte und dass die Übungen sie nicht abdeckten.
+Diese Lücke war in den Prüfschleifen der einzelnen Scheiben nicht aufgefallen,
+weil jede Scheibe für sich richtig war.
+Danach liefen mehrere Agenten in eigenen Git-Worktrees nebeneinander an den Kapiteln:
+Aufgaben, die dieselbe Datei ändern, ordnet die Planung nacheinander,
+und der Mensch prüft jeden Pull Request einzeln, bevor er mergt.
 
 \subsection{Das Buch neben dem Code}
 
