@@ -3101,9 +3101,12 @@ roten Spitze ist von allen drei Schranken ausgenommen.
 Die Reservierung gilt dort nie, und \type{max-unverified} hat seinen Standardwert.
 Ein gehaltenes Lock der Referenzen endet mit Exit-Code 6; der Aufruf lässt sich
 wiederholen. Ein beschädigtes Log endet mit Exit-Code 5. Exit-Code 3 meldet einen Eintrag, der
-geschrieben ist, während der Rest nicht gelang: eine Beweisdatei, die fehlt, oder eine Bewegung
-von \type{main}, deren Spülen nicht feststeht. Ein erneuter \type{pr merge} schliesst die
-Bewegung von \type{main} ab; ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
+geschrieben ist, während der Rest nicht gelang: eine Beweisdatei, die fehlt, eine Bewegung
+von \type{main}, die scheiterte (der Eintrag trägt dann die Zeile
+\type{! the move did not take effect}), oder eine Bewegung, deren Spülen nicht feststeht.
+Ein erneuter \type{pr merge} mergt nach einer gescheiterten Bewegung neu und schliesst
+sonst die Bewegung von \type{main} ab;
+ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
 denn die erste zählt ohne Beweis nicht.
 Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
 Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.

@@ -1115,6 +1115,463 @@ legt den Eintrag mit der Signatur an.
 Ob ein Akteur den Eintrag ändern darf, entscheidet vorerst die Behauptung des Akteurs:
 Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 
+\section[sec:phase4-workflows]{Die Abläufe der Phase im Zusammenhang}
+
+Dieser Abschnitt setzt die Teile der Zusammenarbeit zu einer Sitzung zusammen.
+Sie beginnt in dem Repository der Sitzung aus \in{Kapitel}[chap:phase1], nach dem zweiten Commit:
+Das Repository \type{notizen} hat auf \type{main} die Commits \quotation{Erste Fassung} und
+\quotation{Gruss erweitern}.
+Daniel nimmt es in den durchsetzenden Modus (\type{enforce}), legt das Register an und trägt den
+Agenten \type{claude} mit seinem Schlüssel ein; Daniel ist sein Sponsor.
+Ana ist als zweite Person eingetragen und prüft.
+Das Programm hat noch keinen Befehl, der einen weiteren Menschen aufnimmt;
+der Owner hat den Eintrag von Ana in \type{.stemma-actors/register} von Hand ergänzt,
+in der Reihenfolge, die die Datei verlangt, und ihn wie jede Änderung des Registers committet.
+Damit schreibt die Sitzung die Einträge 1 bis 9: die zwei Commits aus
+\in{Kapitel}[chap:phase1] und die Einrichtung des Registers.
+
+\starttyping
+$ stemma enforce --owner-key ../keys/daniel.pub
+Enforcing mode: .stemma-actors/register names human daniel as the
+  owner; track and commit it, because until then `register` and
+  `op verify` end with code 5. There is no way back to the open mode.
+$ stemma track .stemma-actors/register
+$ stemma commit -m "Register angelegt"
+$ stemma register cosign ../keys/daniel --agent claude > ../cosign.sig
+$ stemma register add-agent ../keys/claude.pub --agent claude \
+>     --sponsor daniel --cosign ../cosign.sig
+Added agent claude with sponsor human daniel to
+  .stemma-actors/register; commit the file.
+$ stemma commit -m "Agent und Ana registriert"
+$ stemma op verify
+Checked 9 entries of the operation log: the hash chain holds.
+The actor register is valid, and 0 proofs of log entries hold against it.
+anchor 9:b3:675e…5a71
+\stoptyping
+
+Der Sponsor signiert den Eintrag des Agenten mit \type{register cosign};
+\type{add-agent} prüft die Signatur, ändert die Datei im Arbeitsverzeichnis und schreibt keinen
+Eintrag, bis \type{commit} die Datei festhält.
+Danach prüft \type{op verify} die Hash-Kette und das Register.
+Die Nummer eines Pull Requests ist die Nummer seines Eintrags \type{pr-open}.
+Die Einträge dazwischen gehören zu Schritten, die der Text nicht abdruckt:
+Branches und Commits für die späteren Beispiele sowie Prüfungen und Freigaben.
+Die Ausgaben stammen aus einem echten Lauf in einem frischen Verzeichnis;
+nur der Abbruch in \in{Abschnitt}[sec:workflow-crash] ist eingespritzt.
+Die IDs sind gekürzt und die Pfade stehen als \type{/home/daniel/...};
+ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
+Der Text nennt die Nummern der Einträge im Operation Log.
+\in{Abbildung}[fig:phase4-session] zeigt die Sitzung als Folge der Einträge, getrennt nach dem
+Akteur, dessen Befehl sie schreibt.
+
+\startplacefigure[title={Die Sitzung der Phase 4: Einträge im Operation Log
+    von Daniel, vom Agenten und von Ana},
+    reference=fig:phase4-session,location=here]
+\externalfigure[images/phase4-session.pdf][width=\textwidth]
+\stopplacefigure
+
+\startinfobox
+{\bf Was die Sitzung noch nicht zeigt.}
+Die Befehle \type{commit}, \type{track} und die Zeigerbefehle erwerben und erneuern keine Lease;
+in der Sitzung nimmt der Agent sie mit \type{lease take}.
+Die Lease schützt darum heute die Eröffnung eines Pull Requests, nicht jeden Schreibvorgang.
+\type{pr merge} bekommt die Risikostufe von \type{--level}, die Policy leitet sie nicht ab;
+die Sitzung lässt den Standard 3 stehen.
+Das Gate verlangt beim Merge keine Freigabe; \type{pr approve} prüft nur die Unabhängigkeit
+des Reviewers, und \type{pr list} zählt die Freigaben.
+Die Grenzen stehen in \in{Abschnitt}[sec:phase4-open].
+\stopinfobox
+
+\subsection[sec:workflow-pr]{Eine Änderung eines Agenten nach main bringen}
+
+{\bf Die Lage.}
+Der Agent arbeitet im Worktree \type{notizen-agent} auf dem Branch \type{agent-arbeit}.
+Die Änderung soll auf \type{main}, und \type{main} ändert sich nur durch einen Pull Request.
+Weil der Agent sie geschrieben hat, darf er sie weder freigeben noch prüfen;
+für die Prüfung gilt das auch für seinen Sponsor (ADR-019).
+
+{\bf Die Befehle.}
+Daniel legt den Worktree an und macht den Agenten zu seinem Eigentümer.
+Der Agent nimmt die Lease, schreibt eine Datei und committet sie, und eröffnet den Pull Request:
+
+\starttyping
+$ stemma worktree add -b agent-arbeit ../notizen-agent \
+>     --owner "agent claude model=opus-5-5 session=s1 sponsor=daniel"
+Added the worktree notizen-agent in /home/daniel/notizen-agent
+  on the new branch agent-arbeit as entry 10
+Owner: agent claude model=opus-5-5 session=s1 sponsor=daniel
+$ cd ../notizen-agent
+$ export STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel"
+$ stemma lease take agent-arbeit
+Took the lease of agent-arbeit for 60 minutes.
+$ echo "pub fn gruss() {}" > src/lib.rs
+$ stemma track src/lib.rs
+tracked src/lib.rs
+$ stemma commit -m "Agent: Gruss und Bibliothek"
+Committed b3:bb8f…449a on agent-arbeit
+$ stemma pr open agent-arbeit --reviewer "human ana"
+Opened pull request 14 for branch agent-arbeit.
+\stoptyping
+
+Die Lease ist eine Datei im gemeinsamen Verzeichnis:
+
+\starttyping
+$ cat ../notizen/.stemma/leases/agent-arbeit
+stemma-lease 1
+branch agent-arbeit
+holder agent claude model=opus-5-5 session=s1 sponsor=daniel
+acquired 1795385084
+expires 1795388684
+\stoptyping
+
+Das Log hält fest, was ein Befehl geändert hat.
+Der Eintrag 10 (\type{worktree-add}) bewegt \type{agent-arbeit}, HEAD und den Working-Copy-Commit
+des Worktrees.
+Der Eintrag 11 (\type{lease-acquire}) nennt Branch und Ablauf, aber keinen Commit und keinen Zeiger.
+Die Einträge 12 und 13 sind \type{track} und \type{commit} des Agenten mit der Zeile
+\type{worktree notizen-agent};
+der Commit bewegt nur \type{agent-arbeit} und den Working-Copy-Commit des Worktrees.
+Der Eintrag 14 (\type{pr-open}) nennt Branch, Kopf und Reviewer und bewegt nichts.
+Das Arbeitsverzeichnis von Daniel und \type{main} bleiben, wie sie waren.
+
+Dann kommen die Prüfung und die Freigabe.
+Eine Prüfung gilt für das Paar aus dem getesteten Commit und der Spitze von \type{main}, auf die
+er gelegt wurde; \type{--base main} nennt diese Spitze.
+Der Agent schreibt zuerst selbst ein grünes Ergebnis.
+Die Freigabe durch den Agenten scheitert, und der Merge durch Daniel scheitert,
+weil das Gate das Ergebnis nicht zählt:
+
+\starttyping
+$ stemma check record agent-arbeit --base main --result pass --key ../keys/claude
+Recorded pass for bb8f06cf1089 in entry 15.
+$ stemma pr approve 14 --key ../keys/claude
+stemma: no approval of your own work: the reviewer opened the pull
+  request (pull request 14)
+$ cd ../notizen
+$ export STEMMA_ACTOR="human daniel"
+$ stemma pr merge 14
+stemma: no result of a check counts for pull request 14 at level 3
+  on the tip b3:8ca6…0cd7
+\stoptyping
+
+Die erste Ablehnung ist das Verbot, die eigene Arbeit freizugeben; es gilt auf jeder Stufe.
+Die zweite folgt aus der Unabhängigkeit der Prüfung:
+Auf den Stufen 2 und 3 zählt eine Prüfung nur, wenn ihr Schreiber weder den Pull Request
+eröffnet noch einen Commit der Änderung geschrieben hat und kein Sponsor eines dieser Akteure ist
+(ADR-019).
+Das Ergebnis des Agenten zählt also nicht, und ein Ergebnis von Daniel als Sponsor ebenso wenig.
+Ein \type{check} und ein \type{pr-approve} schreiben eine Datei \type{.stemma/proofs/<Nummer>},
+und die Ablehnungen schreiben nichts: Das Log bleibt bei Eintrag 15.
+Ana prüft und gibt frei:
+
+\starttyping
+$ export STEMMA_ACTOR="human ana"
+$ stemma check record agent-arbeit --base main --result pass --key ../keys/ana
+Recorded pass for bb8f06cf1089 in entry 16.
+$ stemma pr approve 14 --key ../keys/ana
+Approved the head of pull request 14.
+$ stemma pr list
+14 open agent-arbeit bb8f06cf1089 by agent claude model=opus-5-5
+  session=s1 sponsor=daniel approvals 1
+$ export STEMMA_ACTOR="human daniel"
+$ stemma pr merge 14
+Merged pull request 14 into main: d7918d8efff6 on top of 8ca6710700ac.
+$ stemma branch
+  agent-arbeit bb8f06cf1089 Agent: Gruss und Bibliothek
+* main         d7918d8efff6 Merge pull request 14 (agent-arbeit)
+\stoptyping
+
+Der Eintrag 17 ist die Freigabe, der Eintrag 18 \type{gate-merge} mit der Bewegung von \type{main}
+von \type{b3:8ca6…0cd7} nach \type{b3:d791…d510}, der Eintrag 19 \type{pr-merge}.
+Die Änderung landet als Squash-Commit auf der Spitze (ADR-006);
+\type{pr list} zeigt den Pull Request nun als \type{merged}.
+
+Das Gate bewegt nur \type{main}.
+Der Working-Copy-Commit und das Arbeitsverzeichnis des Haupt-Worktrees bleiben auf dem alten Stand:
+\type{src/lib.rs} fehlt, und \type{status} meldet ein sauberes Arbeitsverzeichnis.
+Ein \type{commit} lehnt ab, weil \type{main} und der Elternteil des Working-Copy-Commits
+auseinanderlaufen, und \type{rebase main} und \type{switch main} melden \quotation{Already up to
+date} und \quotation{Already on main}
+(in einem Probelauf geprüft, hier nicht abgedruckt).
+Den Haupt-Worktree zieht man nach, indem man HEAD von \type{main} löst und wieder setzt
+(\in{Abbildung}[fig:gate-catch-up]):
+
+\starttyping
+$ stemma switch --detach main
+Detached HEAD at main as entry 20
+To undo it: stemma op restore 20
+$ stemma switch main
+Switched to branch main as entry 21
+To undo it: stemma op restore 21
+$ ls src
+lib.rs  main.rs
+\stoptyping
+
+\startplacefigure[title={Der Haupt-Worktree holt \type{main} nach dem Merge-Gate ein},
+    reference=fig:gate-catch-up,location=here]
+\externalfigure[images/gate-catch-up.pdf][width=\textwidth]
+\stopplacefigure
+
+Der erste Wechsel bringt den Working-Copy-Commit und das Arbeitsverzeichnis auf die Spitze und
+setzt HEAD auf den Commit; der zweite setzt HEAD wieder auf den Branch.
+Beide schreiben je einen Eintrag (20 und 21) und lassen sich mit \type{op restore} zurücknehmen.
+Einen eigenen Befehl dafür gibt es noch nicht (siehe \in{Abschnitt}[sec:phase4-open]).
+
+{\bf Die Garantien.}
+Scheitert ein Befehl vor dem Gate, bleibt \type{main} unverändert;
+die abgelehnten Aufrufe oben schreiben keinen Eintrag und lassen sich wiederholen.
+Nach einem Absturz mitten im Gate gilt \in{Abschnitt}[sec:workflow-crash].
+\in{Abbildung}[fig:pull-request-flow] zeigt den Ablauf als Ganzes.
+
+\subsection[sec:workflow-lease]{Die Lease eines Agenten übernehmen}
+
+{\bf Die Lage.}
+Ein Agent hält die Lease eines Branches und reagiert nicht mehr.
+Wer den Branch weiterführen will, wartet auf den Ablauf der Lease, danach übernimmt jeder
+Schreiber sie, oder er erzwingt die Übernahme als Owner.
+Der Branch \type{ueberarbeitung} zeigt das Warten.
+Der Agent nimmt seine Lease mit einer Minute und tut dann nichts mehr.
+Eine Übernahme vor dem Ablauf lehnt der Kern ab, nach dem Ablauf gelingt sie ohne Zutun des
+Inhabers; zwischen den beiden Aufrufen von \type{lease take} liegt die eine Minute.
+
+{\bf Die Befehle.}
+
+\starttyping
+$ stemma branch ueberarbeitung
+Created branch ueberarbeitung at b3:d791…d510
+$ STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" \
+>     stemma lease take ueberarbeitung --minutes 1
+Took the lease of ueberarbeitung for 1 minutes.
+$ stemma lease take ueberarbeitung
+stemma: the branch `ueberarbeitung` is leased to agent claude
+  model=opus-5-5 session=s1 sponsor=daniel until 1795385144 (seconds since
+  the Unix epoch); it can be written after the expiry, or an owner can
+  override the lease
+$ stemma lease show ueberarbeitung
+ueberarbeitung: the lease of agent claude model=opus-5-5 session=s1
+  sponsor=daniel has expired; the next writer takes it over.
+$ stemma lease take ueberarbeitung
+Took the lease of ueberarbeitung for 60 minutes.
+\stoptyping
+
+Die Befehle schreiben die Einträge 22 (\type{branch}), 23 (\type{lease-acquire}) und 24
+(\type{lease-takeover}).
+Der Eintrag 24 nennt den bisherigen Inhaber und den Grund \type{expired}.
+Der abgelehnte Aufruf schreibt nichts, und \type{lease show} liest nur.
+Die Lease-Datei von \type{ueberarbeitung} nennt nun Daniel als Inhaber; sie wurde als Ganzes durch
+ein Umbenennen ersetzt (\in{Abbildung}[fig:lease-crash]).
+Der Inhalt des Branches und die Arbeit des Agenten bleiben, wie sie sind.
+
+Wer nicht warten will, braucht einen Owner-Override.
+Der Agent hält noch 59 Minuten die Lease von \type{agent-arbeit}.
+Daniel ist Owner und übernimmt sie, signiert und mit einer Begründung:
+
+\starttyping
+$ stemma lease show agent-arbeit
+agent-arbeit is held by agent claude model=opus-5-5 session=s1
+  sponsor=daniel, for 59 more minutes.
+$ stemma lease override agent-arbeit --reason "Agent reagiert nicht mehr" --key ../keys/daniel
+Took the lease of agent-arbeit over for 60 minutes.
+$ STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel" \
+>     stemma lease take agent-arbeit
+stemma: the branch `agent-arbeit` is leased to human daniel until
+  1795388747 (seconds since the Unix epoch); it can be written after the
+  expiry, or an owner can override the lease
+$ stemma op log -n 2
+25  2026-11-22T22:05:47Z  human daniel  lease-override
+    branch agent-arbeit  from agent claude model=opus-5-5 session=s1
+      sponsor=daniel  expires 2026-11-22T23:05:47Z  reason Agent reagiert
+      nicht mehr
+24  2026-11-22T22:05:47Z  human daniel  lease-takeover
+    branch ueberarbeitung  from agent claude model=opus-5-5 session=s1
+      sponsor=daniel  expires 2026-11-22T23:05:47Z  reason expired
+\stoptyping
+
+Der Eintrag 25 trägt die Begründung und eine Signatur; sie liegt als Beweis in
+\type{.stemma/proofs/000000000025}.
+Der Agent sieht von der Übernahme nur die Ablehnung seiner nächsten \type{lease take}.
+Ein Override verlangt einen Menschen mit der Rolle Owner im Register;
+er ändert weder Branch noch Arbeitsverzeichnis noch Working-Copy-Commit.
+
+{\bf Die Garantien.}
+Ein Absturz zwischen dem Eintrag und dem Ersetzen der Datei lässt die alte Lease zurück,
+und das Log nennt eine Übernahme, die nicht galt; die nächste Operation liest die Datei neu und
+entscheidet von vorn (\in{Abbildung}[fig:lease-crash]).
+Die Wiederholung eines Befehls, der abgelehnt wurde, ist unbedenklich.
+Wer eine Lease mit \type{lease take} wiederholt, die er schon hält, verlängert sie.
+
+\subsection[sec:workflow-crash]{Das Gate bricht ab, und eine rote Spitze wartet}
+
+{\bf Die Lage.}
+Der Branch \type{ergaenzung} hat eine geprüfte und freigegebene Änderung, und Daniel mergt sie.
+Die Branches \type{ergaenzung}, \type{naechste} und \type{reparatur} sind vorbereitet,
+mit je einem Commit; \type{ergaenzung} und \type{reparatur} ändern beide \type{README.md}.
+Mitten im Gate scheitert das Bewegen von \type{main}.
+Um das vorzuführen, lässt ein Testbau des Programms das Anlegen von Dateien im Verzeichnis der
+Branches scheitern (Variable \type{STEMMA_FAULT}, siehe \in{Kapitel}[chap:phase3]);
+ein Programm aus einem Release enthält sie nicht.
+
+{\bf Die Befehle.}
+
+\starttyping
+$ STEMMA_FAULT=write=.stemma/refs/heads stemma pr merge 31
+stemma: the entry of the move is written, but `main` did not move: could
+  not move the reference into place at `./.stemma/refs/heads/main`: injected
+  failure
+$ echo $?
+3
+$ stemma pr list
+14 merged agent-arbeit bb8f06cf1089 by agent claude model=opus-5-5
+  session=s1 sponsor=daniel
+31 open ergaenzung b0b23a0ce8ec by human daniel approvals 1
+$ stemma op log -n 1
+34  2026-11-22T22:05:47Z  human daniel  gate-merge
+    branch main  b3:d791…d510 -> b3:ec34…a6bc
+    ! the move did not take effect
+$ stemma pr merge 31
+Merged pull request 31 into main: dc51d0dec57a on top of d7918d8efff6.
+\stoptyping
+
+Das Gate schreibt den Eintrag 34 vor der Bewegung (Write-Ahead-Regel, ADR-011).
+Die Bewegung scheitert, also bleibt \type{main} stehen, der Pull Request offen,
+und der Eintrag trägt die Zeile \type{! the move did not take effect}.
+Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während der Rest nicht gelang.
+Der zweite Aufruf liest die Spitze neu, führt den Merge noch einmal aus und schreibt den Eintrag 35
+mit der Bewegung und den Eintrag 36 mit \type{pr-merge}.
+Der Squash-Commit hat darum eine andere ID als der des gescheiterten Versuchs;
+dessen Commit bleibt im Speicher, erreichbar vom Eintrag 34,
+denn es gibt keine Garbage Collection (ADR-007).
+\in{Abbildung}[fig:gate-crash] und \in{Abbildung}[fig:gate-pointers] zeigen die Absturzpunkte
+und den Reparaturweg, wenn der Prozess erst nach der Bewegung von \type{main} endet.
+
+Ein Merge, der die Tests bricht, ist ein anderer Fall: Das Gate erkennt ihn nicht,
+weil die Prüfungen vor dem Merge grün waren; erst die Prüfung nach dem Merge ist rot.
+Ana schreibt für die Spitze von \type{main} ein rotes Ergebnis ohne Basis,
+denn die Spitze selbst ist der getestete Commit.
+Ab dann landet auf Stufe 2 und 3 nur noch eine erklärte Behebung:
+
+\starttyping
+$ stemma check record main --result fail --key ../keys/ana
+Recorded fail for dc51d0dec57a in entry 37.
+$ stemma pr merge 45
+stemma: pull request 45 waits: the latest verified tip of `main` is red
+  since b3:dc51…cf74; only a repair of it lands at level 2 or 3
+$ stemma pr open reparatur --reviewer "human ana" --repairs main
+Opened pull request 53 for branch reparatur.
+$ stemma pr merge 53
+Merged pull request 53 into main: a62bafbaba4a on top of dc51d0dec57a.
+$ stemma pr list
+14 merged agent-arbeit bb8f06cf1089 by agent claude model=opus-5-5
+  session=s1 sponsor=daniel
+31 merged ergaenzung b0b23a0ce8ec by human daniel
+45 open naechste 3d04f7b3740f by human daniel approvals 1
+53 merged reparatur bfc65d63054b by human daniel
+\stoptyping
+
+Der Pull Request 45 wartet; der Aufruf schreibt nichts
+und lässt sich wiederholen, sobald die Spitze grün ist.
+Der Pull Request 53 nennt mit \type{--repairs main} die rote Spitze als den Commit, den er behebt.
+Eine Behebung landet nur, wenn ihr Merge die Dateien des roten Commits berührt
+und ein unabhängiger Schreiber das rote Ergebnis geschrieben hat;
+eine Behebung, die nur ihren Namen trägt, wartet wie jede andere Änderung (ADR-019).
+Hier ändert \type{reparatur} die Datei \type{README.md}, die auch \type{ergaenzung} geändert hat.
+Der Eintrag 53 (\type{pr-open}) nennt \type{repairs <Commit>}; die Einträge 54 und 55 sind Prüfung
+und Freigabe von Ana, die Einträge 56 und 57 \type{gate-merge} und \type{pr-merge}.
+
+{\bf Die Garantien.}
+Nach jedem Abbruch hat \type{main} entweder den alten oder den neuen Wert, nie einen halben.
+Ein offener Pull Request bleibt offen, bis \type{pr-merge} im Log steht, und der nächste Aufruf
+des Gates bucht einen Merge nach, dessen Bewegung schon stattgefunden hat.
+\type{op verify} bestätigt am Ende der Sitzung die Hash-Kette und die Beweise: Das Log hat
+57 Einträge, das Register ist gültig, und 11 Beweise halten gegen es.
+Nach einem Abbruch vor der Bewegung wiederholt der nächste Aufruf den Merge;
+nach einem Abbruch hinter ihr fehlt nur der Eintrag \type{pr-merge},
+den der nächste \type{pr merge} nachträgt.
+
+\in{Tabelle}[tab:phase4-workflow-effects] ordnet jedem Schritt der Sitzung zu, welche der vier
+Grössen er ändert.
+
+\startplacetable[title={Was die Schritte der Sitzung ändern},
+  reference=tab:phase4-workflow-effects,location=split]
+\startxtable[frame=off,split=yes,option=stretch]
+\startxtablehead
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Schritt} \stopxcell
+\startxcell {\bf Arbeitsverzeichnis} \stopxcell
+\startxcell {\bf Working-Copy-Commit} \stopxcell
+\startxcell {\bf Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\stopxtablehead
+\startxtablenext
+\startxrow[topframe=on,bottomframe=on]
+\startxcell {\bf Schritt} \stopxcell
+\startxcell {\bf Arbeitsverzeichnis} \stopxcell
+\startxcell {\bf Working-Copy-Commit} \stopxcell
+\startxcell {\bf Zeiger} \stopxcell
+\startxcell {\bf Operation Log} \stopxcell
+\stopxrow
+\stopxtablenext
+\startxrow
+\startxcell \type{lease take} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell keiner; die Lease-Datei entsteht \stopxcell
+\startxcell \type{lease-acquire} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{pr open} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell keiner \stopxcell
+\startxcell \type{pr-open} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{check record}, \type{pr approve} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell keiner; eine Beweisdatei \stopxcell
+\startxcell \type{check}, \type{pr-approve} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{pr merge} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert, nun veraltet \stopxcell
+\startxcell \type{main} \stopxcell
+\startxcell \type{gate-merge}, \type{pr-merge} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{switch --detach}, \type{switch} \stopxcell
+\startxcell Dateien der Spitze \stopxcell
+\startxcell neuer Commit auf der Spitze \stopxcell
+\startxcell HEAD \stopxcell
+\startxcell zwei Einträge \type{switch} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{lease take} nach Ablauf \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell keiner; die Lease-Datei wechselt den Inhaber \stopxcell
+\startxcell \type{lease-takeover} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{lease override} \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell keiner; die Lease-Datei wechselt den Inhaber \stopxcell
+\startxcell \type{lease-override}, mit Beweis \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Gate scheitert beim Bewegen \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell unverändert \stopxcell
+\startxcell keiner \stopxcell
+\startxcell \type{gate-merge} ohne Wirkung \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+
 \section[sec:phase4-open]{Offene Fragen}
 
 \startitemize
@@ -1123,6 +1580,10 @@ Ein Owner ändert jeden Eintrag, jeder andere nur den eigenen.
 (offener Punkt in ADR-019).
 Ein billigerer Test als der saubere Merge ist ausserhalb des Umfangs der ersten Version.
 \item Lease: Die schreibenden Befehle erwerben und erneuern sie noch nicht.
+\item Merge-Gate: Es bewegt nur \type{main}. Der Haupt-Worktree holt die Spitze mit
+\type{switch --detach main} und \type{switch main} nach; ein eigener Weg fehlt.
+\item Register: Kein Befehl nimmt einen weiteren Menschen auf;
+der Owner ergänzt die Datei von Hand.
 \item Register: Die Befehle des Programms übergeben den Autorisierer des Registers nicht;
 sie prüfen den Akteur im durchsetzenden Modus noch nicht.
 \item Policy: \type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige

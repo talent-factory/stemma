@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 400" font-family="Helvetica, Arial, sans-serif">
+<title>Der Haupt-Worktree holt main nach dem Merge-Gate ein</title>
+<rect x="0" y="0" width="840" height="400" fill="#FFFFFF"/>
+<text x="20" y="24" font-size="12" font-weight="bold" fill="#0F172A">Vor dem Gate</text>
+<text x="20" y="40" font-size="12" fill="#64748B"></text>
+<rect x="20" y="56" width="240" height="56" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="30" y="74" font-size="12" font-weight="bold" fill="#2F7D32">Branch main</text>
+<text x="30" y="92" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:8ca6…0cd7</text>
+<rect x="20" y="128" width="240" height="72" rx="4" fill="#FFFFFF" stroke="#B45309" stroke-width="1.5"/>
+<text x="30" y="146" font-size="12" font-weight="bold" fill="#B45309">Working-Copy-Commit</text>
+<text x="30" y="164" font-size="12" font-family="Courier, monospace" fill="#0F172A">Elternteil</text>
+<text x="30" y="180" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:8ca6…0cd7</text>
+<rect x="20" y="216" width="240" height="56" rx="4" fill="#FFFFFF" stroke="#2B6CB0" stroke-width="1.5"/>
+<text x="30" y="234" font-size="12" font-weight="bold" fill="#2B6CB0">Arbeitsverzeichnis</text>
+<text x="30" y="252" font-size="12" font-family="Courier, monospace" fill="#0F172A">main.rs</text>
+<text x="264" y="150" font-size="16" fill="#64748B">→</text>
+<text x="290" y="24" font-size="12" font-weight="bold" fill="#0F172A">Nach pr merge 14</text>
+<text x="290" y="40" font-size="12" fill="#64748B">Einträge 18 und 19</text>
+<rect x="290" y="56" width="240" height="56" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="300" y="74" font-size="12" font-weight="bold" fill="#2F7D32">Branch main</text>
+<text x="300" y="92" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:d791…d510</text>
+<rect x="290" y="128" width="240" height="72" rx="4" fill="#FFFFFF" stroke="#B45309" stroke-width="1.5"/>
+<text x="300" y="146" font-size="12" font-weight="bold" fill="#B45309">Working-Copy-Commit</text>
+<text x="300" y="164" font-size="12" font-family="Courier, monospace" fill="#0F172A">Elternteil</text>
+<text x="300" y="180" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:8ca6…0cd7</text>
+<rect x="290" y="216" width="240" height="56" rx="4" fill="#FFFFFF" stroke="#2B6CB0" stroke-width="1.5"/>
+<text x="300" y="234" font-size="12" font-weight="bold" fill="#2B6CB0">Arbeitsverzeichnis</text>
+<text x="300" y="252" font-size="12" font-family="Courier, monospace" fill="#0F172A">main.rs</text>
+<text x="290" y="296" font-size="12" font-weight="bold" fill="#64748B">main und Elternteil weichen ab:</text>
+<text x="290" y="312" font-size="12" fill="#64748B"><tspan font-family="Courier, monospace">commit</tspan> lehnt ab, <tspan font-family="Courier, monospace">rebase main</tspan></text>
+<text x="290" y="328" font-size="12" fill="#64748B">und <tspan font-family="Courier, monospace">switch main</tspan> ändern nichts.</text>
+<text x="534" y="150" font-size="16" fill="#64748B">→</text>
+<text x="560" y="24" font-size="12" font-weight="bold" fill="#0F172A">Nach switch --detach, switch</text>
+<text x="560" y="40" font-size="12" fill="#64748B">Einträge 20 und 21</text>
+<rect x="560" y="56" width="240" height="56" rx="4" fill="#FFFFFF" stroke="#2F7D32" stroke-width="1.5"/>
+<text x="570" y="74" font-size="12" font-weight="bold" fill="#2F7D32">Branch main</text>
+<text x="570" y="92" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:d791…d510</text>
+<rect x="560" y="128" width="240" height="72" rx="4" fill="#FFFFFF" stroke="#B45309" stroke-width="1.5"/>
+<text x="570" y="146" font-size="12" font-weight="bold" fill="#B45309">Working-Copy-Commit</text>
+<text x="570" y="164" font-size="12" font-family="Courier, monospace" fill="#0F172A">Elternteil</text>
+<text x="570" y="180" font-size="12" font-family="Courier, monospace" fill="#0F172A">b3:d791…d510</text>
+<rect x="560" y="216" width="240" height="56" rx="4" fill="#FFFFFF" stroke="#2B6CB0" stroke-width="1.5"/>
+<text x="570" y="234" font-size="12" font-weight="bold" fill="#2B6CB0">Arbeitsverzeichnis</text>
+<text x="570" y="252" font-size="12" font-family="Courier, monospace" fill="#0F172A">lib.rs, main.rs</text>
+<text x="560" y="296" font-size="12" font-weight="bold" fill="#64748B">Elternteil und Dateien folgen main;</text>
+<text x="560" y="312" font-size="12" fill="#64748B">ein <tspan font-family="Courier, monospace">commit</tspan> ist wieder möglich.</text>
+<text x="20" y="352" font-size="12" fill="#64748B">Das Gate bewegt nur main. Der Working-Copy-Commit und das Arbeitsverzeichnis des Haupt-Worktrees bleiben stehen,</text>
+<text x="20" y="368" font-size="12" fill="#64748B">bis ein Wechsel auf die Spitze sie nachzieht. Der Eintrag des Gates ist <tspan font-family="Courier, monospace">gate-merge</tspan> (Eintrag 18), danach <tspan font-family="Courier, monospace">pr-merge</tspan> (19).</text>
+</svg>
