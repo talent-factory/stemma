@@ -32,7 +32,7 @@ erwerben und erneuern sie noch nicht (\in{Abschnitt}[sec:phase4-open]).
 Ein Agent, der seine eigene Änderung freigibt, prüft nichts;
 das Selbstfreigabeverbot schliesst den Eröffner und jeden Schreiber eines Commits
 der Änderung aus, und die Neuzählung prüft jede Freigabe noch einmal,
-auch wenn ein Eintrag von anderer Hand stammen könnte (\in{Kapitel}[chap:phase4]).
+weil ein Eintrag von anderer Hand stammen könnte (\in{Kapitel}[chap:phase4]).
 Ein Mensch kann nicht jede Änderung gleich genau prüfen;
 die Risikostufen legen fest, wie viele Freigaben ein Pfad verlangt
 und ab wann ein Mensch entscheidet (\in{Abschnitt}[sec:policy-file]).
@@ -344,7 +344,7 @@ wie bei den Ausgängen weiter oben \stopxcell
 \startxrow
 \startxcell Domänentrennung der signierten Bytes: vor der Nutzlast stehen Kennung, Typ und Version
 in drei Zeilen, dazu ein einziger Namensraum für alle Beweise; eine Signatur für einen Typ oder
-eine Version gilt nie für einen anderen, und die Nutzlast beginnt nach der dritten Zeilenumbruch,
+eine Version gilt nie für einen anderen, und die Nutzlast beginnt nach dem dritten Zeilenumbruch,
 sodass die Trennung eindeutig ist; Kosten linear in der Länge der Nutzlast \stopxcell
 \startxcell \type{signed_bytes}, \type{sign}, \type{verify} (\type{signature.rs}),
 \type{approval_payload} (\type{pull.rs}) \stopxcell
