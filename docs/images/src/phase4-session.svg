@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 858" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 874" font-family="Helvetica, Arial, sans-serif">
 <title>Die Sitzung der Phase 4: Daniel, der Agent und Ana</title>
 <rect x="0" y="0" width="840" height="858" fill="#FFFFFF"/>
 <text x="20" y="38" font-size="12" font-weight="bold" fill="#6B46C1">Eintrag</text>
@@ -83,6 +83,7 @@
 <circle cx="250" cy="758" r="7" stroke="#6B46C1" stroke-width="1.5" fill="#FFFFFF"/>
 <text x="264" y="755" font-size="12" font-family="Courier, monospace" font-weight="bold" fill="#0F172A">pr merge 53</text>
 <text x="264" y="769" font-size="12" fill="#64748B">Reparatur landet</text>
-<text x="20" y="832" font-size="12" fill="#64748B">Ein Punkt steht für einen oder mehrere Einträge im Operation Log, auf der Spur des Akteurs. Rot: der Befehl bricht ab. Es fehlen die Einträge, die nur Branches und Commits vorbereiten (26–33, 38–52).</text>
-<text x="20" y="848" font-size="12" fill="#64748B">Die Einträge nennen sich im Log etwa lease-acquire, lease-takeover, lease-override, pr-open, check, pr-approve, gate-merge und pr-merge.</text>
+<text x="20" y="832" font-size="12" fill="#64748B">Ein Punkt steht für einen oder mehrere Einträge im Operation Log, auf der Spur des Akteurs.</text>
+<text x="20" y="848" font-size="12" fill="#64748B">Rot: der Befehl bricht ab. Es fehlen die Einträge für Branches, Commits, Prüfungen und Freigaben (26–33, 38–44, 46–52).</text>
+<text x="20" y="864" font-size="12" fill="#64748B">Die Einträge nennen sich im Log etwa lease-acquire, lease-takeover, lease-override, pr-open, check, pr-approve, gate-merge und pr-merge.</text>
 </svg>

@@ -1125,7 +1125,7 @@ Daniel nimmt es in den durchsetzenden Modus (\type{enforce}), legt das Register 
 Agenten \type{claude} mit seinem Schlüssel ein; Daniel ist sein Sponsor.
 Ana ist als zweite Person eingetragen und prüft.
 Das Programm hat noch keinen Befehl, der einen weiteren Menschen aufnimmt;
-der Owner hat seinen Eintrag in \type{.stemma-actors/register} von Hand ergänzt,
+der Owner hat den Eintrag von Ana in \type{.stemma-actors/register} von Hand ergänzt,
 in der Reihenfolge, die die Datei verlangt, und ihn wie jede Änderung des Registers committet.
 Damit schreibt die Sitzung die Einträge 1 bis 9: die zwei Commits aus
 \in{Kapitel}[chap:phase1] und die Einrichtung des Registers.
@@ -1187,7 +1187,8 @@ Die Grenzen stehen in \in{Abschnitt}[sec:phase4-open].
 {\bf Die Lage.}
 Der Agent arbeitet im Worktree \type{notizen-agent} auf dem Branch \type{agent-arbeit}.
 Die Änderung soll auf \type{main}, und \type{main} ändert sich nur durch einen Pull Request.
-Weil der Agent sie geschrieben hat, darf weder er noch sein Sponsor sie prüfen oder freigeben.
+Weil der Agent sie geschrieben hat, darf er sie weder freigeben noch prüfen;
+für die Prüfung gilt das auch für seinen Sponsor (ADR-019).
 
 {\bf Die Befehle.}
 Daniel legt den Worktree an und macht den Agenten zu seinem Eigentümer.
@@ -1196,9 +1197,8 @@ Der Agent nimmt die Lease, schreibt eine Datei und committet sie, und eröffnet 
 \starttyping
 $ stemma worktree add -b agent-arbeit ../notizen-agent \
 >     --owner "agent claude model=opus-5-5 session=s1 sponsor=daniel"
-Added the worktree notizen-agent in /home/daniel/notizen-agent on the new
-  branch
-  agent-arbeit as entry 10
+Added the worktree notizen-agent in /home/daniel/notizen-agent
+  on the new branch agent-arbeit as entry 10
 Owner: agent claude model=opus-5-5 session=s1 sponsor=daniel
 $ cd ../notizen-agent
 $ export STEMMA_ACTOR="agent claude model=opus-5-5 session=s1 sponsor=daniel"
@@ -1245,15 +1245,13 @@ weil das Gate das Ergebnis nicht zählt:
 $ stemma check record agent-arbeit --base main --result pass --key ../keys/claude
 Recorded pass for bb8f06cf1089 in entry 15.
 $ stemma pr approve 14 --key ../keys/claude
-stemma: no approval of your own work: the reviewer opened the pull request
-  (pull
-  request 14)
+stemma: no approval of your own work: the reviewer opened the pull
+  request (pull request 14)
 $ cd ../notizen
 $ export STEMMA_ACTOR="human daniel"
 $ stemma pr merge 14
-stemma: no result of a check counts for pull request 14 at level 3 on the
-  tip
-  b3:8ca6…0cd7
+stemma: no result of a check counts for pull request 14 at level 3
+  on the tip b3:8ca6…0cd7
 \stoptyping
 
 Die erste Ablehnung ist das Verbot, die eigene Arbeit freizugeben; es gilt auf jeder Stufe.
@@ -1274,8 +1272,7 @@ $ stemma pr approve 14 --key ../keys/ana
 Approved the head of pull request 14.
 $ stemma pr list
 14 open agent-arbeit bb8f06cf1089 by agent claude model=opus-5-5
-  session=s1
-  sponsor=daniel approvals 1
+  session=s1 sponsor=daniel approvals 1
 $ export STEMMA_ACTOR="human daniel"
 $ stemma pr merge 14
 Merged pull request 14 into main: d7918d8efff6 on top of 8ca6710700ac.
@@ -1411,7 +1408,7 @@ Die Branches \type{ergaenzung}, \type{naechste} und \type{reparatur} sind vorber
 mit je einem Commit; \type{ergaenzung} und \type{reparatur} ändern beide \type{README.md}.
 Mitten im Gate scheitert das Bewegen von \type{main}.
 Um das vorzuführen, lässt ein Testbau des Programms das Anlegen von Dateien im Verzeichnis der
-Branches scheitern (Variable \type{STEMMA_FAULT}, siehe Kapitel \in{}[chap:phase3]);
+Branches scheitern (Variable \type{STEMMA_FAULT}, siehe \in{Kapitel}[chap:phase3]);
 ein Programm aus einem Release enthält sie nicht.
 
 {\bf Die Befehle.}
@@ -1442,7 +1439,8 @@ Exit-Code 3 meldet einen Eintrag, der geschrieben ist, während der Rest nicht g
 Der zweite Aufruf liest die Spitze neu, führt den Merge noch einmal aus und schreibt den Eintrag 35
 mit der Bewegung und den Eintrag 36 mit \type{pr-merge}.
 Der Squash-Commit hat darum eine andere ID als der des gescheiterten Versuchs;
-dessen Objekte bleiben unreferenziert im Speicher, bis ein Purge sie abräumt.
+dessen Commit bleibt im Speicher, erreichbar vom Eintrag 34,
+denn es gibt keine Garbage Collection (ADR-007).
 \in{Abbildung}[fig:gate-crash] und \in{Abbildung}[fig:gate-pointers] zeigen die Absturzpunkte
 und den Reparaturweg, wenn der Prozess erst nach der Bewegung von \type{main} endet.
 
@@ -1457,7 +1455,7 @@ $ stemma check record main --result fail --key ../keys/ana
 Recorded fail for dc51d0dec57a in entry 37.
 $ stemma pr merge 45
 stemma: pull request 45 waits: the latest verified tip of `main` is red
-  since b3:dc51…f74; only a repair of it lands at level 2 or 3
+  since b3:dc51…cf74; only a repair of it lands at level 2 or 3
 $ stemma pr open reparatur --reviewer "human ana" --repairs main
 Opened pull request 53 for branch reparatur.
 $ stemma pr merge 53
@@ -1488,7 +1486,7 @@ des Gates bucht einen Merge nach, dessen Bewegung schon stattgefunden hat.
 57 Einträge, das Register ist gültig, und 11 Beweise halten gegen es.
 Nach einem Abbruch vor der Bewegung wiederholt der nächste Aufruf den Merge;
 nach einem Abbruch hinter ihr fehlt nur der Eintrag \type{pr-merge},
-den der Reparaturweg nachträgt.
+den der nächste \type{pr merge} nachträgt.
 
 \in{Tabelle}[tab:phase4-workflow-effects] ordnet jedem Schritt der Sitzung zu, welche der vier
 Grössen er ändert.
