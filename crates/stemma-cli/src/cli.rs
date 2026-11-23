@@ -4580,15 +4580,20 @@ fn write_register(path: &Path, register: &Register) -> Result<(), CliError> {
 }
 
 fn parse_agent(id: &str, flag: &str) -> Result<Identity, CliError> {
-    format!("agent {id}")
-        .parse::<Identity>()
-        .map_err(|error| CliError::Register(format!("{flag} {id:?}: {error}")))
+    parse_identifier("agent", id, flag)
 }
 
 fn parse_human(id: &str, flag: &str) -> Result<Identity, CliError> {
-    format!("human {id}")
-        .parse::<Identity>()
-        .map_err(|error| CliError::Register(format!("{flag} {id:?}: {error}")))
+    parse_identifier("human", id, flag)
+}
+
+/// The identity of a flag that takes the bare identifier, without the kind in front of it.
+fn parse_identifier(kind: &str, id: &str, flag: &str) -> Result<Identity, CliError> {
+    format!("{kind} {id}").parse::<Identity>().map_err(|_| {
+        CliError::Register(format!(
+            "{flag} {id:?}: expected an identifier of visible ASCII without a space"
+        ))
+    })
 }
 
 fn parse_agent_role(text: &str) -> Result<Role, CliError> {
@@ -4698,12 +4703,9 @@ fn register_add_human(args: RegisterAddHumanArgs, out: &mut dyn Write) -> Result
         .add_human(human.clone(), role, key)
         .map_err(|error| CliError::Register(error.to_string()))?;
     write_register(&path, &register)?;
-    let role = match role {
-        Role::Owner => "owner",
-        Role::Member => "member",
-    };
     let line = format!(
-        "Added {human} as {role} to {}; commit the file.\n",
+        "Added {human} as {} to {}; commit the file.\n",
+        role.name(),
         register::FILE
     );
     out.write_all(line.as_bytes())

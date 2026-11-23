@@ -223,7 +223,8 @@ pub enum Role {
 }
 
 impl Role {
-    const fn name(self) -> &'static str {
+    /// The word of the role in the register file: `owner` or `member`.
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Owner => "owner",
             Self::Member => "member",
