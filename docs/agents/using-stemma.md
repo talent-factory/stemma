@@ -158,10 +158,10 @@ an enforcing repository whose register lists more than one identity. So:
 An agent does not call `enforce` and `register`:
 
 - `enforce` accepts only a human actor, and the step has no way back.
-- `register add-key`, `retire`, `revoke`, and `add-agent` change the register file, a file of
-  level 3 (ADR-004): only a human with the role owner approves the change, and the entry of
-  another identity only an owner changes. `register cosign` needs a human sponsor and ends with
-  exit code 1 for an agent.
+- `register add-key`, `retire`, `revoke`, `add-human`, and `add-agent` change the register file,
+  a file of level 3 (ADR-004): only a human with the role owner approves the change, and the
+  entry of another identity only an owner changes. `register cosign` needs a human sponsor and
+  ends with exit code 1 for an agent.
 - If the agent has no entry in the register, report it to the human: the sponsor runs
   `register cosign`, and an owner runs `register add-agent`. If its key is no longer active, an
   owner adds a new one with `register add-key --identity "agent <id>"`; `add-agent` fails for an

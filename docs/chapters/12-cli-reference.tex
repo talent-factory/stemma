@@ -2943,13 +2943,15 @@ stemma op restore 13 -C projekt --actor "human daniel"
 \section{register}
 
 Ändert das Akteursregister eines durchsetzenden Repositories (\in{Abschnitt}[sec:register]):
-Ein Schlüssel kommt hinzu, wird ausgemustert oder widerrufen, oder ein Agent bekommt einen
-Eintrag.
+Ein Schlüssel kommt hinzu, wird ausgemustert oder widerrufen, oder ein weiterer Mensch
+oder ein Agent bekommt einen Eintrag.
 
 \starttyping
 stemma register add-key [-C VERZEICHNIS] [--identity IDENTITÄT] --actor AKTEUR SCHLÜSSELDATEI
 stemma register retire [-C VERZEICHNIS] [--identity IDENTITÄT] --actor AKTEUR SCHLÜSSELDATEI
 stemma register revoke [-C VERZEICHNIS] [--identity IDENTITÄT] --actor AKTEUR SCHLÜSSELDATEI
+stemma register add-human [-C VERZEICHNIS] --human KENNUNG [--role ROLLE] --actor AKTEUR
+        SCHLÜSSELDATEI
 stemma register cosign --agent KENNUNG [--role ROLLE] --actor AKTEUR SCHLÜSSELDATEI
 stemma register add-agent [-C VERZEICHNIS] --agent KENNUNG --sponsor KENNUNG [--role ROLLE]
         --cosign SIGNATURDATEI --actor AKTEUR SCHLÜSSELDATEI
@@ -2962,17 +2964,20 @@ Standard ist das aktuelle.
 \item {\bf \type{--identity} IDENTITÄT:} Die Identität, der der Schlüssel gehört, als
 \type{human <Kennung>} oder \type{agent <Kennung>}. Standard ist der Akteur.
 Den Eintrag einer anderen Identität ändert nur ein Owner.
+\item {\bf \type{--human} KENNUNG:} Die Kennung des neuen Menschen (\type{add-human}).
 \item {\bf \type{--agent} KENNUNG:} Die Kennung des Agenten (\type{cosign}, \type{add-agent}).
 \item {\bf \type{--sponsor} KENNUNG:} Die Kennung des menschlichen Sponsors (\type{add-agent}).
-\item {\bf \type{--role} ROLLE:} Die Rolle des Agenten. Standard und einziger Wert ist
-\type{member}: Ein Agent ist nie Owner.
+\item {\bf \type{--role} ROLLE:} Die Rolle des Eintrags. Standard ist \type{member}.
+Bei \type{add-human} ist auch \type{owner} erlaubt;
+bei einem Agenten ist \type{member} der einzige Wert: Ein Agent ist nie Owner.
 \item {\bf \type{--cosign} SIGNATURDATEI:} Die Signatur, die \type{register cosign} ausgab.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
 Bei \type{cosign} ist SCHLÜSSELDATEI der Schlüssel des Sponsors für \type{ssh-keygen -Y sign}
 (der private Schlüssel, oder der öffentliche, wenn \type{ssh-agent} ihn hält),
-bei \type{add-agent} die Datei des öffentlichen Schlüssels des Agenten.
+bei \type{add-agent} die Datei des öffentlichen Schlüssels des Agenten
+und bei \type{add-human} die des neuen Menschen.
 
 {\bf Verhalten.} Der Befehl ändert die Datei \type{.stemma-actors/register} im
 Arbeitsverzeichnis und schreibt sie neu; er legt weder einen Commit noch einen Eintrag im Log an.
@@ -2986,6 +2991,13 @@ Die Ausgabe nennt die Identität, die Nummer und die Datei, die noch einen Commi
 ab derselben Nummer, und die Ausgabe nennt jeden dieser Agenten.
 \type{cosign} schreibt nichts in das Repository: Der Sponsor ist der Akteur und muss ein Mensch
 sein; die Signatur geht auf die Standardausgabe.
+\type{add-human} legt den Eintrag eines weiteren Menschen mit seiner Rolle und seinem
+Schlüssel an, an der Stelle, die die Reihenfolge der Datei verlangt (Menschen vor Agenten,
+dann nach Kennung); nur ein Owner tut das.
+Der Befehl verlangt keine Signatur: Der Beweis ist die Freigabe des Commits durch den Owner,
+und der neue Mensch zeichnet nicht mit.
+Die Ausgabe ist eine Zeile der Form
+\type{Added human ana as member to .stemma-actors/register; commit the file.}
 \type{add-agent} legt den Eintrag des Agenten mit seinem Sponsor, der Signatur
 und dem Schlüssel an; nur ein Owner tut das.
 
@@ -2995,6 +3007,10 @@ und dem Schlüssel an; nur ein Owner tut das.
 andere Identität nennt, wenn die Identität oder der Schlüssel im Register fehlt,
 wenn der Schlüssel schon im Register steht, nicht mehr aktiv oder schon widerrufen ist
 und wenn kein Owner mit einem aktiven Schlüssel übrig bliebe.
+Bei \type{add-human} kommen hinzu: der Akteur ist kein Owner (auch ein Mensch ohne Eintrag oder
+ein Agent), die Kennung hat schon einen Eintrag, der Schlüssel steht schon in einem Eintrag,
+die Schlüsseldatei fehlt oder enthält keinen Ed25519-Schlüssel, die Rolle ist weder
+\type{member} noch \type{owner}, und das Register hat schon 256 Einträge.
 Bei \type{add-agent} kommen hinzu: der Akteur ist kein Owner, der Agent hat schon einen Eintrag,
 der Sponsor fehlt im Register oder ist ein Agent, die Rolle ist \type{owner} oder übersteigt die
 des Sponsors, und die Signatur gehört zu keinem aktiven Schlüssel des Sponsors oder nicht zu
@@ -3002,10 +3018,15 @@ diesem Agenten, dieser Rolle und diesem Sponsor.
 \type{cosign} endet mit Exit-Code 1, wenn der Akteur ein Agent ist oder \type{ssh-keygen}
 nicht signiert.
 Ein Register, das sich nicht lesen lässt, endet mit Exit-Code 5.
+Dazu gehört eine Datei, in der jemand einen Eintrag von Hand an die falsche Stelle gesetzt hat:
+Der Leser nimmt nur die sortierte Fassung an, und kein Befehl ordnet sie nachträglich.
+Ein Eintrag, den noch kein Commit trägt, zählt für keine Prüfung:
+Es gilt das Register des Basis-Commits.
 
-{\bf Wiederholung.} Ein zweiter Aufruf von \type{add-key}, \type{retire}, \type{revoke} oder
-\type{add-agent} mit denselben Argumenten endet mit Exit-Code 1 und ändert nichts, denn der
-Schlüssel oder der Agent steht schon im Register oder ist nicht mehr aktiv.
+{\bf Wiederholung.} Ein zweiter Aufruf von \type{add-key}, \type{retire}, \type{revoke},
+\type{add-human} oder \type{add-agent} mit denselben Argumenten endet mit Exit-Code 1
+und ändert nichts, denn der Schlüssel, der Mensch oder der Agent steht schon im Register
+oder ist nicht mehr aktiv.
 Ein Absturz während des Schreibens lässt die Datei ganz alt oder ganz neu zurück (atomares
 Ersetzen). Bleibt dabei die temporäre Datei \type{.stemma-actors/register.tmp} liegen, endet jeder
 weitere Aufruf mit Exit-Code 1, bis man sie von Hand löscht.
@@ -3017,6 +3038,7 @@ weitere Aufruf mit Exit-Code 1, bis man sie von Hand löscht.
 stemma register add-key neu.pub --actor "human daniel"
 stemma register retire alt.pub --actor "human daniel"
 stemma register revoke mia.pub --identity "human mia" --actor "human daniel"
+stemma register add-human mia.pub --human mia --actor "human daniel"
 stemma register cosign ~/.ssh/mia --agent bot --actor "human mia" > bot.sig
 stemma register add-agent bot.pub --agent bot --sponsor mia --cosign bot.sig --actor "human daniel"
 \stoptyping

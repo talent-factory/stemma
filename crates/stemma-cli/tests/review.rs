@@ -264,17 +264,18 @@ fn enforcing(owner_key: &str, other_key: &str) -> Dir {
             &format!("{owner_key}.pub"),
         ],
     );
-    // The register has no command that adds a second human, so the file is written as it is read.
-    let register = dir.path().join(REGISTER);
-    let other_pub = fs::read_to_string(format!("{other_key}.pub")).unwrap();
-    let mut text = fs::read_to_string(&register).unwrap();
-    let key = other_pub
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ");
-    text.push_str(&format!("entry human other member\nkey {key} active\n"));
-    fs::write(&register, text).unwrap();
+    ok(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &format!("{other_key}.pub"),
+            "--human",
+            "other",
+            "--actor",
+            ACTOR,
+        ],
+    );
     track_ok(dir.path(), REGISTER);
     ok(dir.path(), &["commit", "-m", "register", "--actor", ACTOR]);
     ok(dir.path(), &["branch", "feat", "--actor", ACTOR]);

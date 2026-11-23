@@ -698,6 +698,270 @@ fn a_co_signature_of_a_key_that_is_not_the_sponsors_is_refused() {
     );
 }
 
+#[test]
+fn an_owner_adds_a_further_human_with_their_key() {
+    let (dir, keys) = enforcing();
+    commit_register(dir.path());
+    let ana = key_file(&keys, "ana.pub", OTHER_KEY);
+    let before = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    // Neither an agent nor a human without the role owner adds a human, not even themselves.
+    for actor in [AGENT, "human ana"] {
+        let result = run(
+            dir.path(),
+            &[
+                "register",
+                "add-human",
+                &ana,
+                "--human",
+                "ana",
+                "--actor",
+                actor,
+            ],
+        );
+        assert_eq!(result.code, 1, "{}", result.stdout);
+        assert!(
+            result.stderr.contains("is not an owner"),
+            "{}",
+            result.stderr
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        before
+    );
+    let added = ok(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &ana,
+            "--human",
+            "ana",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(
+        added.stdout,
+        format!("Added human ana as member to {REGISTER}; commit the file.\n")
+    );
+    // The entry stands where the order of the file puts it, before the one of Daniel.
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        format!(
+            "stemma-register 1\nentry human ana member\nkey {OTHER_KEY} active\n\
+             entry human daniel owner\nkey {OWNER_KEY} active\n"
+        )
+    );
+    // The commit that carries the entry is valid, and the second add is refused.
+    commit_register(dir.path());
+    ok(dir.path(), &["op", "verify"]);
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &ana,
+            "--human",
+            "ana",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("has an entry for human ana already"),
+        "{}",
+        result.stderr
+    );
+    // A member is no owner: Ana changes her own entry and adds nobody.
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &ana,
+            "--human",
+            "zoe",
+            "--actor",
+            "human ana",
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("is not an owner"),
+        "{}",
+        result.stderr
+    );
+}
+
+#[test]
+fn a_further_human_that_cannot_be_added_leaves_the_register_as_it_was() {
+    let (dir, keys) = enforcing();
+    commit_register(dir.path());
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    let other = key_file(&keys, "other.pub", OTHER_KEY);
+    let bad = keys.path().join("bad.pub");
+    fs::write(&bad, "ssh-rsa AAAA nonsense\n").unwrap();
+    let bad = bad.to_str().unwrap();
+    let missing = keys.path().join("missing.pub");
+    let missing = missing.to_str().unwrap();
+    let before = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    for (key, human, role, message) in [
+        // The identity has an entry.
+        (
+            other.as_str(),
+            "daniel",
+            "member",
+            "has an entry for human daniel already",
+        ),
+        // The key speaks for Daniel, and a key names one identity.
+        (owner.as_str(), "ana", "member", "holds that key already"),
+        // The key file is the proof of the key: it must be there and hold an Ed25519 key.
+        (bad, "ana", "member", "the key file"),
+        (missing, "ana", "member", "cannot read the key file"),
+        (
+            other.as_str(),
+            "ana",
+            "admin",
+            "expected `member` or `owner`",
+        ),
+        (other.as_str(), "an a", "member", "--human"),
+    ] {
+        let result = run(
+            dir.path(),
+            &[
+                "register",
+                "add-human",
+                key,
+                "--human",
+                human,
+                "--role",
+                role,
+                "--actor",
+                ACTOR,
+            ],
+        );
+        assert_eq!(result.code, 1, "{human} {role}: {}", result.stdout);
+        assert!(result.stderr.contains(message), "{}", result.stderr);
+        assert_eq!(
+            fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+            before
+        );
+    }
+    // Without the identifier or the key file it is a usage error.
+    let result = run(
+        dir.path(),
+        &["register", "add-human", &other, "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 2, "{}", result.stdout);
+    let result = run(
+        dir.path(),
+        &["register", "add-human", "--human", "ana", "--actor", ACTOR],
+    );
+    assert_eq!(result.code, 2, "{}", result.stdout);
+}
+
+#[test]
+fn an_owner_adds_a_second_owner_who_then_changes_the_register() {
+    let (dir, keys) = enforcing();
+    commit_register(dir.path());
+    let zoe = key_file(&keys, "zoe.pub", OTHER_KEY);
+    let added = ok(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &zoe,
+            "--human",
+            "zoe",
+            "--role",
+            "owner",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert!(
+        added.stdout.contains("Added human zoe as owner"),
+        "{}",
+        added.stdout
+    );
+    let text = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    assert!(
+        text.ends_with(&format!("entry human zoe owner\nkey {OTHER_KEY} active\n")),
+        "{text}"
+    );
+    // With a second owner key the first one can go.
+    let owner = key_file(&keys, "owner.pub", OWNER_KEY);
+    ok(
+        dir.path(),
+        &[
+            "register",
+            "retire",
+            &owner,
+            "--identity",
+            "human daniel",
+            "--actor",
+            "human zoe",
+        ],
+    );
+}
+
+#[test]
+fn add_human_refuses_a_register_in_the_wrong_order_as_damage() {
+    let (dir, keys) = enforcing();
+    commit_register(dir.path());
+    let zoe = key_file(&keys, "zoe.pub", OTHER_KEY);
+    // Written by hand: Ana stands after Daniel, which the reader does not accept.
+    let unsorted = format!(
+        "stemma-register 1\nentry human daniel owner\nkey {OWNER_KEY} active\n\
+         entry human ana member\nkey {OTHER_KEY} active\n"
+    );
+    fs::write(dir.path().join(REGISTER), &unsorted).unwrap();
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &zoe,
+            "--human",
+            "zoe",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 5, "{}", result.stdout);
+    assert_eq!(
+        fs::read_to_string(dir.path().join(REGISTER)).unwrap(),
+        unsorted
+    );
+}
+
+#[test]
+fn add_human_needs_an_enforcing_repository() {
+    let dir = common::repository();
+    let keys = Dir::new();
+    let key = key_file(&keys, "ana.pub", OTHER_KEY);
+    let result = run(
+        dir.path(),
+        &[
+            "register",
+            "add-human",
+            &key,
+            "--human",
+            "ana",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stdout);
+    assert!(
+        result.stderr.contains("init --owner-key"),
+        "{}",
+        result.stderr
+    );
+}
+
 /// An open repository with one commit, as `enforce` meets it.
 fn open_with_a_commit() -> Dir {
     let dir = common::repository();
