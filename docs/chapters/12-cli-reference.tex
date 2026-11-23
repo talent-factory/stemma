@@ -3008,7 +3008,8 @@ andere Identität nennt, wenn die Identität oder der Schlüssel im Register feh
 wenn der Schlüssel schon im Register steht, nicht mehr aktiv oder schon widerrufen ist
 und wenn kein Owner mit einem aktiven Schlüssel übrig bliebe.
 Bei \type{add-human} kommen hinzu: der Akteur ist kein Owner (auch ein Mensch ohne Eintrag oder
-ein Agent), die Kennung hat schon einen Eintrag, der Schlüssel steht schon in einem Eintrag,
+ein Agent), die Kennung ist leer oder enthält ein Leerzeichen oder ein Zeichen ausserhalb des
+sichtbaren ASCII, die Kennung hat schon einen Eintrag, der Schlüssel steht schon in einem Eintrag,
 die Schlüsseldatei fehlt oder enthält keinen Ed25519-Schlüssel, die Rolle ist weder
 \type{member} noch \type{owner}, und das Register hat schon 256 Einträge.
 Bei \type{add-agent} kommen hinzu: der Akteur ist kein Owner, der Agent hat schon einen Eintrag,
@@ -3023,8 +3024,9 @@ Der Leser nimmt nur die sortierte Fassung an, und kein Befehl ordnet sie nachtr�
 Ein Eintrag, den noch kein Commit trägt, zählt für keinen Beweis und keine Freigabe:
 Dort gilt das Register des Basis-Commits.
 Die Befehle von \type{register} selbst lesen die Datei des Arbeitsverzeichnisses,
-auch für die Frage, ob der Akteur Owner ist; ein neuer Owner gehört darum in einen Commit,
-bevor er das Register ändert.
+auch für die Frage, ob der Akteur Owner ist.
+Ein neuer Owner gilt dort also schon vor dem Commit als Owner; kein Befehl prüft das.
+Es ist darum eine Regel der Arbeitsweise, ihn zuerst zu committen, bevor er das Register ändert.
 
 {\bf Wiederholung.} Ein zweiter Aufruf von \type{add-key}, \type{retire}, \type{revoke},
 \type{add-human} oder \type{add-agent} mit denselben Argumenten endet mit Exit-Code 1

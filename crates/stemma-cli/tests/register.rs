@@ -896,7 +896,8 @@ fn an_owner_adds_a_second_owner_who_then_changes_the_register() {
         text.ends_with(&format!("entry human zoe owner\nkey {OTHER_KEY} active\n")),
         "{text}"
     );
-    // With a second owner key the first one can go, once a commit carries the new owner.
+    // With a second owner key the first one can go. The commit in between is the way of working
+    // and no check: the register commands read the role from the file of the working copy.
     commit_register(dir.path());
     let owner = key_file(&keys, "owner.pub", OWNER_KEY);
     ok(
