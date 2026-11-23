@@ -147,6 +147,26 @@ sie entsteht mit der ersten schreibenden Operation, sobald das Register mehr als
 \externalfigure[images/branch-lease.pdf][width=\textwidth]
 \stopplacefigure
 
+{\bf Die Lease als Zustand mit träger Erneuerung.}
+Der Zustand eines Branches ist ein Tupel aus Inhaber, Zeitpunkt des Erwerbs und Ablauf;
+die Regel der Tabelle ist eine reine Funktion von diesem Tupel, dem Akteur und der Zeit.
+Die Invariante lautet: Zu jeder Zeit hält höchstens ein Akteur eine gültige Lease eines Branches,
+und das Ablaufdatum wird durch keine Verlängerung früher, denn die Verlängerung nimmt das
+Maximum aus dem alten und dem neuen Ablauf.
+Sie gilt, weil die Prüfung und der Wechsel ein Schritt unter \type{refs.lock} sind
+und die Datei als Ganzes durch ein Umbenennen ersetzt wird:
+Kein Leser sieht eine halbe Datei, und nach einem Absturz liegt die alte ganz da.
+Die Lease endet durch die Zeit und nicht durch ein Ereignis, also braucht ein abgestürzter Agent
+keinen Dienst, der sie beendet.
+Dafür muss die Uhr der Akteure ungefähr stimmen:
+Weicht sie ab, hält ein Akteur die Lease eines anderen um die Abweichung früher für abgelaufen.
+Die Regel kostet je schreibender Operation $O(1)$: eine Datei lesen, prüfen, bei einer
+Verlängerung ersetzen.
+Die träge Verlängerung spart die Einträge, das Log wächst nicht mit jedem Schreiben;
+der Preis ist, dass es nicht zeigt, wie lange der Inhaber geschrieben hat.
+Das Verfahren steht nicht im Kursbuch; es ist ein gegenseitiger Ausschluss mit Frist, verwandt
+mit der Sperre der Referenzen (\in{Tabelle}[tab:algorithms]).
+
 {\bf Der Pull Request.}
 Der Schreibinhaber eröffnet den Pull Request (\in{Abbildung}[fig:pull-request-flow]).
 Die Risikostufe folgt aus allen Pfaden, die die Änderung berührt, und der höchste Wert gilt.
@@ -262,6 +282,28 @@ Ein widerrufener Schlüssel macht seine Freigaben ungültig. Bei einem ausgemust
 Freigaben, die vor der Ausmusterung geschrieben wurden; eine Freigabe mit einer späteren
 Nummer zählt nicht (siehe \in{Abschnitt}[sec:register]).
 Die Neuzählung nennt zu jeder Freigabe, die nicht zählt, den Grund.
+
+Die Neuzählung ist eine reine Funktion des Pull Requests, des aktuellen Kopfes, der Schreiber,
+der Freigaben und der Prüfung des Beweises.
+Sie geht die Freigaben des Pull Requests in der Reihenfolge der Einträge durch
+und stellt jeder dieselben Fragen in fester Folge:
+Steht der Eintrag nach der Eröffnung, nennt er den aktuellen Kopf, ist der Reviewer Eröffner oder
+Schreiber, hält der Beweis, und zählt die Identität schon?
+Die erste Frage, die eine Freigabe nicht besteht, liefert den Grund.
+Die Invariante lautet: Die zählenden Freigaben nennen alle den aktuellen Kopf, kein Reviewer ist
+Eröffner oder Schreiber, und keine Identität kommt zweimal vor.
+Weil die Funktion nur das Log und die Beweisdateien liest, ergibt eine Wiederholung dasselbe,
+gleichgültig, wer die Einträge schrieb.
+Die Folge der Fragen legt auch fest, welche Freigabe einer Identität zählt:
+Ein früherer Eintrag mit ungültigem Beweis nimmt dem späteren den Platz nicht,
+denn nur zählende Freigaben schliessen eine Wiederholung aus.
+Der Kopf ist der Hash des Commits, und der Hash bestimmt den ganzen Verlauf darunter
+(Inhaltsadressierung); eine Freigabe gilt darum für genau diese Änderung.
+Die Schreiber findet ein Durchlauf über das Log, der jeden Commit einmal liest.
+Die Kosten sind $O(a\,(w+a))$ für $a$ Freigaben und $w$ Schreiber,
+dazu eine Prüfung der Signatur je Freigabe, die bis zu ihr kommt.
+Das Verfahren steht nicht im Kursbuch; es braucht Mengen und Hashtabellen
+(\in{Tabelle}[tab:algorithms]).
 
 \startplacefigure[title={Ablauf eines Pull Requests bis zur Zeigerbewegung von main},
     reference=fig:pull-request-flow,location=here]
@@ -451,6 +493,24 @@ Die Ursache findet eine Bisektion über die Commits nach der letzten grünen Spi
 einschliesslich der ersten roten, der älteste zuerst, mit einem Test je Commit und
 logarithmisch vielen Läufen; das Gate selbst bisektiert nicht.
 
+{\bf Die Bisektion.}
+Das Fenster ist ein linearer Verlauf von $n$ Commits, der älteste zuerst;
+der letzte ist die erste rote Spitze und damit bekannt schlecht.
+Gesucht ist der kleinste Index, ab dem der Test scheitert.
+Die Suche hält zwei Grenzen und die Invariante, dass der gesuchte Commit zwischen ihnen liegt
+und der Commit an der oberen Grenze schlecht ist.
+Ein Lauf auf der Mitte setzt die obere Grenze auf die Mitte, wenn sie schlecht ist,
+und sonst die untere hinter die Mitte.
+Die Spanne schrumpft in jedem Schritt auf höchstens die Hälfte, also endet die Suche nach
+höchstens $\lceil \log_2 n \rceil$ Läufen mit einem Commit, und eine lineare Suche brauchte $n$.
+Die Korrektheit setzt einen Verlauf voraus, der erst gut und dann schlecht ist.
+Besteht ein Commit, nachdem ein früherer scheiterte, etwa bei einem Test, der nicht immer gleich
+ausgeht, liefert die Suche einen Commit, der scheitert und dessen Vorgänger besteht,
+nicht unbedingt den ersten.
+Ein Fehler eines Laufs bricht die Suche ab.
+Das Verfahren ist die binäre Suche aus dem Kurs, über einen Verlauf statt über eine Tabelle,
+und dasselbe wie \type{git bisect} (\in{Tabelle}[tab:algorithms]).
+
 Das Gate hält keinen Zustand.
 Es liest die Schranken bei jedem Versuch neu aus dem Log und aus dem Verlauf von \type{main},
 nach der Regeltabelle und vor dem Commit \type{M}, denn ein Lauf oder eine Reservierung kann
@@ -589,12 +649,28 @@ Davor steht eine Kopfzeile mit dem Typ und der Formatversion der Nutzdaten (Dom�
 stemma-proof\n<Typ>\n<Version>\n<Nutzdaten>
 \stoptyping
 
-Der Typ ist \type{log-entry} oder \type{approval}, die Version heute 1.
+Der Typ ist \type{log-entry}, \type{approval} oder \type{sponsorship}, die Version heute 1.
 Das Kennwort, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
 also beginnen die Nutzdaten eindeutig nach dem dritten.
 Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Eintrag,
 und eine Signatur einer späteren Formatversion nie als Version 1.
 Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
+
+Die Invariante der Domänentrennung lautet: Zwei verschiedene Paare aus Typ und Version ergeben
+für jede Nutzlast verschiedene Bytes.
+Sie folgt aus der Kopfzeile und der eindeutigen Trennung, denn die Kopfzeile unterscheidet sich
+schon vor der Nutzlast.
+Heute überschneiden sich die Nutzlasten ohnehin nicht: Ein Eintrag signiert seinen Hash,
+eine Freigabe die Nummer und den Kopf, eine Mitzeichnung Agent, Rolle und Sponsor.
+Die Kopfzeile schützt vor dem künftigen Typ, dessen Nutzlast zufällig mit einer anderen
+übereinstimmt, und vor einem Fehler im Format.
+Typ und Version stehen in den signierten Bytes und nicht im Namensraum.
+Das hat den Vorteil, dass ein neuer Typ keinen neuen Namensraum braucht,
+und den Nachteil, dass die Trennung an einem Format hängt,
+das Stemma selbst prüft und SSHSIG nicht.
+Die Kosten sind linear in der Länge der Nutzlast.
+Domänentrennung ist ein Grundsatz der Kryptografie und steht nicht im Kursbuch
+(\in{Tabelle}[tab:algorithms]).
 
 {\bf Signieren und prüfen.}
 Signiert wird über eine Schnittstelle (der Trait \type{Signer}).
@@ -699,6 +775,22 @@ Kein Verfasser kennt alle Pfade, die später entstehen.
 Ein neues Verzeichnis oder eine neue Dateiart soll deshalb weder frei noch gesperrt sein.
 Stufe 2 verlangt einen Menschen als Maintainer und lässt dem Owner die Wahl,
 die Stufe mit einer Zeile festzulegen.
+
+{\bf Die Auswertung.}
+Die Stufe einer Änderung ist das Maximum der Stufen aller Pfade, die sie berührt;
+ein Rename berührt den alten und den neuen Pfad, und eine Änderung ohne Pfad hat Stufe 0.
+Die Stufe eines Pfades ist das Maximum der Zeilen, die ihn nennen, oder 2, wenn keine ihn nennt,
+und für die Policy-Datei und das Register mindestens 3, was keine Zeile senkt.
+Die Invariante: Eine zusätzliche Zeile senkt nie die Stufe eines Pfades, den schon eine Zeile
+nennt, und das Ergebnis hängt nicht von der Reihenfolge der Zeilen oder der Pfade ab,
+denn das Maximum ist kommutativ und assoziativ.
+Nur ein Pfad, den noch keine Zeile nennt, kann durch eine neue Zeile sinken, von 2 auf 0 oder 1.
+Der Kern liest die Policy in der Fassung des Basis-Commits;
+eine Änderung kann sich also nicht nach einer Policy bewerten lassen, die sie selbst mitbringt.
+Die Kosten sind $O(p\,l)$ Mustervergleiche für $p$ berührte Pfade und $l$ Zeilen;
+beide Zahlen sind begrenzt, ebenso die Tiefe eines Pfades.
+Das Verfahren steht nicht im Kursbuch; es ist ein Maximum über eine Folge mit dem Mustervergleich
+der Ausschlussdatei (\in{Tabelle}[tab:algorithms]).
 
 {\bf Verankert oder an jeder Tiefe.}
 Ein Muster ohne \type{/} in der Mitte trifft einen Namen in jeder Tiefe.
