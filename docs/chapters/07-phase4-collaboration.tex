@@ -45,7 +45,7 @@ erzwingt.
 Was die folgenden Absätze über das stille Erwerben und Verlängern sagen, beschreibt diesen
 Zielzustand; heute erwerben und erneuern nur \type{lease take} und \type{lease override} eine Lease.
 Der Kern des Merge-Gates ist umgesetzt (\in{Abschnitt}[sec:merge-gate]).
-Zwei Regeln des ADR bestimmen den Weg einer Änderung auf \type{main}.
+Der Weg einer Änderung auf \type{main} folgt zwei Regeln des ADR:
 Jeder Branch hat genau einen Schreibinhaber, und \type{main} ändert sich nur durch einen Pull
 Request.
 
@@ -160,14 +160,9 @@ auf der neuen Spitze.
 Ein Pull Request hat kein Objekt und keine Referenz.
 Er ist die Folge der Einträge \type{pr-open}, \type{pr-close} und \type{pr-merge} im
 Operation Log, und seine Nummer ist die Nummer des Eintrags \type{pr-open}.
-Der Zustand wird nicht gespeichert, sondern aus dem Log berechnet:
-
-\startitemize
-\item {\bf open}: eröffnet und weder geschlossen noch gemergt.
-\item {\bf closed}: ohne Merge beendet.
-\item {\bf merged}: gemergt.
-\stopitemize
-
+Der Zustand folgt aus dem Log; gespeichert ist er nirgends.
+Ein Pull Request ist \type{open}, solange er weder geschlossen noch gemergt ist,
+\type{closed}, wenn er ohne Merge endete, und \type{merged}, wenn er gemergt wurde.
 \type{closed} und \type{merged} sind endgültig; die nächste Änderung eines Branches ist ein neuer
 Pull Request mit neuer Nummer.
 Ob ein offener Pull Request freigegeben ist, steht nicht im Log, sondern folgt aus den Freigaben
@@ -233,7 +228,7 @@ Als Schreiber eines solchen Commits zählt auch der Akteur des Eintrags im Log, 
 als erster unter irgendeinen Branch, ein Tag oder die Working Copy gebracht hat; ein späterer
 Branch auf demselben Commit, etwa zum Ansehen, zählt nicht: Das Feld \type{author} ist eine Angabe
 dessen, der den Commit gemacht hat, und nichts vergleicht es mit dem Akteur; der Akteur des
-Eintrags ist der, den der Authorizer zugelassen hat.
+Eintrags ist der, den der Autorisierer zugelassen hat.
 Wer einen Commit unter fremdem Namen auf den Branch bringt, kann ihn deshalb nicht freigeben.
 Die Regel gilt für die Identität, also gelten Modell und Session eines Agenten nicht als anderer
 Reviewer.
@@ -278,18 +273,21 @@ Die Neuzählung nennt zu jeder Freigabe, die nicht zählt, den Grund.
 Eine Merge-Queue mit globaler Sperre hält jede Änderung an, solange eine andere getestet wird.
 Bei vielen Schreibern, Menschen wie Agenten, wächst die Wartezeit mit ihrer Zahl und mit der
 Dauer einer Prüfung.
-Die Frage ist, was eine grüne Prüfung noch heisst, wenn während ihres Laufs viele andere
+Das Gate (ADR-019) verzichtet auf die globale Sperre:
+Prüfungen laufen nebeneinander, und die einzige Serialisierung ist die Zeigerbewegung von
+\type{main}.
+Dafür muss es klären, was ein grünes Prüfergebnis noch heisst, wenn während des Laufs andere
 Änderungen landen.
-ADR-019 beantwortet sie.
-Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch, die Objekte
-vor der Sperre und die Schranken (Pause bei roter Spitze mit der Ausnahme für eine erklärte
-Behebung, Reservierung und \type{max_unverified}).
+
+Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch, die Objekte vor
+der Sperre und die Schranken (Pause bei roter Spitze mit der Ausnahme für eine erklärte Behebung,
+Reservierung und Fenster ungeprüfter Commits).
 Noch nicht umgesetzt sind die Prüfung der Freigaben (ADR-004) und die Regel, dass die Autoren
 einer Änderung registrierte Akteure sind; bis dahin muss der Aufrufer des Kerns sie durchsetzen.
-Der Befehl \type{pr merge} ruft das Gate auf, mit der Stufe aus \type{--level} (Standard 3),
+Der Befehl \type{pr merge} ruft das Gate mit der Stufe aus \type{--level} auf (Standard 3),
 denn die Ableitung der Stufe aus der Policy ist in ihm noch nicht angeschlossen.
 
-{\bf Der Ablauf.}
+\subsection{Der Ablauf}
 
 \startitemize[n]
 \item Das Gate liest die Spitze \type{T} von \type{main} und führt die Änderung darauf zusammen.
@@ -298,53 +296,39 @@ Das Ergebnis ist der Commit \type{M}, der Squash-Commit der Änderung auf \type{
 \item Es wendet die Regel nach Risikostufe (\in{Tabelle}[tab:gate-rule])
 auf die vorhandenen Prüfergebnisse an.
 \item Es setzt \type{main} von \type{T} auf \type{M}, per Compare-and-swap (ADR-008).
-Hat eine andere Änderung \type{main} inzwischen bewegt, scheitert die Zeigerbewegung (\type{Stale},
-oder \type{Locked}, solange deren Sperre noch gehalten wird) und das Gate beginnt
-bei Schritt 1 mit der neuen Spitze.
+Hat eine andere Änderung \type{main} inzwischen bewegt, oder hält sie noch die Sperre,
+scheitert die Zeigerbewegung, und das Gate beginnt bei Schritt 1 mit der neuen Spitze.
 \stopitemize
 
 Während eine Prüfung läuft, hält niemand eine Sperre.
-Die einzige Serialisierung ist die Zeigerbewegung von \type{main};
-die Sperre der Referenzen gilt für eine Änderung, nie für eine Prüfung.
+Die Sperre der Referenzen gilt für eine Änderung, nie für eine Prüfung.
 Das Gate schreibt die Objekte des Merges vor der Sperre.
 Unter der Sperre bleiben die Prüfung der Spitze, der Eintrag des Operation Logs und die
 Zeigerbewegung (ADR-008, ADR-011).
-Weil ein Purge unreferenzierte Objekte löschen könnte, prüft das Gate unter der Sperre,
-ob \type{M} im Speicher liegt, und beginnt sonst bei Schritt 1 von vorn.
+Ein Purge könnte unreferenzierte Objekte löschen; deshalb prüft das Gate unter der Sperre,
+ob \type{M} im Speicher liegt, und beginnt sonst von vorn.
 \type{track}, \type{commit}, \type{status} und \type{op restore} nehmen die Sperre weiterhin
 vor ihrem ersten Objekt.
 
-Der Kern führt diese Schritte in \type{merge_gate} aus.
-Das Gate prüft vor der Sperre, dass der Zweig noch den Kopf hat, den die Eröffnung nennt, und
+Vor der Sperre prüft das Gate, dass der Branch noch den Kopf hat, den die Eröffnung nennt, und
 dass der Merge sauber ist.
 Ändert der Merge den Tree der Spitze nicht, liegt die Änderung schon auf \type{main}, und das
 Gate nimmt den Reparaturweg (siehe unten).
-Unter der Sperre prüft es den offenen Zustand des Pull Requests und den Kopf des Zweiges noch
+Unter der Sperre prüft es den offenen Zustand des Pull Requests und den Kopf des Branches noch
 einmal, denn beides kann sich seit dem Schreiben von \type{M} geändert haben.
-Die Risikostufe gibt der Aufrufer an (\type{merge_gate}) oder das Gate leitet sie aus der Policy
-der Spitze ab (\type{merge_gate_by_policy}, siehe \in{Abschnitt}[sec:policy-file]).
-Unter der Sperre schreibt es zuerst den Eintrag \type{gate-merge} für die Bewegung von
-\type{main}, bewegt \type{main} und schreibt danach \type{pr-merge} für den Pull Request.
-Das Log nimmt nur einen Eintrag je Schreibvorgang auf; die Reihenfolge verhindert den schlimmen
-Zustand, einen als gemergt gebuchten Pull Request, dessen Änderung nicht auf \type{main} liegt.
-Scheitert der Tausch mit \type{Stale}, hält eine andere Änderung die Sperre (\type{Locked}) oder
-fehlt \type{M} im Speicher, beginnt es bei Schritt 1 von vorn, höchstens achtmal;
-nach \type{Locked} wartet es kurz.
-Danach meldet es \type{Contended} und nennt den Grund des letzten Versuchs.
-Bricht der Prozess nach der Bewegung und vor \type{pr-merge} ab, oder scheitert dieser Eintrag,
-liegt die Änderung auf \type{main}, und der Pull Request bleibt offen.
-Nichts geht verloren.
-Der nächste Aufruf des Gates findet, dass der Merge der Änderung auf die Spitze nichts mehr
-ändert, prüft unter der Sperre noch einmal, ob der Pull Request offen und der Zweig unverändert
-ist, und schreibt \type{pr-merge}, ohne \type{main} zu bewegen (Reparaturweg).
-Für einen Pull Request, der nicht offen ist, schreibt er nichts.
-Dasselbe gilt, wenn die Bewegung von \type{main} nicht als gespeichert gilt (\type{NotFlushed}):
-Das Gate schreibt dann kein \type{pr-merge}, und der nächste Aufruf bucht den Merge nach.
-\type{merged} im Log belegt nicht, dass \type{main} die Änderung enthält; spätere Schritte
-(Freigaben, Reparaturen) dürfen es nicht als Beleg nehmen.
+
+Danach schreibt es zuerst den Eintrag \type{gate-merge} für die Bewegung von \type{main},
+bewegt \type{main} und schreibt zuletzt \type{pr-merge} für den Pull Request.
+Das Log nimmt nur einen Eintrag je Schreibvorgang auf; die Reihenfolge schliesst aus,
+dass ein Pull Request als gemergt gebucht ist, dessen Änderung nicht auf \type{main} liegt.
+
+Scheitert der Tausch, hält eine andere Änderung die Sperre oder fehlt \type{M} im Speicher,
+beginnt das Gate bei Schritt 1 von vorn, höchstens achtmal;
+nach einer gehaltenen Sperre wartet es kurz.
+Danach meldet es, dass die Änderung umkämpft ist, und nennt den Grund des letzten Versuchs.
 Jeder gescheiterte Versuch lässt die Objekte seines Merges im Speicher zurück; keine Referenz
 erreicht sie, und ein Purge räumt sie ab (ADR-014).
-Diese Grenze ist technisch und nicht die Reservierung gegen Aushungern (ADR-019).
+Diese Grenze ist technisch und nicht die Reservierung gegen Aushungern (siehe unten).
 \in{Abbildung}[fig:gate-crash] zeigt die Absturzpunkte des Gates,
 \in{Abbildung}[fig:gate-pointers] die Zeiger vor dem Gate, nach ihm und nach einem Absturz
 zwischen der Bewegung von \type{main} und \type{pr-merge}.
@@ -359,28 +343,37 @@ zwischen der Bewegung von \type{main} und \type{pr-merge}.
 \externalfigure[images/gate-pointers.pdf][width=0.9\textwidth]
 \stopplacefigure
 
-{\bf Was ein Prüfergebnis aussagt.}
+\subsection{Was ein Prüfergebnis aussagt}
+
 Eine Prüfung ist eine Aussage über einen Commit: Sein Tree hat bestanden oder nicht.
 Über den Commit, zu dem \type{main} wird, wenn die Änderung landet, sagt sie nichts, denn andere
 Änderungen können vorher landen.
-Ein Ergebnis hält deshalb zwei Commits fest, den geprüften und die Spitze von \type{main}, auf die
-er für die Prüfung gelegt wurde.
-Ob es nach einer Bewegung von \type{main} genügt, bestimmt die Risikostufe aus ADR-004:
+Ein Prüfergebnis hält deshalb zwei Commits fest, den geprüften und die Basis, also die Spitze von
+\type{main}, auf die er für die Prüfung gelegt wurde.
+Ein Ergebnis hat genau eine Basis; ein Lauf gegen eine andere Spitze ist ein anderes Ergebnis.
+Ein Lauf auf der Spitze von \type{main} selbst, wie ihn die Prüfung nach dem Merge macht
+(siehe \quotation{Die rote Spitze und die Schranken}), hat keine Basis.
+Ob ein Ergebnis nach einer Bewegung von \type{main} genügt, bestimmt die Risikostufe aus ADR-004
+(\in{Tabelle}[tab:gate-rule]).
 
-\startplacetable[title={Gültigkeit eines Prüfergebnisses nach einer Bewegung von main},
+\startplacetable[title={Welches Prüfergebnis zählt, und wie lange es nach einer Bewegung von main
+gültig bleibt},
 reference=tab:gate-rule]
 \startxtable[frame=off,option=stretch]
 \startxrow[topframe=on,bottomframe=on]
 \startxcell {\bf Stufe} \stopxcell
-\startxcell {\bf Regel, wenn \type{main} sich nach der Prüfung bewegt hat} \stopxcell
+\startxcell {\bf Wessen Ergebnis zählt} \stopxcell
+\startxcell {\bf Wenn \type{main} sich nach der Prüfung bewegt hat} \stopxcell
 \stopxrow
 \startxrow
 \startxcell 0, 1 \stopxcell
-\startxcell Das Ergebnis bleibt gültig, wenn der Merge auf die neue Spitze sauber ist.
-\stopxcell
+\startxcell Das Ergebnis jedes eingetragenen Akteurs. \stopxcell
+\startxcell Das Ergebnis bleibt gültig, wenn der Merge auf die neue Spitze sauber ist; das
+rechnet das Gate im Moment des Merges. \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell 2, 3 \stopxcell
+\startxcell Nur das Ergebnis eines unabhängigen Schreibers (siehe unten). \stopxcell
 \startxcell Das Ergebnis gilt nur für die Spitze, gegen die es lief; nach einer Bewegung laufen
 die Prüfungen auf dem neuen Merge noch einmal. \stopxcell
 \stopxrow
@@ -389,7 +382,38 @@ die Prüfungen auf dem neuen Merge noch einmal. \stopxcell
 
 Sauber heisst: Der Tree-Merge liefert genau einen Tree (\in{Abschnitt}[sec:tree-merge]).
 
-{\bf Konflikte.}
+Das Prüfergebnis steht als Eintrag \type{check} im Operation Log.
+Er nennt in dieser Reihenfolge \type{version 1}, \type{commit <id>}, \type{base <id>} und
+\type{result pass} oder \type{result fail}; ein Lauf ohne Basis schreibt \type{base -}.
+Wie die Einträge des Pull Requests steht er immer in der Hash-Kette, nennt keinen Zeiger und hebt
+die Format-Version des Repositories auf 11.
+Der Kern schreibt ihn unter \type{refs.lock} und lehnt einen Commit ab, den der Store nicht
+als Commit kennt, und eine Basis, die der Commit selbst ist; der Leser lehnt einen solchen Eintrag
+ebenfalls ab.
+Über den Schreiber fragt der Kern nur den Autorisierer nach der Operation \type{check}.
+Ob ein Ergebnis zählt, hängt vom Pull Request, seinen Autoren und der Risikostufe ab, und nichts
+davon steht im Eintrag; die Regel gilt deshalb beim Lesen.
+
+{\bf Wer unabhängig ist.}
+Auf den Stufen 2 und 3 zählt ein Ergebnis nur, wenn sein Schreiber den Pull Request nicht
+eröffnet und keinen Commit in \type{tip..head} geschrieben hat (das sind die Commits der
+Änderung gegenüber der Spitze, auf die der Merge läuft).
+Dasselbe gilt für Sponsoren: Kein Agent zählt, dessen Sponsor eröffnet oder einen Commit
+geschrieben hat, und kein Sponsor eines Agenten, der das getan hat.
+\quotation{Unabhängig} heisst in ADR-004 also: verschiedene Akteur-IDs, zusammen mit dem Verbot
+der Selbstfreigabe.
+Es zählt die Identität; \type{model} und \type{session} beschreiben nur, daher lässt sich eine
+stärkere Unabhängigkeit nicht prüfen,
+und zwei Agenten desselben Sponsors zählen als zwei Prüfungen und zwei Freigaben.
+Der Mensch bei den Stufen 2 und 3 bleibt der Anker (ADR-004, ADR-019).
+
+In einem Repository mit Register zählt ein Ergebnis ausserdem nur mit einem Beweis:
+Der Schreiber signiert den Hash des Eintrags mit einem Schlüssel des Registers,
+und die Beweisdatei liegt neben dem Log.
+Ein fehlender oder ungültiger Beweis lässt das Ergebnis nicht zählen.
+
+\subsection{Konflikte}
+
 Ein Konflikt gelangt nie nach \type{main}.
 Hat der Merge in Schritt 1 einen, lehnt das Gate ab und gibt die Änderung an ihren Autor zurück.
 Der Autor, der Schreibinhaber des Branches (ADR-004), spielt ihn mit \type{rebase} auf die neue
@@ -408,164 +432,110 @@ die das Gate an verschiedenen Stellen erkennt.
 \externalfigure[images/conflict-gate.pdf][width=\textwidth]
 \stopplacefigure
 
-{\bf Das Ergebnis einer Prüfung.}
-Das Ergebnis ist ein Beleg über das Paar aus dem getesteten Commit und seiner Basis, der Spitze von
-\type{main}, auf die er für den Test gemergt wurde (siehe oben).
-Es steht als Eintrag \type{check} im Operation Log.
-Er nennt in dieser Reihenfolge \type{version 1}, \type{commit <id>}, \type{base <id>} und
-\type{result pass} oder \type{result fail}.
-Ein Eintrag hat genau eine Basis; ein Lauf gegen eine andere Spitze ist ein anderer Eintrag.
-Ein Lauf auf der Spitze von \type{main} selbst, wie ihn die Prüfung nach dem Merge macht
-(siehe unten), hat keine Basis und schreibt \type{base -}.
-Der Eintrag steht wie die des Pull Requests immer in der Hash-Kette, nennt keinen Zeiger und hebt
-die Format-Version des Repositories auf 11.
+\subsection{Die rote Spitze und die Schranken}
 
-Der Kern schreibt den Eintrag unter \type{refs.lock} und lehnt einen Commit ab, den der Store nicht
-als Commit kennt, und eine Basis, die der Commit selbst ist; der Leser lehnt einen solchen Eintrag
-ebenfalls ab.
-Über den Schreiber fragt er nur den Authorizer nach der Operation \type{check}, denn ob ein
-Ergebnis zählt, hängt vom Pull Request, seinen Autoren und der Risikostufe ab, und keines davon
-steht im Eintrag.
-Die Regel gilt beim Lesen:
-
-\startitemize
-\item Auf den Stufen 0 und 1 zählt das Ergebnis jedes eingetragenen Akteurs.
-Hat sich \type{main} bewegt, bleibt es gültig, wenn der Merge auf die neue Spitze sauber ist; das
-rechnet das Gate im Moment des Merges.
-\item Auf den Stufen 2 und 3 gilt ein Ergebnis nur für die Spitze, gegen die es lief, und nur,
-wenn sein Schreiber unabhängig ist: nicht der Eröffner, nicht der Autor eines Commits in
-\type{tip..head} (die Spitze von \type{main}, auf die der Merge läuft), kein Agent, dessen Sponsor
-einer von ihnen ist, und nicht der Sponsor eines Agenten, der eröffnet oder einen Commit
-geschrieben hat.
-Es zählt die Identität, nicht Modell oder Session; zwei Agenten desselben Sponsors bleiben zwei
-Prüfungen (ADR-004, ADR-019).
-\item In einem Repository mit Register zählt ein Ergebnis nur mit einem Beweis: Der Schreiber
-signiert den Hash des Eintrags mit einem Schlüssel des Registers, und die Beweisdatei liegt neben
-dem Log.
-Ein fehlender oder ungültiger Beweis lässt das Ergebnis nicht zählen.
-\stopitemize
-
-Wer die Ergebnisse einer Änderung liest, ruft dafür \type{counted_checks} des Kerns auf.
-Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein erfolgreicher Lauf ohne
-Basis abdeckte; ein Lauf auf einem Commit ausserhalb von \type{main} zählt nicht.
-Ein späterer fehlgeschlagener Lauf auf demselben Commit nimmt einen erfolgreichen nicht zurück; er
-bleibt im Log, und das Gate sucht danach die erste rote Spitze.
-\type{last_green_tip} des Kerns liest sie aus dem Verlauf der aktuellen Spitze und verlangt in
-einem Repository mit Register ebenfalls einen Beweis.
-Das Gate wendet \type{counted_checks} an (siehe oben, \type{merge_gate}) und liest danach die
-Läufe auf der Spitze für die Schranken (siehe unten); in einem Repository mit Register zählt
-auch dort nur ein Lauf mit Beweis, ein fehlgeschlagener ebenso wie ein erfolgreicher.
-Den Eintrag schreibt der Befehl \type{check record} über den Kern (\type{record_check}).
-
-{\bf Die Prüfung nach dem Merge.}
 Zwei Änderungen können sauber zusammengehen und sich doch gegenseitig brechen, ein semantischer
 Konflikt.
 Nur ein Lauf auf der Spitze von \type{main} erkennt ihn.
 Der Lauf deckt die Spitze zum Zeitpunkt seines Starts ab; was währenddessen landet, deckt der
 nächste Lauf ab.
+Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein beendeter Lauf ohne
+Basis erfolgreich abdeckte; ein Lauf auf einem Commit ausserhalb von \type{main} oder mit Basis
+zählt nicht.
+Die erste rote Spitze ist der älteste Commit danach, den ein beendeter Lauf mit Fehler abdeckte.
+Ein späterer fehlgeschlagener Lauf auf demselben Commit nimmt einen erfolgreichen nicht zurück;
+er bleibt im Log, und das Gate sucht danach die erste rote Spitze.
 Ist die Spitze rot, behebt eine neue Änderung den Fehler, ein Fix oder ein Revert, und nicht ein
 Umschreiben von \type{main}.
+Die Ursache findet eine Bisektion über die Commits nach der letzten grünen Spitze bis
+einschliesslich der ersten roten, der älteste zuerst, mit einem Test je Commit und
+logarithmisch vielen Läufen; das Gate selbst bisektiert nicht.
+
+Das Gate hält keinen Zustand.
+Es liest die Schranken bei jedem Versuch neu aus dem Log und aus dem Verlauf von \type{main},
+nach der Regeltabelle und vor dem Commit \type{M}, denn ein Lauf oder eine Reservierung kann
+erscheinen, während das Gate neu beginnt.
+In einem Repository mit Register zählt für die Schranken und für die letzte grüne Spitze nur ein
+Lauf mit Beweis, ein fehlgeschlagener ebenso wie ein erfolgreicher.
+Eine Änderung, die warten muss, endet mit einer Meldung; das Gate schreibt dafür keinen Eintrag,
+keinen Commit \type{M} und bewegt keine Referenz (die Blobs und Trees des Merges können im
+Speicher bleiben, ADR-014).
+
+{\bf Die Pause.}
 Solange die letzte geprüfte Spitze rot ist, landen keine Änderungen der Stufen 2 und 3; die
 Stufen 0 und 1 gehen weiter.
+Rot heisst: Ein beendeter Lauf deckte den neuesten geprüften Commit mit Fehler ab, und kein
+erfolgreicher Lauf deckte ihn oder einen neueren ab.
+Ein erfolgreicher Lauf zählt nur von einem unabhängigen Schreiber (siehe oben), damit niemand
+die rote Spitze für die eigene Änderung löscht; ein fehlgeschlagener Lauf zählt, wer ihn auch
+schrieb.
+
 Ausgenommen von der Pause ist die Änderung, die die rote Spitze behebt, etwa der Revert des
 Commits, den die Bisektion findet.
 Sie wird erklärt und am Inhalt geprüft: Der Pull Request nennt den roten Commit
 (\type{repairs <commit>}).
 Das Gate nimmt die Erklärung nur an, wenn dieser Commit nach der letzten grünen Spitze bis
 einschliesslich der ersten roten liegt
-und der Diff der Behebung ihn zurücknimmt oder seine Pfade ändert.
+und die Pfade der Änderung mindestens einen Pfad dieses Commits treffen.
+Ein Revert trifft alle Pfade des Commits, ein Fix die, an denen der Fehler liegt.
 Das rechnet das Gate als reine Funktion über die beiden Diffs, niemand muss es bestätigen;
 eine Änderung, die nur eine Behebung erklärt, erhält keine Ausnahme.
 Die Prüfungen der Behebung folgen der Regeltabelle:
 Die Stufen 2 und 3 brauchen ein Ergebnis mit der aktuellen Spitze als Basis,
 die Stufen 0 und 1 einen sauberen Merge darauf.
-Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein beendeter Lauf erfolgreich
-abdeckte; die erste rote ist der älteste danach, den ein beendeter Lauf mit Fehler abdeckte.
-Die Ursache in einem Fenster ungeprüfter Commits findet eine Bisektion über den linearen Verlauf.
 
-Das Gate hält keinen Zustand; es liest die Schranken aus dem Log und aus dem Verlauf von
-\type{main}.
-Eine Änderung, die warten muss, endet mit \type{GateError::Paused}; das Gate schreibt dafür
-keinen Eintrag, keinen Commit \type{M} und bewegt keine Referenz (die Blobs und Trees des Merges
-können im Speicher bleiben, ADR-014).
-Es prüft die Schranken nach der Regeltabelle und vor dem Commit \type{M} und liest sie bei jedem
-Versuch neu, denn ein Lauf oder eine Reservierung kann erscheinen, während das Gate neu beginnt.
+{\bf Das Fenster ungeprüfter Commits.}
+Die Policy kennt \type{max-unverified} (Standard 10).
+Das Fenster zählt die Commits nach der neuesten geprüften Spitze, bei einem Repository ohne
+jeden Lauf den ganzen Verlauf.
+Liegen so viele Commits darin, warten alle Merges der Stufen 0 bis 3, ausser einer Behebung,
+bis ein beendeter Lauf einen neueren Commit abdeckt; das Log kennt nur beendete Läufe.
 
-\startitemize
-\item Die Pause gilt für Änderungen der Stufen 2 und 3, solange der neueste geprüfte Commit rot
-ist: ein beendeter Lauf deckte ihn mit Fehler ab, und kein erfolgreicher Lauf deckte ihn oder
-einen neueren ab.
-Ein erfolgreicher Lauf zählt nur, wenn sein Schreiber von der Änderung unabhängig ist (nicht der
-Eröffner, nicht ein Autor, nicht deren Sponsoren), damit niemand die rote Spitze für die eigene
-Änderung löscht; ein fehlgeschlagener Lauf zählt, wer ihn auch schrieb.
-Eine Behebung ist ausgenommen, wenn der erklärte Commit nach der letzten grünen Spitze bis
-einschliesslich der ersten roten liegt
-und die Pfade ihrer Änderung mindestens einen Pfad dieses Commits treffen.
-Ein Revert trifft alle Pfade des Commits, ein Fix die, an denen der Fehler liegt.
-\item Das Fenster zählt die Commits nach der neuesten geprüften Spitze, bei einem Repository
-ohne jeden Lauf den ganzen Verlauf.
-Dann warten alle Merges aller Stufen, ausser einer Behebung.
-Das Log kennt nur beendete Läufe; \quotation{bis ein Lauf gestartet ist} heisst daher: bis ein
-beendeter Lauf einen neueren Commit abdeckt.
-\item Die Reservierung zählt ungültig gewordene Läufe aus dem Log: Ergebnisse für den Kopf der
-Änderung, deren Basis nicht die aktuelle Spitze ist, eines je Basis, bis ein fehlgeschlagenes
-Ergebnis die Reihe bricht.
+{\bf Die Reservierung.}
+Änderungen der Stufen 2 und 3 holen bei vielen Schreibern die Spitze womöglich nie ein, weil
+\type{main} sich während jedes Laufs bewegt.
+Nach \type{N} ungültig gewordenen Läufen in Folge (Standard 3) erhält eine solche Änderung eine
+Reservierung.
+Dann warten alle anderen Änderungen, gleich welcher Stufe, bis die Änderung gelandet, gescheitert
+oder geschlossen ist; nur die Behebung einer roten Spitze geht voran.
+Es gibt höchstens eine Reservierung, und die älteste Änderung gewinnt.
+
+Das Gate zählt die ungültig gewordenen Läufe aus dem Log: Ergebnisse für den Kopf der Änderung,
+deren Basis nicht die aktuelle Spitze ist, eines je Basis, bis ein fehlgeschlagenes Ergebnis die
+Reihe bricht.
 Ein Ergebnis für die aktuelle Spitze beendet die Reservierung nicht, denn es ist das, was der
 Halter zum Merge braucht.
-Sie hält eine Änderung der Stufe 2 oder 3; jede andere Änderung wartet, ausser einer Behebung.
-Sie beginnt beim \type{N}-ten Lauf und danach bei jedem weiteren \type{N}-ten.
+Die Reservierung beginnt beim \type{N}-ten Lauf und danach bei jedem weiteren \type{N}-ten.
+Sie endet nach der doppelten Dauer des letzten Laufs, damit eine hängende Änderung
+\type{main} nicht blockiert.
 Die Dauer eines Laufs steht nicht im Log; das Gate nimmt die Zeit seit dem Eintrag des Laufs davor
 (einem beliebigen Lauf der Änderung) oder, beim ersten Lauf, seit der Eröffnung.
-Ein erfolgreicher Lauf zählt nur von einem unabhängigen Schreiber, ein fehlgeschlagener von jedem,
-und in einem Repository mit Register nur Läufe mit Beweis.
+Ein erfolgreicher Lauf zählt nur von einem unabhängigen Schreiber, ein fehlgeschlagener von jedem.
 Die Zeit eines Eintrags ist die Angabe des Schreibers, deshalb dauert eine Reservierung höchstens
 eine Stunde, und eine, die in der Zukunft beginnt, hält noch nichts.
-\item Wer das Gate mit einer eigenen Stufe aufruft (\type{merge_gate}), liest keine Policy:
-Die Schranken haben ihre Standardwerte,
-und die Reservierung entfällt, weil nur die Policy die Stufen der anderen Änderungen kennt
-(\type{merge_gate_by_policy}).
-\stopitemize
 
-\type{Repository::red_window} liefert das Fenster für die Bisektion: die Commits nach der letzten
-grünen Spitze bis zur ersten roten, der älteste zuerst.
-\type{bounds::bisect} sucht darin mit einem Test je Commit den ersten schlechten in logarithmisch
-vielen Läufen; das Gate selbst bisektiert nicht.
+{\bf Wer die Werte ändert.}
+\type{reservation} und \type{max-unverified} stehen in der Policy-Datei; sie zu ändern ist Stufe 3,
+also ein Mensch mit der Rolle Owner und ein ADR.
+Ein Agent kann die Schranken, unter denen seine eigene Änderung landet, nicht lockern.
+Wer das Gate mit einer eigenen Stufe aufruft, liest keine Policy: Die Schranken haben ihre
+Standardwerte, und die Reservierung entfällt, weil nur die Policy die Stufen der anderen
+Änderungen kennt.
 
-{\bf Zwei Grenzen.}
-Beide Werte stehen in der Policy-Datei; sie zu ändern ist Stufe 3, also ein Mensch mit der Rolle
-Owner und ein ADR.
-Ein Agent kann die Grenzen, unter denen seine eigene Änderung landet, nicht lockern.
-Wie das Gate sie aus dem Log liest, steht oben bei den Schranken.
+\subsection{Garantien und Grenzen}
 
-\startitemize
-\item {\bf Reservierung.}
-Nach \type{N} ungültig gewordenen Läufen in Folge (Standard 3) erhält eine Änderung der Stufe 2
-oder 3 eine Reservierung.
-Ein Lauf wird ungültig, wenn sich \type{main} während des Laufs bewegt hat.
-Dann warten alle anderen Änderungen, gleich welcher Stufe,
-bis die Änderung gelandet, gescheitert oder geschlossen ist;
-nur die Behebung einer roten Spitze geht voran.
-Die Reservierung endet nach der doppelten Dauer des letzten Prüflaufs,
-damit eine hängende Änderung \type{main} nicht blockiert.
-Es gibt höchstens eine, und die älteste Änderung gewinnt.
-\item {\bf Fenster ungeprüfter Commits.}
-Die Policy kennt \type{max_unverified} (Standard 10).
-Liegen so viele Commits nach der letzten geprüften Spitze, warten alle Merges der Stufen 0 bis 3,
-bis ein Lauf auf der Spitze gestartet ist.
-Die Behebung ist ausgenommen.
-\stopitemize
-
-{\bf Wer unabhängig ist.}
-\quotation{Unabhängig} in ADR-004 heisst: verschiedene Akteur-IDs, zusammen mit dem Verbot der
-Selbstfreigabe.
-Zwei Agenten desselben Sponsors zählen als zwei Freigaben.
-\type{model} und \type{session} beschreiben nur, daher lässt sich eine stärkere Unabhängigkeit
-nicht prüfen; der Mensch bei den Stufen 2 und 3 bleibt der Anker.
-Für die Stufen 2 und 3 zählt eine Prüfung (\type{check}) nur,
-wenn ihr Schreiber weder die Änderung eröffnet
-noch einen Commit in \type{tip..head} verfasst hat
-und kein Agent ist, dessen Sponsor einer von beiden ist;
-bei den Stufen 0 und 1 zählt jeder registrierte Akteur.
+Nach einem Abbruch hat \type{main} den alten oder den neuen Wert, nie einen halben.
+Bricht der Prozess nach der Bewegung und vor \type{pr-merge} ab, oder scheitert dieser Eintrag,
+liegt die Änderung auf \type{main}, und der Pull Request bleibt offen.
+Nichts geht verloren.
+Der nächste Aufruf des Gates findet, dass der Merge der Änderung auf die Spitze nichts mehr
+ändert, prüft unter der Sperre noch einmal, ob der Pull Request offen und der Branch unverändert
+ist, und schreibt \type{pr-merge}, ohne \type{main} zu bewegen (Reparaturweg).
+Für einen Pull Request, der nicht offen ist, schreibt er nichts.
+Dasselbe gilt, wenn die Bewegung von \type{main} nicht als gespeichert gilt: Das Gate schreibt
+dann kein \type{pr-merge}, und der nächste Aufruf bucht den Merge nach.
+\type{merged} im Log belegt also nicht, dass \type{main} die Änderung enthält; spätere Schritte
+(Freigaben, Reparaturen) dürfen es nicht als Beleg nehmen.
 
 \startinfobox
 {\bf Was \quotation{main ist immer grün} jetzt heisst.}
@@ -573,22 +543,36 @@ Jeder Commit von \type{main} ist der saubere Merge einer Änderung, deren Prüfu
 der Zeigerbewegung nach der Regel oben bestanden hatten.
 Die letzte geprüfte Spitze ist grün, oder eine Behebung läuft.
 Zwischen dieser Spitze und der aktuellen liegen ungeprüfte Commits;
-ihre Zahl ist begrenzt, aber nicht null: höchstens \type{max_unverified} plus das, was während
+ihre Zahl ist begrenzt, aber nicht null: höchstens \type{max-unverified} plus das, was während
 eines Laufs landet.
 Grün sagt \quotation{dieser Commit hat bestanden}, nicht \quotation{der Stand von \type{main}
 besteht jetzt}.
 \stopinfobox
 
-Der Entwurf ersetzt keine Queue durch eine andere.
-Der Durchsatz hängt von der Rate der sauberen Zeigerbewegungen ab,
+Der Durchsatz des Gates hängt von der Rate der sauberen Zeigerbewegungen ab,
 nicht von der Dauer der Prüfungen.
 Dafür treten rote Spitzen auf, im Verhältnis zur Rate der semantischen Konflikte, und ein Teil der
 Änderungen muss repariert werden, statt dass alle warten.
-Änderungen der Stufen 2 und 3 holen bei vielen Schreibern die Spitze womöglich nie ein;
-dafür gibt es die Reservierung (siehe \quotation{Zwei Grenzen}).
 Verworfen sind eine Queue mit globaler Sperre, eine Queue mit spekulativen Batches, die Prüfung
 jeder Änderung bei jeder Bewegung von \type{main} und der Verzicht auf die Prüfung nach dem Merge;
 die Gründe stehen in ADR-019.
+
+\startinfobox
+{\bf Namen im Code.}
+\startitemize[packed]
+\item \type{merge_gate} führt die Schritte aus; \type{merge_gate_by_policy} leitet die Stufe aus
+der Policy der Spitze ab (\in{Abschnitt}[sec:policy-file]).
+\item \type{Stale} und \type{Locked} melden eine gescheiterte Zeigerbewegung, \type{Contended}
+den Abbruch nach acht Versuchen, \type{NotFlushed} eine Bewegung, die als nicht gespeichert gilt.
+\item \type{Paused} meldet eine Änderung, die warten muss.
+\item \type{counted_checks} liest die Ergebnisse einer Änderung.
+\item \type{last_green_tip} liest die letzte grüne Spitze.
+\item \type{record_check} schreibt den Eintrag \type{check}; der Befehl \type{check record}
+ruft es auf.
+\item \type{Repository::red_window} liefert die Commits für die Bisektion.
+\item \type{bounds::bisect} sucht darin.
+\stopitemize
+\stopinfobox
 
 \section[sec:signatures]{Signaturen}
 
@@ -613,8 +597,8 @@ und eine Signatur einer späteren Formatversion nie als Version 1.
 Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
 
 {\bf Signieren und prüfen.}
-Signiert wird über den Trait \type{Signer}.
-Seine Implementierung ruft \type{ssh-keygen -Y sign} auf, also liest Stemma nie einen privaten
+Signiert wird über eine Schnittstelle (der Trait \type{Signer}).
+Ihre Implementierung ruft \type{ssh-keygen -Y sign} auf, also liest Stemma nie einen privaten
 Schlüssel; liegt der Schlüssel im \type{ssh-agent}, genügt die Datei des öffentlichen.
 Ein privater Schlüssel mit Passphrase braucht ein Terminal, sonst schlägt das Signieren fehl.
 Geprüft wird im Prozess mit der Bibliothek \type{ssh-key}, ohne Kindprozess und ohne Datei,
@@ -648,7 +632,7 @@ Sie ist so streng wie die Ausschlussdatei \type{.stemmaignore} (ADR-012):
 gleiche Grenzen für Zeilen und Datei, ein einheitliches Zeilenende, keine wiederholte Zeile,
 und eine Zeile, die der Leser nicht kennt, ist ein Fehler mit ihrer Nummer.
 
-{\bf Die Idee in einfachen Worten.}
+{\bf Die Idee.}
 Nicht jede Änderung ist gleich gefährlich.
 Ein Tippfehler in der Dokumentation kann nichts zerstören;
 eine Änderung am Code, der Signaturen prüft, kann alle Regeln aufheben.
@@ -792,7 +776,7 @@ höchstens einmal, \type{approvals} einmal je Stufe,
 
 {\bf Welche Policy gilt.}
 Das Gate und die Lease lesen die Policy des Basis-Commits, also der Spitze von \type{main},
-nie die des Arbeitsverzeichnisses und nie die des Zweiges, der geprüft wird.
+nie die des Arbeitsverzeichnisses und nie die des Branches, der geprüft wird.
 Wer die Policy ändert, steht damit noch unter der Policy davor.
 Das Gate liest sie bei jedem Versuch neu, denn eine Bewegung von \type{main} kann eine neue
 Policy bringen; die Stufe ist die höchste Stufe der Dateien, in denen sich der Merge-Tree vom
@@ -816,10 +800,9 @@ Ein Pull Request, der schon auf \type{main} liegt, braucht die Policy nicht:
 Das Gate bewegt dort nichts und trägt nur den Eintrag nach.
 Hat die Spitze von \type{main} eine ungültige Policy, lehnt das Gate auch den Merge ab, der sie
 reparieren würde; einen eigenen Reparaturweg gibt es noch nicht.
-Die Werte \type{reservation} und \type{max-unverified} liefert dieselbe Policy
-(\type{Policy::reservation_after}, \type{Policy::max_unverified});
-das Gate wendet sie als Schranken an (\in{Abschnitt}[sec:merge-gate]).
-Die Dauer der Lease liest \type{claim_lease_by_policy} aus der Zeile \type{lease}.
+Dieselbe Policy liefert die Werte \type{reservation} und \type{max-unverified}, die das Gate als
+Schranken anwendet (\in{Abschnitt}[sec:merge-gate]), und in der Zeile \type{lease} die Dauer der
+Lease (im Code \type{claim_lease_by_policy}).
 
 Ein Auszug aus dem Entwurf der \type{.stemma-policy} dieses Repositorys
 (er folgt der Tabelle der Pfade von ADR-004, den Regeln 7 und 8 und ADR-014;
@@ -942,7 +925,8 @@ Fassung, oder eine \type{Cargo.toml} ist kein Text (Rückfall auf Stufe 2). \sto
 \stopplacetable
 
 Die Stufe der Änderung ist das Maximum aus der Stufe der Pfade und dieser Stufe;
-das Gate bildet es, denn \type{level_of} und \type{weakening} kennen einander nicht.
+das Gate bildet es, denn die beiden Auswertungen (\type{level_of}, \type{weakening}) kennen
+einander nicht.
 Die Regel hebt nur an und lässt sich nicht abschalten:
 Es gibt keine Zeile, die ein Signal ausschaltet, und \type{weakened-level} unter 2 macht die
 Policy ungültig.
@@ -1010,13 +994,14 @@ cosign U1NIU0lHAAAAAQAAADMAAAA...
 key ssh-ed25519 AAAAC3Nzd... active
 \stoptyping
 
-\startitemize
-\item {\bf Sponsor:} Der Sponsor ist ein Mensch mit eigenem Eintrag, nie ein Agent;
-Sponsor-Ketten gibt es nicht.
-\item {\bf Rolle:} Die Rolle eines Agenten übersteigt die Rolle des Sponsors nicht.
-Ein Agent ist nie Owner, auch wenn der Sponsor es ist.
-\item {\bf Zwei Signaturen:} Ein Owner legt den Eintrag an; die Datei hat Stufe~3,
-also zeichnet er ihn, indem er den Commit freigibt.
+Der Sponsor ist ein Mensch mit eigenem Eintrag, nie ein Agent; Sponsor-Ketten gibt es nicht.
+Die Rolle eines Agenten übersteigt die Rolle des Sponsors nicht, und ein Agent ist nie Owner,
+auch wenn der Sponsor es ist.
+Das Feld \type{sponsor} der Akteurzeile eines Agenten muss der Sponsor im Register sein,
+sonst gilt sein Beweis nicht.
+
+Zwei Signaturen legen den Eintrag fest.
+Ein Owner legt ihn an; die Datei hat Stufe~3, also zeichnet er ihn, indem er den Commit freigibt.
 Der Sponsor zeichnet ihn mit, indem er Agent, Rolle und sich selbst
 mit einem Schlüssel aus seinem Eintrag signiert (die Nutzlast \type{sponsorship},
 mit eigener Typkennung, damit die Signatur keiner anderen Art gilt).
@@ -1024,32 +1009,28 @@ Die Signatur steht als eine Zeile Base64 in der Zeile \type{cosign}.
 Der Leser prüft sie bei jedem Lesen; ein neuer Eintrag verlangt einen aktiven Schlüssel
 des Sponsors, ein gelesenes Register lässt auch einen inzwischen ausgemusterten
 oder widerrufenen zu.
-\item {\bf Akteurzeile:} Das Feld \type{sponsor} der Akteurzeile eines Agenten muss der Sponsor
-im Register sein, sonst gilt sein Beweis nicht.
-\item {\bf Kaskade:} Widerruft jemand einen Schlüssel eines Sponsors, widerruft der Kern
-alle Schlüssel seiner Agenten ab derselben Nummer; frühere Grenzen bleiben.
+Die Mitzeichnung bindet Agent, Rolle und Sponsor, nicht den Schlüssel des Agenten
+und nicht das Repository: Welchen Schlüssel der Agent erhält, entscheidet der Owner.
+
+Widerruft jemand einen Schlüssel eines Sponsors, widerruft der Kern
+alle Schlüssel seiner Agenten ab derselben Nummer (Kaskade); frühere Grenzen bleiben.
 Das Ausmustern eines Schlüssels löst keine Kaskade aus, damit eine Rotation die Agenten behält.
 Die Kaskade ändert das Register oder gar nichts.
 Danach bekommt der Agent keinen neuen Schlüssel, solange der Schlüssel der Mitzeichnung widerrufen
 ist oder der Sponsor keinen aktiven Schlüssel hat; der Leser lehnt auch eine Datei ab,
 die ihm einen gibt.
-Die Mitzeichnung bindet Agent, Rolle und Sponsor, nicht den Schlüssel des Agenten
-und nicht das Repository: Welchen Schlüssel der Agent erhält, entscheidet der Owner.
-\stopitemize
 
 {\bf Zustände eines Schlüssels.}
 Hinter \type{retired} und \type{revoked} steht die Nummer des ersten Eintrags,
 für den der Schlüssel nicht mehr zählt.
 
-\startitemize
-\item {\bf active:} Der Schlüssel signiert neue Beweise.
-\item {\bf retired:} Der Schlüssel wurde ersetzt. Was er vorher signiert hat, bleibt gültig:
+Ein aktiver Schlüssel (\type{active}) signiert neue Beweise.
+Ein ausgemusterter (\type{retired}) wurde ersetzt; was er vorher signiert hat, bleibt gültig:
 Ein Eintrag zählt, wenn seine Nummer unter der Grenze liegt, eine Freigabe immer.
-\item {\bf revoked:} Der Schlüssel ist möglicherweise kompromittiert.
-Ein Eintrag zählt nur, wenn er im Log vor dem Widerruf steht;
-Freigaben des Schlüssels sind ungültig.
+Ein widerrufener (\type{revoked}) ist möglicherweise kompromittiert.
+Ein Eintrag zählt dann nur, wenn er im Log vor dem Widerruf steht,
+und Freigaben des Schlüssels sind ungültig.
 Widerruft jemand einen ausgemusterten Schlüssel, gilt die frühere Grenze.
-\stopitemize
 
 Eine Änderung, die den letzten aktiven Owner-Schlüssel nähme, lehnt der Kern ab:
 Das Repository könnte sein Register sonst nie wieder ändern.
@@ -1081,11 +1062,11 @@ Vor dem ersten Commit liest der Kern die Datei des Arbeitsverzeichnisses,
 danach die Fassung des Commits, auf den HEAD zeigt.
 
 {\bf Der verifizierte Akteur.}
-Der Kern nimmt für ein durchsetzendes Repository einen \type{Verified}-Akteur:
-einen Akteur, dessen Beweis das Register geprüft hat.
+Der Kern nimmt für ein durchsetzendes Repository einen Akteur, dessen Beweis das Register
+geprüft hat (Typ \type{Verified}).
 Nur das Register kann einen herstellen, ein Wert dieses Typs ist also der Nachweis.
-Der Autorisierer \type{RegisterAuthorizer} lässt im offenen Modus alles durch
-und verlangt im durchsetzenden Modus einen \type{Verified}-Akteur, der der Akteur des Aufrufs ist.
+Der Autorisierer des Registers (\type{RegisterAuthorizer}) lässt im offenen Modus alles durch
+und verlangt im durchsetzenden Modus einen verifizierten Akteur, der der Akteur des Aufrufs ist.
 
 {\bf Beweise und \type{op verify}.}
 Der Beweis eines Eintrags ist eine Datei \type{.stemma/proofs/<Nummer>} mit dem Akteur
@@ -1179,7 +1160,7 @@ Die Lease schützt darum heute die Eröffnung eines Pull Requests, nicht jeden S
 die Sitzung lässt den Standard 3 stehen.
 Das Gate verlangt beim Merge keine Freigabe; \type{pr approve} prüft nur die Unabhängigkeit
 des Reviewers, und \type{pr list} zählt die Freigaben.
-Die Grenzen stehen in \in{Abschnitt}[sec:phase4-open].
+Die Grenzen sammelt \in{Kapitel}[chap:outlook].
 \stopinfobox
 
 \subsection[sec:workflow-pr]{Eine Änderung eines Agenten nach main bringen}
@@ -1315,7 +1296,7 @@ lib.rs  main.rs
 Der erste Wechsel bringt den Working-Copy-Commit und das Arbeitsverzeichnis auf die Spitze und
 setzt HEAD auf den Commit; der zweite setzt HEAD wieder auf den Branch.
 Beide schreiben je einen Eintrag (20 und 21) und lassen sich mit \type{op restore} zurücknehmen.
-Einen eigenen Befehl dafür gibt es noch nicht (siehe \in{Abschnitt}[sec:phase4-open]).
+Einen eigenen Befehl dafür gibt es noch nicht (siehe \in{Kapitel}[chap:outlook]).
 
 {\bf Die Garantien.}
 Scheitert ein Befehl vor dem Gate, bleibt \type{main} unverändert;
@@ -1573,20 +1554,12 @@ Grössen er ändert.
 
 \section[sec:phase4-open]{Offene Fragen}
 
+Die Folgearbeit der Phase sammelt \in{Kapitel}[chap:outlook].
+Zwei Fragen des Entwurfs sind selbst offen.
+
 \startitemize
 \item Schnellweg für triviale Änderungen: Wer darf ihn nutzen?
-\item Merge-Gate: die Frage, ob ein Ergebnis eine Menge getesteter Basis-Commits nennen darf
-(offener Punkt in ADR-019).
+\item Merge-Gate: Darf ein Prüfergebnis eine Menge getesteter Basis-Commits nennen
+(offener Punkt in ADR-019)?
 Ein billigerer Test als der saubere Merge ist ausserhalb des Umfangs der ersten Version.
-\item Lease: Die schreibenden Befehle erwerben und erneuern sie noch nicht.
-\item Merge-Gate: Es bewegt nur \type{main}. Der Haupt-Worktree holt die Spitze mit
-\type{switch --detach main} und \type{switch main} nach; ein eigener Weg fehlt.
-\item Register: Kein Befehl nimmt einen weiteren Menschen auf;
-der Owner ergänzt die Datei von Hand.
-\item Register: Die Befehle des Programms übergeben den Autorisierer des Registers nicht;
-sie prüfen den Akteur im durchsetzenden Modus noch nicht.
-\item Policy: \type{pr merge} leitet die Stufe nicht aus der Policy ab, und für eine ungültige
-Policy auf der Spitze von \type{main} gibt es keinen Reparaturweg.
-\item Merge-Gate: Es prüft die Freigaben und die Registrierung der Autoren noch nicht.
-\item Die Policy-Datei dieses Repositorys ist ein Entwurf, den der Owner nicht signiert hat.
 \stopitemize
