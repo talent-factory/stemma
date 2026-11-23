@@ -719,6 +719,57 @@ fn a_switch_that_stops_after_its_entry_ends_the_merge_with_3_and_the_merge_stand
 }
 
 #[test]
+fn a_merge_from_another_worktree_names_the_worktree_that_followed_in_the_undo_hint() {
+    let dir = with_feature_branch();
+    let number = open_pull(dir.path());
+    ok(
+        dir.path(),
+        &[
+            "check", "record", "feat", "--base", "main", "--result", "pass", "--actor", OTHER,
+        ],
+    );
+    // The main worktree stays on `feat`; a linked worktree has `main` checked out.
+    let place = Dir::new();
+    let side = place.path().join("side");
+    ok(
+        dir.path(),
+        &[
+            "worktree",
+            "add",
+            side.to_str().unwrap(),
+            "main",
+            "--actor",
+            ACTOR,
+        ],
+    );
+
+    let merged = ok(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+    );
+
+    assert!(
+        merged
+            .stdout
+            .contains("Brought the working copy of the worktree side to the tip of main as entry"),
+        "{}",
+        merged.stdout
+    );
+    assert_eq!(fs::read_to_string(side.join("b.txt")).unwrap(), "b\n");
+    // The hint is a command that works from where the merge ran.
+    let hint = merged
+        .stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("To undo it: stemma "))
+        .expect("the output names the undo");
+    assert!(hint.contains(" -C "), "{hint}");
+    let mut args: Vec<&str> = hint.split(' ').collect();
+    args.extend(["--actor", ACTOR]);
+    ok(dir.path(), &args);
+    assert!(!side.join("b.txt").exists());
+}
+
+#[test]
 fn bad_arguments_are_refused_before_anything_is_written() {
     let dir = with_feature_branch();
     let before = ok(dir.path(), &["op", "log"]).stdout;

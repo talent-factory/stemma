@@ -1112,12 +1112,15 @@ die Spitze nicht der einzige Elternteil des Working-Copy-Commits ist
 und die Spitze nicht dessen Change-ID trägt.
 Die letzte Bedingung nimmt einen abgebrochenen \type{commit} aus,
 den dessen Wiederholung abschliesst (ADR-010).
-Nennt der neueste Eintrag des Worktrees eine Bewegung des Working-Copy-Commits, die nicht
-stattfand (ein \type{merge}, ein \type{rebase} oder ein Wechsel auf eine ältere Spitze brach
-nach dem Schreiben der Dateien ab), zieht der Befehl nicht nach:
-Ein Snapshot würde diese Dateien als Änderungen speichern.
-Er endet mit Exit-Code 1, nennt den Eintrag und schreibt nichts;
-zuerst ist der abgebrochene Befehl zu wiederholen.
+Ist im Worktree ein Befehl abgebrochen, bevor sein Working-Copy-Commit sich bewegte
+(ein \type{merge}, ein \type{rebase}, ein \type{op restore}, ein \type{commit}, dessen Branch
+seither weiterlief, oder ein Wechsel, den derselbe Wechsel nicht mehr abschliessen kann),
+nimmt der Befehl nichts mit: Ein Snapshot würde speichern, was der abgebrochene Befehl
+hinterliess, als wären es Änderungen.
+Er endet mit Exit-Code 1, nennt den Eintrag und schreibt nichts.
+Dann ist der abgebrochene Befehl zu wiederholen, wo das noch geht,
+oder \type{switch --discard NAME} bringt die Arbeitskopie ohne Mitnahme auf die Spitze;
+was im Verzeichnis stand, bleibt im Log.
 
 Die Ausgabe nennt den Eintrag und wie sich der Wechsel zurücksetzen lässt:
 
@@ -3172,6 +3175,9 @@ Lässt sich der Zustand eines Worktrees nicht lesen und hat kein lesbarer \type{
 ausgecheckt, nennt eine Zeile ihn, denn er könnte der gesuchte sein.
 Stand der Working-Copy-Commit schon auf der Spitze oder hat kein Worktree \type{main}
 ausgecheckt, bleibt es bei der Zeile des Merges.
+Ist der nachgezogene Worktree ein anderer als der des Aufrufs, nennt die letzte Zeile sein
+Verzeichnis (\type{stemma op restore N -C VERZEICHNIS}),
+denn \type{op restore} setzt den Eintrag nur in diesem Worktree zurück.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Branch fehlt oder
 \type{main} ist, wenn für den Branch schon ein Pull Request offen ist, wenn der Akteur den

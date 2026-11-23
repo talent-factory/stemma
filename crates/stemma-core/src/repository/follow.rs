@@ -48,6 +48,8 @@ pub enum Followed {
     Done {
         /// The name of the worktree: `main` for the main worktree.
         worktree: String,
+        /// The directory of the worktree. `op restore` of `entry` runs there.
+        path: PathBuf,
         /// The entry of the snapshot that came first, if the directory had unsaved changes.
         snapshot: Option<Box<Entry>>,
         /// The entry of the move of the working-copy commit, an entry of `switch`.
@@ -123,10 +125,11 @@ impl Repository {
     /// their names, as one of them may be the one; without unreadable ones it is
     /// [`Followed::NoWorktree`].
     ///
-    /// A worktree in which a command stopped after its files (a merge, a rebase, or a switch onto
-    /// an older tip, whose entry is written while the working-copy pointer is old) is not brought
-    /// along: a snapshot would save those files as changes. The switch refuses with
-    /// [`SwitchError::Stopped`], which arrives as [`Behind::Failed`], and nothing is written.
+    /// A worktree in which a command stopped before its working-copy pointer moved (a merge, a
+    /// rebase, a commit, or a switch that the same switch can no longer finish) is not brought
+    /// along: a snapshot would save what the command left as changes. The switch refuses with
+    /// [`SwitchError::Stopped`], which arrives as [`Behind::Failed`], and nothing is written. Its
+    /// owner repeats that command or runs `switch --discard`; this step never discards.
     ///
     /// # Errors
     ///
@@ -196,6 +199,7 @@ impl Repository {
                     ..
                 }) => Followed::Done {
                     worktree: row.name,
+                    path: row.path,
                     snapshot,
                     entry,
                     handled,
@@ -321,6 +325,7 @@ mod tests {
             snapshot,
             entry,
             handled,
+            ..
         } = followed
         else {
             panic!("expected a move, got {followed:?}");

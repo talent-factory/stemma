@@ -692,30 +692,42 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
             merged.merged.number()
         ))
     };
+    // `op restore` of the entry of the switch runs in the worktree that moved.
+    let here = repository.worktree_name().unwrap_or("main").to_owned();
+    let undo = |worktree: &str, path: &std::path::Path, entry: u64| {
+        if worktree == here {
+            format!("To undo it: stemma op restore {entry}\n")
+        } else {
+            format!(
+                "To undo it: stemma op restore {entry} -C {}\n",
+                mask_controls(&path.display().to_string())
+            )
+        }
+    };
     let late = match repository.follow_main(&who, &AllowAll) {
         Ok(Followed::NoWorktree | Followed::UpToDate { .. }) => None,
         Ok(Followed::Done {
             worktree,
+            path,
             snapshot,
             entry,
             handled,
         }) => {
             text.push_str(&format!(
-                "{}Brought the working copy of the worktree {} to the tip of main as entry {}\n\
-                 {}To undo it: stemma op restore {}\n",
+                "{}Brought the working copy of the worktree {} to the tip of main as entry {}\n{}{}",
                 saved_text(snapshot.as_deref()),
                 mask_controls(&worktree),
                 entry.number(),
                 handled_text(&handled, true),
-                entry.number()
+                undo(&worktree, &path, entry.number())
             ));
             None
         }
         // The switch wrote an entry and did not finish, or it is made and a flush is not known.
         Ok(Followed::Behind {
             worktree,
+            path,
             reason: Behind::Failed(error),
-            ..
         }) if error.entry().is_some() || error.snapshot().is_some() => {
             let name = mask_controls(&worktree);
             if !error.made() {
@@ -727,10 +739,10 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
                 if let Some(entry) = error.entry() {
                     text.push_str(&format!(
                         "{}Brought the working copy of the worktree {name} to the tip of main \
-                         as entry {}\nTo undo it: stemma op restore {}\n",
+                         as entry {}\n{}",
                         saved_text(error.snapshot()),
                         entry.number(),
-                        entry.number()
+                        undo(&worktree, &path, entry.number())
                     ));
                 }
                 Some(failed(format!(
@@ -758,7 +770,9 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
         }
         Ok(Followed::Unknown { damaged }) => {
             text.push_str(&format!(
-                "The state of the worktree {} cannot be read; if it has main checked out, {stays}.\n",
+                "The state of these worktrees cannot be read: {}. One of them may have main \
+                 checked out and stay on the old tip; `stemma worktree list` says what is \
+                 damaged.\n",
                 mask_controls(&damaged.join(", "))
             ));
             None

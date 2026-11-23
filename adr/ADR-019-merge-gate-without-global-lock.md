@@ -136,7 +136,8 @@ an entry is written and a part is missing; so does a switch that is made while i
 known. A worktree whose state cannot be read is named in the output, as it may be the one.
 
 A stop between `pr-merge` and the step leaves the same state. In all of these cases the owner
-runs `switch main` in the worktree: a switch to the branch that HEAD names brings a working copy
+runs `switch main` in the worktree (after the stopped command is repeated, or with `--discard`,
+if a command of the worktree stopped): a switch to the branch that HEAD names brings a working copy
 that stayed behind to the tip (ADR-010). A second `pr merge` does not help, as the pull request
 is merged.
 
