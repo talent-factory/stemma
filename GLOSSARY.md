@@ -122,7 +122,7 @@ The newest commit of `main` that a finished run of the checks covered. The commi
 unverified window. (geprüfte Spitze)
 
 **Unverified window**:
-The commits of `main` after the verified tip. Its size is bounded by `max_unverified` of the policy
+The commits of `main` after the verified tip. Its size is bounded by `max-unverified` of the policy
 (10 by default) plus what lands during one run; at that size all merges wait until a run on the tip
 has started; the repairing change is exempt. The log records finished runs only, so the gate waits
 until a finished run covers a newer commit. (Fenster ungeprüfter Commits)
@@ -140,12 +140,13 @@ of `main` itself has no base. (Lauf)
 _Avoid_: Build
 
 **Last green tip**:
-The newest commit of `main` that a finished run covered with success. A later failed run on the
-same commit does not undo it; the gate then looks for the first red tip. (letzte grüne Spitze)
+The newest commit of `main` that a finished run without a base covered with success. A later
+failed run on the same commit does not undo it; the gate then looks for the first red tip. (letzte grüne Spitze)
 
 **Red tip**:
-The oldest commit after the last green tip that a finished run covered with failure. While it is
-the newest verified commit, only a change that repairs it lands at level 2 or 3. (rote Spitze)
+The oldest commit after the last green tip that a finished run covered with failure. While the
+newest verified commit is red, a change of level 2 or 3 lands only if it repairs a commit after the
+last green tip, up to and including the red tip. (rote Spitze)
 _Avoid_: Broken main
 
 **Bound**:
@@ -380,7 +381,7 @@ touches it, and it never bypasses the merge gate. (Owner-Override)
 **Pull request**:
 The request of a write owner to merge a branch into `main`. It has no object of its own: it is the
 sequence of its entries in the operation log, and its state (open, merged, closed) is what those
-entries add up to. (Pull-Request)
+entries add up to. (Pull Request)
 _Avoid_: Merge request
 
 **Risk level**:

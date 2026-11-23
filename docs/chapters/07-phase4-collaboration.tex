@@ -309,13 +309,13 @@ ob \type{M} im Speicher liegt, und beginnt sonst von vorn.
 \type{track}, \type{commit}, \type{status} und \type{op restore} nehmen die Sperre weiterhin
 vor ihrem ersten Objekt.
 
-Zwei Prüfungen schützen den Merge, bevor er landet.
 Vor der Sperre prüft das Gate, dass der Branch noch den Kopf hat, den die Eröffnung nennt, und
 dass der Merge sauber ist.
 Ändert der Merge den Tree der Spitze nicht, liegt die Änderung schon auf \type{main}, und das
 Gate nimmt den Reparaturweg (siehe unten).
 Unter der Sperre prüft es den offenen Zustand des Pull Requests und den Kopf des Branches noch
 einmal, denn beides kann sich seit dem Schreiben von \type{M} geändert haben.
+
 Danach schreibt es zuerst den Eintrag \type{gate-merge} für die Bewegung von \type{main},
 bewegt \type{main} und schreibt zuletzt \type{pr-merge} für den Pull Request.
 Das Log nimmt nur einen Eintrag je Schreibvorgang auf; die Reihenfolge schliesst aus,
@@ -403,7 +403,7 @@ geschrieben hat, und kein Sponsor eines Agenten, der das getan hat.
 der Selbstfreigabe.
 Es zählt die Identität; \type{model} und \type{session} beschreiben nur, daher lässt sich eine
 stärkere Unabhängigkeit nicht prüfen,
-und zwei Agenten desselben Sponsors bleiben zwei Prüfungen.
+und zwei Agenten desselben Sponsors zählen als zwei Prüfungen und zwei Freigaben.
 Der Mensch bei den Stufen 2 und 3 bleibt der Anker (ADR-004, ADR-019).
 
 In einem Repository mit Register zählt ein Ergebnis ausserdem nur mit einem Beweis:
@@ -438,22 +438,24 @@ Konflikt.
 Nur ein Lauf auf der Spitze von \type{main} erkennt ihn.
 Der Lauf deckt die Spitze zum Zeitpunkt seines Starts ab; was währenddessen landet, deckt der
 nächste Lauf ab.
-Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein beendeter Lauf
-erfolgreich abdeckte; ein Lauf auf einem Commit ausserhalb von \type{main} zählt nicht.
+Die letzte grüne Spitze ist der neueste Commit von \type{main}, den ein beendeter Lauf ohne
+Basis erfolgreich abdeckte; ein Lauf auf einem Commit ausserhalb von \type{main} oder mit Basis
+zählt nicht.
 Die erste rote Spitze ist der älteste Commit danach, den ein beendeter Lauf mit Fehler abdeckte.
 Ein späterer fehlgeschlagener Lauf auf demselben Commit nimmt einen erfolgreichen nicht zurück;
 er bleibt im Log, und das Gate sucht danach die erste rote Spitze.
 Ist die Spitze rot, behebt eine neue Änderung den Fehler, ein Fix oder ein Revert, und nicht ein
 Umschreiben von \type{main}.
-Die Ursache in einem Fenster ungeprüfter Commits findet eine Bisektion über den linearen Verlauf
-mit einem Test je Commit und logarithmisch vielen Läufen; das Gate selbst bisektiert nicht.
+Die Ursache findet eine Bisektion über die Commits nach der letzten grünen Spitze bis
+einschliesslich der ersten roten, der älteste zuerst, mit einem Test je Commit und
+logarithmisch vielen Läufen; das Gate selbst bisektiert nicht.
 
 Das Gate hält keinen Zustand.
 Es liest die Schranken bei jedem Versuch neu aus dem Log und aus dem Verlauf von \type{main},
 nach der Regeltabelle und vor dem Commit \type{M}, denn ein Lauf oder eine Reservierung kann
 erscheinen, während das Gate neu beginnt.
-In einem Repository mit Register zählt auch dort nur ein Lauf mit Beweis, ein fehlgeschlagener
-ebenso wie ein erfolgreicher.
+In einem Repository mit Register zählt für die Schranken und für die letzte grüne Spitze nur ein
+Lauf mit Beweis, ein fehlgeschlagener ebenso wie ein erfolgreicher.
 Eine Änderung, die warten muss, endet mit einer Meldung; das Gate schreibt dafür keinen Eintrag,
 keinen Commit \type{M} und bewegt keine Referenz (die Blobs und Trees des Merges können im
 Speicher bleiben, ADR-014).
@@ -485,9 +487,8 @@ die Stufen 0 und 1 einen sauberen Merge darauf.
 Die Policy kennt \type{max-unverified} (Standard 10).
 Das Fenster zählt die Commits nach der neuesten geprüften Spitze, bei einem Repository ohne
 jeden Lauf den ganzen Verlauf.
-Liegen so viele Commits darin, warten alle Merges der Stufen 0 bis 3, ausser einer Behebung.
-Das Log kennt nur beendete Läufe; \quotation{bis ein Lauf gestartet ist} heisst daher: bis ein
-beendeter Lauf einen neueren Commit abdeckt.
+Liegen so viele Commits darin, warten alle Merges der Stufen 0 bis 3, ausser einer Behebung,
+bis ein beendeter Lauf einen neueren Commit abdeckt; das Log kennt nur beendete Läufe.
 
 {\bf Die Reservierung.}
 Änderungen der Stufen 2 und 3 holen bei vielen Schreibern die Spitze womöglich nie ein, weil
@@ -567,7 +568,7 @@ den Abbruch nach acht Versuchen, \type{NotFlushed} eine Bewegung, die als nicht 
 \item \type{last_green_tip} liest die letzte grüne Spitze.
 \item \type{record_check} schreibt den Eintrag \type{check}; der Befehl \type{check record}
 ruft es auf.
-\item \type{Repository::red_window} liefert das Fenster für die Bisektion.
+\item \type{Repository::red_window} liefert die Commits für die Bisektion.
 \item \type{bounds::bisect} sucht darin.
 \stopitemize
 \stopinfobox
@@ -1552,8 +1553,7 @@ Grössen er ändert.
 
 \section[sec:phase4-open]{Offene Fragen}
 
-Die Folgearbeit der Phase, also was der Kern schon kann und die Befehle noch nicht anschliessen,
-sammelt \in{Kapitel}[chap:outlook].
+Die Folgearbeit der Phase sammelt \in{Kapitel}[chap:outlook].
 Zwei Fragen des Entwurfs sind selbst offen.
 
 \startitemize
