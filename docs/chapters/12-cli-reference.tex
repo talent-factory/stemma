@@ -1099,6 +1099,20 @@ Im Eintrag \type{switch} stehen alle Bewegungen: HEAD, der Working-Copy-Commit u
 der neue Branch. Die Reihenfolge ist wie beim \type{op restore}: erst der Eintrag, dann die
 Dateien, dann die Zeiger (der Branch, der Working-Copy-Commit, zuletzt HEAD).
 
+Zeigt HEAD schon auf den Branch, gibt es nur dann etwas zu tun, wenn die Arbeitskopie hinter dem
+Branch zurückgeblieben ist: Ein Befehl eines anderen Worktrees hat den Branch bewegt,
+wie es das Merge-Gate mit \type{main} tut (Abschnitt \type{pr}),
+und der Working-Copy-Commit steht nicht auf der Spitze.
+Dann zieht der Befehl die Arbeitskopie nach, mit den Schritten eines Wechsels:
+Snapshot, neuer Working-Copy-Commit auf der Spitze (mit den Änderungen, oder mit
+\type{--discard} ohne sie), Eintrag, Dateien.
+HEAD bleibt, und der Eintrag \type{switch} nennt nur die Bewegung des Working-Copy-Commits.
+Zurückgeblieben ist eine Arbeitskopie, wenn der Branch einen Commit hat,
+die Spitze nicht der einzige Elternteil des Working-Copy-Commits ist
+und die Spitze nicht dessen Change-ID trägt.
+Die letzte Bedingung nimmt einen abgebrochenen \type{commit} aus,
+den dessen Wiederholung abschliesst (ADR-010).
+
 Die Ausgabe nennt den Eintrag und wie sich der Wechsel zurücksetzen lässt:
 
 \starttyping
@@ -1110,8 +1124,11 @@ Die erste Zeile heisst \type{Switched to branch NAME} bei einem bestehenden Bran
 \type{Switched to a new branch NAME} bei \type{-c} und \type{Detached HEAD at ZIEL} bei
 \type{--detach}. Hat der Snapshot einen Eintrag geschrieben, steht davor die Zeile
 \type{Saved the working copy first as entry N}.
-Zeigt HEAD schon auf den Branch, schreibt der Befehl \type{Already on NAME}, endet mit
+Zeigt HEAD schon auf den Branch und steht der Working-Copy-Commit auf dessen Spitze,
+schreibt der Befehl \type{Already on NAME}, endet mit
 Exit-Code 0 und schreibt weder einen Snapshot noch einen Eintrag.
+Zieht er eine zurückgebliebene Arbeitskopie nach, heisst die erste Zeile
+\type{Brought the working copy to the tip of branch NAME}.
 Wiederholt man \type{switch -c NAME} nach einem Erfolg, endet der Befehl mit Exit-Code 1, denn der
 Name besteht dann.
 
@@ -1130,7 +1147,9 @@ und \type{base}, die Zeile
 mit einer Zeile \type{conflict PFAD} je Pfad im Konflikt (oder \type{discard the changes of the
 working copy}), je Datei \type{write PFAD} und \type{remove PFAD}, und zuletzt, ausser bei einem
 abgebrochenen Wechsel, der Hinweis, dass ein echter Wechsel zuerst sichert.
-Zeigt HEAD schon auf den Branch, schreibt auch der Plan \type{Already on NAME}.
+Zeigt HEAD schon auf den Branch, schreibt auch der Plan \type{Already on NAME};
+für eine zurückgebliebene Arbeitskopie beginnt er mit
+\type{Would bring the working copy to the tip of branch NAME; nothing is written}.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch (die Meldung nennt
 \type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Namen mit \type{-c},
@@ -3099,6 +3118,21 @@ fehlenden Eintrag \type{pr-merge}. Das Gate prüft die Genehmigungen nicht; \typ
 ihre Zahl.
 \type{list} liest nur und schreibt nichts.
 
+Das Gate bewegt nur den Branch.
+Danach zieht \type{merge} den Worktree nach, der \type{main} ausgecheckt hat,
+mit einem \type{switch} auf \type{main} in diesem Worktree (Abschnitt \type{switch}):
+Ein Snapshot sichert ungesicherte Änderungen, der Working-Copy-Commit kommt auf die neue Spitze,
+seine Änderungen gehen mit, und ein Konflikt dabei ist Daten des Commits.
+Der Schritt hat einen eigenen Eintrag \type{switch}, der nur den Working-Copy-Commit bewegt
+und sich mit \type{op restore} zurücksetzen lässt, ohne den Merge anzutasten.
+Der Worktree kann der des Aufrufs sein oder ein anderer;
+einen anderen erreicht der Befehl über dessen Verzeichnis.
+Stehen bleibt der Worktree, wenn seine Arbeitskopie einem anderen Akteur gehört
+(nur der Eigentümer sichert sie, ADR-010; der Befehl übernimmt keine Arbeitskopie),
+oder wenn sein Verzeichnis fehlt, verschoben ist oder eine andere Arbeitskopie enthält.
+Der Merge gilt in jedem Fall, und der Eigentümer zieht den Worktree mit \type{switch main} nach.
+Hat kein Worktree \type{main} ausgecheckt, entfällt der Schritt.
+
 {\bf Ausgabe.} \type{open}, \type{close}, \type{approve} und \type{merge} nennen in einer Zeile,
 was sie taten. \type{list} schreibt je Pull Request eine Zeile in der Reihenfolge der
 Öffnungen: die Nummer, den Zustand (\type{open}, \type{closed} oder \type{merged}), den Branch,
@@ -3109,6 +3143,24 @@ der Genehmigungen, die für den Head zählen; ungültige nennt die Zeile mit ihr
 8 open feat 08e522cd0b90 by human daniel approvals 1
 7 merged fix 5f1d0a3c92ab by human anna
 \stoptyping
+
+Nach der Zeile von \type{merge} stehen die Zeilen des Nachziehens:
+
+\starttyping
+Merged pull request 8 into main: 4c1f0e77a2b9 on top of 5f1d0a3c92ab.
+Brought the working copy of the worktree main to the tip of main as entry 13
+To undo it: stemma op restore 13
+\stoptyping
+
+Schrieb der Snapshot einen Eintrag, steht vor der zweiten Zeile
+\type{Saved the working copy first as entry N};
+nach ihr folgen für mitgenommene Änderungen und Konflikte die Zeilen eines Wechsels
+(Abschnitt \type{switch}).
+Bleibt der Worktree stehen, beginnt eine Zeile mit
+\type{The worktree NAME at VERZEICHNIS has main checked out},
+nennt den Grund und den Befehl \type{stemma switch main}, und der Befehl endet mit Exit-Code 0.
+Stand der Working-Copy-Commit schon auf der Spitze oder hat kein Worktree \type{main}
+ausgecheckt, bleibt es bei der Zeile des Merges.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Branch fehlt oder
 \type{main} ist, wenn für den Branch schon ein Pull Request offen ist, wenn der Akteur den
@@ -3135,14 +3187,24 @@ Ein erneuter \type{pr merge} mergt nach einer gescheiterten Bewegung neu und sch
 sonst die Bewegung von \type{main} ab;
 ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
 denn die erste zählt ohne Beweis nicht.
+Exit-Code 3 meldet auch einen Merge, der gilt, während der Worktree mit \type{main} nicht
+folgte, weil der Wechsel scheiterte: Eine unverfolgte Datei steht im Weg einer Datei der neuen
+Spitze, die Sperre der Referenzen ist gehalten, oder das Dateisystem versagte.
+Die Zeile des Merges steht dann auf der Standardausgabe,
+und die Meldung beginnt mit \type{pull request N is merged}.
+Diesen Aufruf wiederholt man nicht, denn der Pull Request ist nicht mehr offen;
+\type{switch main} im Worktree zieht ihn nach, sobald die Ursache behoben ist.
 Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
 Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
 
 {\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
 (Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
 \type{approve} lässt sich wiederholen; die Genehmigungen derselben Identität zählen einmal.
-\type{merge} lässt sich nach jedem Fehler und nach einem Absturz wiederholen; nach einem Erfolg
+\type{merge} lässt sich nach jedem Fehler und nach einem Absturz wiederholen, solange
+\type{pr-merge} nicht im Log steht; danach
 endet der Aufruf mit Exit-Code 1, weil der Pull Request nicht mehr offen ist.
+Fehlt nach \type{pr-merge} nur das Nachziehen des Worktrees, nach Exit-Code 3 oder nach einem
+Absturz, holt \type{switch main} im Worktree es nach.
 \type{list} liest nur.
 
 {\bf Beispiele.}

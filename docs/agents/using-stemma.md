@@ -153,7 +153,7 @@ an enforcing repository whose register lists more than one identity. So:
 | `pr approve <n>` | Only when the human named the pull request as the review task. Not for a pull request that the agent opened or wrote a commit in (no self-approval, ADR-004). |
 | `check record <commit> --result pass\|fail` | After a test run of the agent, with the real result of that run. For levels 2 and 3 a result of the opener, of an author of the change, or of their agents and sponsors does not count for the gate (ADR-019), so a check of the agent on its own branch does not clear it; a failing result still counts, so report it. `check list` only reads. |
 | `pr close <n>` | Only for a pull request the agent opened itself and wants to withdraw; no instruction needed. |
-| `pr merge <n>` | Only on the instruction of the human. Never lower `--level` to get past the gate; without the option it is 3, the strictest. |
+| `pr merge <n>` | Only on the instruction of the human. Never lower `--level` to get past the gate; without the option it is 3, the strictest. After the merge the command brings the worktree that has `main` checked out to the new tip, if you own its working copy. A worktree of another actor stays behind, and the output says so (exit code 0): report it, its owner runs `stemma switch main` there. |
 
 An agent does not call `enforce` and `register`:
 
@@ -186,7 +186,7 @@ report holder and expiry to the human, or wait until it expires.
 | Code | Where | What the agent does |
 | ---- | ----- | ------------------- |
 | 1 | `lease`, `pr`, `check` | Nothing was written. Typical causes: another actor holds the lease, the pull request is not open, self-approval, a missing or inactive key, no result of a check counts for the gate, or `Paused` from the merge gate. Fix the cause or report it; for `Paused` repeat after the next run changes the state. |
-| 3 | `pr`, `check`, `lease` | An entry is written, but a part is missing (a proof file, the move of `main`, the lease file). Do not repeat blindly. `pr merge` can be repeated: it repeats or completes the move. A repeated `pr approve` writes a second approval, which is meant to be. `check record` that says the proof is missing: the result does not count, so run it again; if it is only unclear whether the entry is saved, `check list` shows it. After `lease`, run `lease show <branch>`, then repeat `take` or `release` if the state is not what you wanted. |
+| 3 | `pr`, `check`, `lease` | An entry is written, but a part is missing (a proof file, the move of `main`, the lease file). Do not repeat blindly. `pr merge` can be repeated: it repeats or completes the move. The exception is a message that starts with `pull request <n> is merged`: the merge is complete and a worktree did not follow `main`; do not repeat it, fix what the message names, and run `stemma switch main` in that worktree if it is yours. A repeated `pr approve` writes a second approval, which is meant to be. `check record` that says the proof is missing: the result does not count, so run it again; if it is only unclear whether the entry is saved, `check list` shows it. After `lease`, run `lease show <branch>`, then repeat `take` or `release` if the state is not what you wanted. |
 | 6 | `pr`, `lease`, `check` | The lock of the references is held. Wait, try a few times, then report. |
 
 Codes 2 and 5 are as in the table above. Any command of this section that ends with 5 means

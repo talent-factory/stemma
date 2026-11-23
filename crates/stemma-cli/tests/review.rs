@@ -529,6 +529,166 @@ fn a_merge_moves_main_to_the_commit_that_it_names() {
     assert_eq!(again.code, 1, "{}", again.stdout);
 }
 
+/// [`with_feature_branch`] with the working copy back on `main`, a pull request for `feat`, and a
+/// passing check of another actor. Returns the number of the pull request.
+fn ready_to_merge_on_main() -> (Dir, String) {
+    let dir = with_feature_branch();
+    ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    let number = open_pull(dir.path());
+    ok(
+        dir.path(),
+        &[
+            "check", "record", "feat", "--base", "main", "--result", "pass", "--actor", OTHER,
+        ],
+    );
+    (dir, number)
+}
+
+#[test]
+fn a_merge_brings_the_worktree_that_has_main_checked_out_to_the_new_tip() {
+    let (dir, number) = ready_to_merge_on_main();
+    assert!(!dir.path().join("b.txt").exists());
+
+    let merged = ok(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+    );
+
+    assert!(
+        merged.stdout.contains("Merged pull request")
+            && merged.stdout.contains(
+                "Brought the working copy of the worktree main to the tip of main as entry"
+            )
+            && merged.stdout.contains("To undo it: stemma op restore"),
+        "{}",
+        merged.stdout
+    );
+    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
+    // The working copy stands on the tip: nothing is left to bring along, and a commit works.
+    let again = ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    assert_eq!(again.stdout, "Already on main\n");
+    write(dir.path(), "c.txt", "c\n");
+    track_ok(dir.path(), "c.txt");
+    ok(dir.path(), &["commit", "-m", "next", "--actor", ACTOR]);
+}
+
+#[test]
+fn a_merge_carries_unsaved_changes_of_the_worktree_onto_the_new_tip() {
+    let (dir, number) = ready_to_merge_on_main();
+    write(dir.path(), "a.txt", "a\nmine\n");
+
+    let merged = ok(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+    );
+
+    assert!(
+        merged
+            .stdout
+            .contains("Saved the working copy first as entry")
+            && merged
+                .stdout
+                .contains("Carried the changes of the working copy to the new base"),
+        "{}",
+        merged.stdout
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "a\nmine\n"
+    );
+    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
+}
+
+#[test]
+fn a_worktree_of_another_actor_stays_behind_and_its_owner_brings_it_along() {
+    let (dir, number) = ready_to_merge_on_main();
+
+    let merged = ok(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", OTHER],
+    );
+
+    assert!(
+        merged.stdout.contains("Merged pull request")
+            && merged.stdout.contains("The worktree main at ")
+            && merged
+                .stdout
+                .contains(&format!("its working copy belongs to {ACTOR}"))
+            && merged
+                .stdout
+                .contains("`stemma switch main` there brings it along"),
+        "{}",
+        merged.stdout
+    );
+    assert!(!dir.path().join("b.txt").exists());
+    let listed = ok(dir.path(), &["pr", "list"]);
+    assert!(listed.stdout.contains("merged feat"), "{}", listed.stdout);
+
+    let planned = ok(
+        dir.path(),
+        &["switch", "main", "--dry-run", "--actor", ACTOR],
+    );
+    assert!(
+        planned.stdout.starts_with(
+            "Would bring the working copy to the tip of branch main; nothing is written\n"
+        ),
+        "{}",
+        planned.stdout
+    );
+    assert!(!dir.path().join("b.txt").exists());
+    let followed = ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    assert!(
+        followed
+            .stdout
+            .starts_with("Brought the working copy to the tip of branch main as entry "),
+        "{}",
+        followed.stdout
+    );
+    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
+}
+
+#[test]
+fn a_file_in_the_way_ends_the_merge_with_3_and_the_merge_stands() {
+    let (dir, number) = ready_to_merge_on_main();
+    // Not tracked, and where the change has a file of its own.
+    write(dir.path(), "b.txt", "mine\n");
+
+    let merged = run(
+        dir.path(),
+        &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
+    );
+
+    assert_eq!(merged.code, 3, "{}", merged.stderr);
+    assert!(
+        merged.stdout.contains("Merged pull request"),
+        "{}",
+        merged.stdout
+    );
+    assert!(
+        merged
+            .stderr
+            .contains(&format!("pull request {number} is merged"))
+            && merged
+                .stderr
+                .contains("the worktree main did not follow `main`")
+            && merged
+                .stderr
+                .contains("`stemma switch main` there brings it along"),
+        "{}",
+        merged.stderr
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "mine\n"
+    );
+    let listed = ok(dir.path(), &["pr", "list"]);
+    assert!(listed.stdout.contains("merged feat"), "{}", listed.stdout);
+    // Once the file is out of the way, the switch brings the working copy along.
+    fs::remove_file(dir.path().join("b.txt")).unwrap();
+    ok(dir.path(), &["switch", "main", "--actor", ACTOR]);
+    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
+}
+
 #[test]
 fn bad_arguments_are_refused_before_anything_is_written() {
     let dir = with_feature_branch();

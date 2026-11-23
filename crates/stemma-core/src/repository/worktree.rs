@@ -812,7 +812,7 @@ impl Repository {
     /// no worktree can have (see [`crate::oplog::valid_worktree_name`]) and a `HEAD` that cannot
     /// be inspected count as damaged. A damaged worktree does not hide the others, so that the
     /// command that removes one does not depend on the state of all.
-    fn scan_worktrees(&self) -> Result<Scanned, WorktreeError> {
+    pub(super) fn scan_worktrees(&self) -> Result<Scanned, WorktreeError> {
         let shared = self.metadata_dir();
         let main_path = shared
             .parent()
@@ -891,7 +891,7 @@ fn boxed(damaged: Vec<(String, WorktreeError)>) -> Vec<(String, Box<WorktreeErro
 }
 
 /// The readable worktrees, and the linked ones that are not, each with its name and why.
-type Scanned = (Vec<WorktreeInfo>, Vec<(String, WorktreeError)>);
+pub(super) type Scanned = (Vec<WorktreeInfo>, Vec<(String, WorktreeError)>);
 
 /// Reads the linked worktree whose state directory is `state`. A state directory without `HEAD`
 /// is an add that stopped and gives `None`.

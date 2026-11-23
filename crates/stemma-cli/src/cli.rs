@@ -748,7 +748,9 @@ struct CommitArgs {
 struct SwitchArgs {
     /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch,
     /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. With
-    /// `--detach`, a name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
+    /// `--detach`, a name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`.
+    /// If HEAD names the branch already and another command moved it (the merge gate moves
+    /// `main`), the working copy is brought to its tip
     #[arg(value_name = "NAME", value_parser = parse_revision)]
     target: Revision,
 
@@ -2080,7 +2082,9 @@ impl Drop for TakeOverNote<'_> {
 }
 
 /// Changes the branch that HEAD names, makes a branch and changes to it (`-c`), or detaches HEAD
-/// (`--detach`) (ADR-010). The core takes the snapshot first. A working-copy commit that holds
+/// (`--detach`) (ADR-010). A switch to the branch that HEAD names brings the working copy to the
+/// tip of that branch if another command moved the branch (the merge gate moves `main`), and is
+/// "already on" otherwise. The core takes the snapshot first. A working-copy commit that holds
 /// changes is carried to the target, or, with `--discard`, left behind. Without a snapshot,
 /// `--dry-run` shows what would move. The result is written before an error that follows a switch
 /// that was made (exit code 3), so that a script finds the entry that undoes it. A closed pipe is
@@ -2203,7 +2207,12 @@ fn switched_text(
     handled: &Handled,
     entry: &oplog::Entry,
 ) -> String {
+    // HEAD named the branch already: the switch only brought the working copy to its tip.
+    let head_stays = entry.change().is_some_and(|change| change.head().is_none());
     let what = match target {
+        SwitchTarget::Existing(name) if head_stays => {
+            format!("Brought the working copy to the tip of branch {name}")
+        }
         SwitchTarget::Existing(name) => format!("Switched to branch {name}"),
         SwitchTarget::Create { name, .. } => format!("Switched to a new branch {name}"),
         SwitchTarget::Detach(revision) => format!("Detached HEAD at {}", qualified(revision)),
@@ -2369,6 +2378,9 @@ fn plan_switch_text(target: &SwitchTarget, plan: &SwitchPlan) -> String {
     let mut text = format!(
         "Would {}; nothing is written\n",
         match target {
+            SwitchTarget::Existing(name) if plan.head_stays() => {
+                format!("bring the working copy to the tip of branch {name}")
+            }
             SwitchTarget::Existing(name) => format!("switch to branch {name}"),
             SwitchTarget::Create { name, .. } => format!("switch to a new branch {name}"),
             SwitchTarget::Detach(revision) => format!("detach HEAD at {}", qualified(revision)),

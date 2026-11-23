@@ -148,8 +148,19 @@ art, not a template (ADR-015).
     tracked and in the way of a path of `T` is found by the plan, which runs before the snapshot
     when `W` is empty, so that nothing is written, not even a snapshot; the plan is made again
     under the lock.
-  - **Switching to the branch that HEAD names is not a change**: the command ends with code 0 and
-    the line `Already on <name>`, with no snapshot and no entry.
+  - **Switching to the branch that HEAD names is not a change**, if the working-copy commit
+    stands on the tip of the branch: the command ends with code 0 and the line
+    `Already on <name>`, with no snapshot and no entry.
+  - **A working copy that stayed behind its branch is brought along** (STEMMA-261). A command of
+    another worktree can move the branch that HEAD names and leave this working copy on the old
+    tip: the merge gate does so with `main` (ADR-019). `switch <name>` then brings the working
+    copy to the tip by the steps above (the snapshot, `W'` on the tip, with a carry or
+    `--discard`, the plan, the entry, the files), and HEAD stays. The entry `switch` holds the
+    move of the working-copy commit only, and the first line of the command says that the working
+    copy was brought to the tip of the branch. A working copy has stayed behind when the branch
+    has a commit, the tip is not the only parent of `W`, and the tip does not have the change ID
+    of `W`. The last condition leaves out a `commit` that stopped between its two moves, which
+    the repeat of `commit` finishes.
   - **A stop after the files is repeated by the same command.** The entry is written before the
     files, so a stop leaves the files of `T` in the directory and the pointers old, as for a
     restore. A snapshot would save those files as changes of `W` and `W` would then be refused as
