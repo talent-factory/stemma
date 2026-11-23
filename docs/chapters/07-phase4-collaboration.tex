@@ -159,9 +159,10 @@ Kein Leser sieht eine halbe Datei, und nach einem Absturz liegt die alte ganz da
 Die Lease endet durch die Zeit und nicht durch ein Ereignis, also braucht ein abgestürzter Agent
 keinen Dienst, der sie beendet.
 Dafür muss die Uhr der Akteure ungefähr stimmen:
-Weicht sie ab, hält ein Akteur die Lease eines anderen um die Abweichung früher für abgelaufen.
-Die Regel kostet je schreibender Operation $O(1)$: eine Datei lesen, prüfen, bei einer
-Verlängerung ersetzen.
+Weicht sie ab, hält ein Akteur die Lease eines anderen um die Abweichung früher oder später
+für abgelaufen, je nachdem, ob seine Uhr vor- oder nachgeht.
+Die Regel kostet je schreibender Operation $O(1)$: eine Datei lesen, prüfen und, wenn sich der
+Zustand ändert, ersetzen.
 Die träge Verlängerung spart die Einträge, das Log wächst nicht mit jedem Schreiben;
 der Preis ist, dass es nicht zeigt, wie lange der Inhaber geschrieben hat.
 Das Verfahren steht nicht im Kursbuch; es ist ein gegenseitiger Ausschluss mit Frist, verwandt
@@ -292,8 +293,8 @@ Schreiber, hält der Beweis, und zählt die Identität schon?
 Die erste Frage, die eine Freigabe nicht besteht, liefert den Grund.
 Die Invariante lautet: Die zählenden Freigaben nennen alle den aktuellen Kopf, kein Reviewer ist
 Eröffner oder Schreiber, und keine Identität kommt zweimal vor.
-Weil die Funktion nur das Log und die Beweisdateien liest, ergibt eine Wiederholung dasselbe,
-gleichgültig, wer die Einträge schrieb.
+Weil sie nur das Log, den Verlauf, das Register des Basis-Commits und die Beweisdateien liest,
+ergibt eine Wiederholung bei gleichem Kopf dasselbe, gleichgültig, wer die Einträge schrieb.
 Die Folge der Fragen legt auch fest, welche Freigabe einer Identität zählt:
 Ein früherer Eintrag mit ungültigem Beweis nimmt dem späteren den Platz nicht,
 denn nur zählende Freigaben schliessen eine Wiederholung aus.
@@ -501,8 +502,9 @@ Die Suche hält zwei Grenzen und die Invariante, dass der gesuchte Commit zwisch
 und der Commit an der oberen Grenze schlecht ist.
 Ein Lauf auf der Mitte setzt die obere Grenze auf die Mitte, wenn sie schlecht ist,
 und sonst die untere hinter die Mitte.
-Die Spanne schrumpft in jedem Schritt auf höchstens die Hälfte, also endet die Suche nach
-höchstens $\lceil \log_2 n \rceil$ Läufen mit einem Commit, und eine lineare Suche brauchte $n$.
+Von $m$ Kandidaten bleiben in jedem Schritt höchstens $\lceil m/2 \rceil$, also endet die Suche
+nach höchstens $\lceil \log_2 n \rceil$ Läufen mit einem Commit; eine lineare Suche braucht bis
+zu $n-1$.
 Die Korrektheit setzt einen Verlauf voraus, der erst gut und dann schlecht ist.
 Besteht ein Commit, nachdem ein früherer scheiterte, etwa bei einem Test, der nicht immer gleich
 ausgeht, liefert die Suche einen Commit, der scheitert und dessen Vorgänger besteht,
@@ -639,29 +641,31 @@ ruft es auf.
 Dieser Abschnitt beschreibt, wie der Kern Beweise signiert und prüft.
 Das Verfahren steht in ADR-003 fest: SSHSIG mit Ed25519, und die Wahl der Bibliothek in ADR-020.
 Commits sind nicht signiert.
-Ein Beweis signiert einen Eintrag des Operation Logs oder eine Freigabe.
+Ein Beweis signiert einen Eintrag des Operation Logs, eine Freigabe oder die Mitzeichnung eines
+Sponsors.
 
 {\bf Was signiert wird.}
-Signiert werden nicht die Nutzdaten allein.
-Davor steht eine Kopfzeile mit dem Typ und der Formatversion der Nutzdaten (Domänentrennung):
+Signiert wird nicht die Nutzlast allein.
+Davor steht eine Kopfzeile mit dem Typ und der Formatversion der Nutzlast (Domänentrennung):
 
 \starttyping
-stemma-proof\n<Typ>\n<Version>\n<Nutzdaten>
+stemma-proof\n<Typ>\n<Version>\n<Nutzlast>
 \stoptyping
 
 Der Typ ist \type{log-entry}, \type{approval} oder \type{sponsorship}, die Version heute 1.
 Das Kennwort, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
-also beginnen die Nutzdaten eindeutig nach dem dritten.
+also beginnt die Nutzlast eindeutig nach dem dritten.
 Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Eintrag,
 und eine Signatur einer späteren Formatversion nie als Version 1.
 Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
 
 Die Invariante der Domänentrennung lautet: Zwei verschiedene Paare aus Typ und Version ergeben
-für jede Nutzlast verschiedene Bytes.
+für beliebige Nutzlasten verschiedene Bytes.
 Sie folgt aus der Kopfzeile und der eindeutigen Trennung, denn die Kopfzeile unterscheidet sich
 schon vor der Nutzlast.
 Heute überschneiden sich die Nutzlasten ohnehin nicht: Ein Eintrag signiert seinen Hash,
-eine Freigabe die Nummer und den Kopf, eine Mitzeichnung Agent, Rolle und Sponsor.
+eine Freigabe die Nummer und den Kopf, die Mitzeichnung des Sponsors (\in{Abschnitt}[sec:register])
+Agent, Rolle und Sponsor.
 Die Kopfzeile schützt vor dem künftigen Typ, dessen Nutzlast zufällig mit einer anderen
 übereinstimmt, und vor einem Fehler im Format.
 Typ und Version stehen in den signierten Bytes und nicht im Namensraum.
@@ -687,7 +691,7 @@ Welcher Schlüssel zu welchem Akteur gehört, entscheidet das Akteursregister de
 Angenommen werden nur Ed25519-Schlüssel und der Hash SHA-512.
 Eine Signatur mit einem anderen Namensraum, Schlüsseltyp oder Hash lehnt schon das Einlesen ab.
 Eine unbekannte Formatversion lehnt die Prüfung ab, bevor sie die Signatur ansieht,
-und ein falscher Typ, eine falsche Version, ein anderer Schlüssel oder andere Nutzdaten
+und ein falscher Typ, eine falsche Version, ein anderer Schlüssel oder eine andere Nutzlast
 lassen die Prüfung fehlschlagen.
 Die Tests der Logik brauchen keinen Schlüssel auf der Platte: ein \type{Signer} im Test leitet
 einen Schlüssel aus einem festen Startwert ab.
@@ -779,16 +783,18 @@ die Stufe mit einer Zeile festzulegen.
 {\bf Die Auswertung.}
 Die Stufe einer Änderung ist das Maximum der Stufen aller Pfade, die sie berührt;
 ein Rename berührt den alten und den neuen Pfad, und eine Änderung ohne Pfad hat Stufe 0.
-Die Stufe eines Pfades ist das Maximum der Zeilen, die ihn nennen, oder 2, wenn keine ihn nennt,
+Die Stufe eines Pfades ist das Maximum der Stufen der Zeilen, die ihn nennen, oder 2, wenn keine
+ihn nennt,
 und für die Policy-Datei und das Register mindestens 3, was keine Zeile senkt.
 Die Invariante: Eine zusätzliche Zeile senkt nie die Stufe eines Pfades, den schon eine Zeile
 nennt, und das Ergebnis hängt nicht von der Reihenfolge der Zeilen oder der Pfade ab,
 denn das Maximum ist kommutativ und assoziativ.
-Nur ein Pfad, den noch keine Zeile nennt, kann durch eine neue Zeile sinken, von 2 auf 0 oder 1.
+Nur ein Pfad, den noch keine Zeile nennt und der kein Pfad der Policy oder des Registers ist,
+kann durch eine neue Zeile sinken, von 2 auf 0 oder 1.
 Der Kern liest die Policy in der Fassung des Basis-Commits;
 eine Änderung kann sich also nicht nach einer Policy bewerten lassen, die sie selbst mitbringt.
 Die Kosten sind $O(p\,l)$ Mustervergleiche für $p$ berührte Pfade und $l$ Zeilen;
-beide Zahlen sind begrenzt, ebenso die Tiefe eines Pfades.
+$l$ ist begrenzt, ebenso die Tiefe eines Pfades; $p$ wächst mit der Änderung.
 Das Verfahren steht nicht im Kursbuch; es ist ein Maximum über eine Folge mit dem Mustervergleich
 der Ausschlussdatei (\in{Tabelle}[tab:algorithms]).
 
