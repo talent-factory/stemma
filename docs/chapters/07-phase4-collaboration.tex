@@ -228,7 +228,7 @@ Als Schreiber eines solchen Commits zählt auch der Akteur des Eintrags im Log, 
 als erster unter irgendeinen Branch, ein Tag oder die Working Copy gebracht hat; ein späterer
 Branch auf demselben Commit, etwa zum Ansehen, zählt nicht: Das Feld \type{author} ist eine Angabe
 dessen, der den Commit gemacht hat, und nichts vergleicht es mit dem Akteur; der Akteur des
-Eintrags ist der, den der Authorizer zugelassen hat.
+Eintrags ist der, den der Autorisierer zugelassen hat.
 Wer einen Commit unter fremdem Namen auf den Branch bringt, kann ihn deshalb nicht freigeben.
 Die Regel gilt für die Identität, also gelten Modell und Session eines Agenten nicht als anderer
 Reviewer.
@@ -273,8 +273,9 @@ Die Neuzählung nennt zu jeder Freigabe, die nicht zählt, den Grund.
 Eine Merge-Queue mit globaler Sperre hält jede Änderung an, solange eine andere getestet wird.
 Bei vielen Schreibern, Menschen wie Agenten, wächst die Wartezeit mit ihrer Zahl und mit der
 Dauer einer Prüfung.
-Das Gate (ADR-019) verzichtet auf die Sperre: Prüfungen laufen nebeneinander, und die einzige
-Serialisierung ist die Zeigerbewegung von \type{main}.
+Das Gate (ADR-019) verzichtet auf die globale Sperre:
+Prüfungen laufen nebeneinander, und die einzige Serialisierung ist die Zeigerbewegung von
+\type{main}.
 Dafür muss es klären, was ein grünes Prüfergebnis noch heisst, wenn während des Laufs andere
 Änderungen landen.
 
@@ -351,7 +352,7 @@ Ein Prüfergebnis hält deshalb zwei Commits fest, den geprüften und die Basis,
 \type{main}, auf die er für die Prüfung gelegt wurde.
 Ein Ergebnis hat genau eine Basis; ein Lauf gegen eine andere Spitze ist ein anderes Ergebnis.
 Ein Lauf auf der Spitze von \type{main} selbst, wie ihn die Prüfung nach dem Merge macht
-(siehe unten), hat keine Basis.
+(siehe \quotation{Die rote Spitze und die Schranken}), hat keine Basis.
 Ob ein Ergebnis nach einer Bewegung von \type{main} genügt, bestimmt die Risikostufe aus ADR-004
 (\in{Tabelle}[tab:gate-rule]).
 
@@ -389,7 +390,7 @@ die Format-Version des Repositories auf 11.
 Der Kern schreibt ihn unter \type{refs.lock} und lehnt einen Commit ab, den der Store nicht
 als Commit kennt, und eine Basis, die der Commit selbst ist; der Leser lehnt einen solchen Eintrag
 ebenfalls ab.
-Über den Schreiber fragt der Kern nur den Authorizer nach der Operation \type{check}.
+Über den Schreiber fragt der Kern nur den Autorisierer nach der Operation \type{check}.
 Ob ein Ergebnis zählt, hängt vom Pull Request, seinen Autoren und der Risikostufe ab, und nichts
 davon steht im Eintrag; die Regel gilt deshalb beim Lesen.
 

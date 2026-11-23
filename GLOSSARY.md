@@ -136,12 +136,13 @@ is the time since the entry before it, and a reservation lasts one hour at most.
 
 **Check run**:
 One execution of the tests on one commit. Its recorded outcome is a check result; a run on the tip
-of `main` itself has no base. (Lauf)
+of `main` itself has no base. (Prüfung, Lauf)
 _Avoid_: Build
 
 **Last green tip**:
 The newest commit of `main` that a finished run without a base covered with success. A later
-failed run on the same commit does not undo it; the gate then looks for the first red tip. (letzte grüne Spitze)
+failed run on the same commit does not undo it; the gate then looks for the first red tip.
+(letzte grüne Spitze)
 
 **Red tip**:
 The oldest commit after the last green tip that a finished run covered with failure. While the
