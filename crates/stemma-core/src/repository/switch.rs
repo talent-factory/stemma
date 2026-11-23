@@ -150,7 +150,8 @@ impl SwitchPlan {
 #[must_use]
 pub enum Switched {
     /// HEAD names the branch already, and the working-copy commit stands on its tip. Nothing was
-    /// written, and the log has no entry.
+    /// written, and the log has no entry. The pointers, the working-copy commit, and the commit
+    /// at the tip were read to tell.
     AlreadyOn(BranchName),
     /// HEAD, the working-copy commit, and (for a new branch) the branch moved. For a switch to
     /// the branch that HEAD names already, whose working-copy commit did not stand on the tip,
@@ -233,6 +234,8 @@ impl Repository {
     /// a new branch whose name starts with `heads/` or `tags/` ([`UpdateError::ReservedName`]),
     /// [`SwitchError::NoSuchBranch`], [`SwitchError::NoSuchCommit`], [`SwitchError::BranchExists`],
     /// [`SwitchError::NoStart`], [`SwitchError::Refs`], [`SwitchError::Store`],
+    /// [`SwitchError::Stopped`] for a working copy that stayed behind its branch while a command
+    /// of the worktree is stopped (with [`Changes::Carry`] only), [`SwitchError::Log`],
     /// [`SwitchError::Read`] for a commit that cannot be read, [`SwitchError::Next`] for the
     /// next working-copy commit (a merge that fails, or a working-copy commit with several parents
     /// that holds changes), and [`SwitchError::Checkout`] for a file in the way. Nothing is
@@ -258,7 +261,7 @@ impl Repository {
         let allowed = self
             .authorize(actor, authorizer, &operation, &target_name(target))
             .map_err(SwitchError::Update)?;
-        let resolved = match self.resolve(target)? {
+        let resolved = match self.resolve(target, changes)? {
             Ok(resolved) => resolved,
             Err(already) => return Ok(Switched::AlreadyOn(already)),
         };
@@ -272,7 +275,7 @@ impl Repository {
             .map_err(SwitchError::Refs)?;
         // The target is read again under the lock: another command may have moved a branch since
         // the first read, and the new working-copy commit is built on this tip.
-        let resolved = match self.resolve(target)? {
+        let resolved = match self.resolve(target, changes)? {
             Ok(resolved) => resolved,
             Err(already) => return Ok(Switched::AlreadyOn(already)),
         };
@@ -413,7 +416,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns what [`switch`](Self::switch) returns before the snapshot.
+    /// Returns what [`switch`](Self::switch) returns before the snapshot, among them
+    /// [`SwitchError::Stopped`].
     pub fn plan_switch(
         &self,
         target: &SwitchTarget,
@@ -432,7 +436,7 @@ impl Repository {
         let _ = self
             .authorize(actor, authorizer, &operation, &target_name(target))
             .map_err(SwitchError::Update)?;
-        let resolved = match self.resolve(target)? {
+        let resolved = match self.resolve(target, changes)? {
             Ok(resolved) => resolved,
             Err(already) => return Ok(Planned::AlreadyOn(already)),
         };
@@ -477,13 +481,17 @@ impl Repository {
 
     /// Reads the target. The inner `Err` is the branch that HEAD names already and whose tip the
     /// working-copy commit stands on ([`behind`](Self::behind) says when it does not).
-    fn resolve(&self, target: &SwitchTarget) -> Result<Result<Resolved, BranchName>, SwitchError> {
+    fn resolve(
+        &self,
+        target: &SwitchTarget,
+        changes: Changes,
+    ) -> Result<Result<Resolved, BranchName>, SwitchError> {
         let refs = self.refs();
         let head = refs.head().map_err(SwitchError::Refs)?;
         match target {
             SwitchTarget::Existing(name) => {
                 if head == Head::Branch(name.clone()) {
-                    return Ok(match self.behind(name)? {
+                    return Ok(match self.behind(name, changes)? {
                         Some(tip) => Ok(Resolved {
                             head,
                             tip,
@@ -546,9 +554,11 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`SwitchError::Stopped`] if the working copy stayed behind and a command of this worktree
-    /// stopped after its files (see `refuse_stopped`), and the errors of reading.
-    fn behind(&self, name: &BranchName) -> Result<Option<CommitId>, SwitchError> {
+    /// [`SwitchError::Stopped`] if the working copy stayed behind, `changes` is
+    /// [`Changes::Carry`], and a command of this worktree stopped after its files (see
+    /// `refuse_stopped`); with [`Changes::Discard`] the working copy is brought along all the
+    /// same. Also the errors of reading the pointers, the two commits, and the log.
+    fn behind(&self, name: &BranchName, changes: Changes) -> Result<Option<CommitId>, SwitchError> {
         let refs = self.refs();
         let Some(tip) = refs.branch(name).map_err(SwitchError::Refs)? else {
             return Ok(None);
@@ -562,31 +572,41 @@ impl Repository {
         if named.change() == working.change() {
             return Ok(None);
         }
-        self.refuse_stopped(current, tip)?;
+        // With `--discard` nothing of the directory is carried, so a stopped command is no risk.
+        if changes == Changes::Carry {
+            self.refuse_stopped(current, tip)?;
+        }
         Ok(Some(tip))
     }
 
-    /// Refuses to bring a working copy along while the newest entry of this worktree (a
-    /// `take-over` does not count) names a move of the working-copy commit `current` that did
-    /// not happen: the command of that entry stopped after it wrote its files, and a snapshot
-    /// would save them as changes of `current`. One case is let through: a `switch` whose commit
-    /// stands on `tip`, which [`stopped_switch`](Self::stopped_switch) finishes without a
-    /// snapshot. A stopped `merge`, `rebase`, or `op restore`, and a stopped switch onto an
-    /// older tip, end in [`SwitchError::Stopped`].
+    /// Refuses to carry a working copy along while a command of this worktree is stopped: the
+    /// newest entry of this worktree that names a move of the working-copy commit names a move
+    /// from `current` that did not happen. That command wrote its files and stopped (or, for a
+    /// `commit`, moved its branch and stopped), and a snapshot would save what it left as changes
+    /// of `current`. Entries that move no working-copy commit (`pr-merge`, `check`, a lease) and
+    /// entries of other worktrees do not hide it.
+    ///
+    /// One case is let through: a `switch` whose commit stands on `tip` and whose entry is the
+    /// newest of the whole log but for a `take-over`. This is the case that
+    /// [`stopped_switch`](Self::stopped_switch) finishes without a snapshot; it looks at the
+    /// newest entry of the log, so the same condition is asked here. Every other stopped command
+    /// ends in [`SwitchError::Stopped`]: a `merge`, a `rebase`, an `op restore`, a `commit` whose
+    /// branch moved on since, and a switch onto an older tip or one that a later entry hides. The
+    /// way out is to repeat that command where it can be repeated, or `switch --discard`, which
+    /// carries nothing.
     fn refuse_stopped(&self, current: CommitId, tip: CommitId) -> Result<(), SwitchError> {
         let entries = self.oplog().entries().map_err(SwitchError::Log)?;
         let here = self.refs_store().worktree_name();
-        let Some((number, change)) = entries
+        let mut changes = entries
             .iter()
             .rev()
             .filter_map(|entry| entry.change().map(|change| (entry.number(), change)))
-            .find(|(_, change)| {
-                change.worktree_name() == here && change.operation().as_str() != TAKE_OVER
-            })
-        else {
-            return Ok(());
-        };
-        let Some(moved) = change.working_copy() else {
+            .filter(|(_, change)| change.operation().as_str() != TAKE_OVER);
+        let newest = changes.clone().next().map(|(number, _)| number);
+        let Some((number, change, moved)) = changes.find_map(|(number, change)| {
+            let moved = change.working_copy()?;
+            (change.worktree_name() == here).then_some((number, change, moved))
+        }) else {
             return Ok(());
         };
         let (Some(&old), Some(&next)) = (moved.before(), moved.after()) else {
@@ -595,7 +615,7 @@ impl Repository {
         if old != current || next == current {
             return Ok(());
         }
-        if change.operation().as_str() == OPERATION {
+        if change.operation().as_str() == OPERATION && newest == Some(number) {
             let commit = read_any_commit(self.objects(), next).map_err(SwitchError::Read)?;
             if commit.parents() == [tip] {
                 return Ok(());
@@ -955,7 +975,8 @@ pub enum SwitchError {
     /// The working copy stayed behind its branch, but the newest entry of this worktree is a
     /// command that stopped after its files were written: the working-copy commit did not move.
     /// A snapshot would save those files as changes of the old working-copy commit, so the
-    /// working copy is not brought along until that command is repeated. Nothing was written.
+    /// working copy is not carried along. The command is to be repeated, or the switch is made
+    /// with [`Changes::Discard`]. Nothing was written.
     Stopped {
         /// The number of the entry of the command that stopped.
         entry: u64,
@@ -1067,7 +1088,10 @@ impl fmt::Display for SwitchError {
             Self::Stopped { entry, operation } => write!(
                 f,
                 "the working copy stayed behind its branch, but the `{operation}` of entry \
-                 {entry} stopped before the working-copy commit moved; repeat that command first"
+                 {entry} stopped before the working-copy commit moved, and what it left in the \
+                 directory would be saved as changes; repeat that command if it can be \
+                 repeated, or bring the working copy to the tip with `switch --discard`, which \
+                 carries nothing (the log keeps what the directory holds)"
             ),
             Self::BranchExists(name) => write!(
                 f,
@@ -2534,6 +2558,76 @@ mod tests {
             repository.plan_switch(&existing("main"), Changes::Carry, &actor(), &AllowAll),
             Err(SwitchError::Stopped { .. })
         ));
+
+        // The way out carries nothing: the working copy lands on the tip, empty.
+        let (_, _, next) = done(switch_with(
+            &repository,
+            &existing("main"),
+            Changes::Discard,
+        ));
+        let landed = read_commit(repository.objects(), next).unwrap();
+        assert_eq!(landed.parents(), [later]);
+        assert_eq!(landed.tree(), old.tree());
+        assert_eq!(read(&dir, "b.txt"), "two");
+        assert!(matches!(
+            switch(&repository, &existing("main")),
+            Ok(Switched::AlreadyOn(_))
+        ));
+    }
+
+    #[test]
+    fn an_entry_that_moves_no_working_copy_does_not_hide_a_stopped_command() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let tip = stopped_bring_along(&dir, &repository);
+        // `main` moves again, by an entry of this worktree that names no working-copy commit,
+        // as `gate-merge` and `pr-merge` are when `pr merge` runs here.
+        let old = read_commit(repository.objects(), tip).unwrap();
+        let later = old.rewrite(old.tree(), actor(), now(), "later");
+        let later = repository.objects().put_commit(&later).unwrap();
+        let operation = OperationName::try_new("gate-merge").unwrap();
+        repository
+            .update_branch(
+                &operation,
+                &name("main"),
+                Some(tip),
+                later,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = entries(&repository);
+
+        let error = switch(&repository, &existing("main")).unwrap_err();
+
+        assert!(matches!(error, SwitchError::Stopped { .. }), "{error}");
+        assert_eq!(entries(&repository), before);
+    }
+
+    #[test]
+    fn a_stopped_bring_along_that_a_later_entry_hides_is_not_saved_by_a_snapshot() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let _ = stopped_bring_along(&dir, &repository);
+        // An entry that is newer than the stopped switch: the repeat no longer finds it.
+        let feature = repository.refs().branch(&name("feature")).unwrap().unwrap();
+        let operation = OperationName::try_new("branch").unwrap();
+        repository
+            .update_branch(
+                &operation,
+                &name("other"),
+                None,
+                feature,
+                &actor(),
+                &AllowAll,
+            )
+            .unwrap();
+        let before = entries(&repository);
+
+        let error = switch(&repository, &existing("main")).unwrap_err();
+
+        assert!(matches!(error, SwitchError::Stopped { .. }), "{error}");
+        assert_eq!(entries(&repository), before);
     }
 
     #[test]
