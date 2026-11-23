@@ -35,6 +35,9 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 - Before the tag is set, the human first makes a Stemma commit for the release state with `stemma commit -m "<message>"`, in the root of the repository (never in a Git worktree), and then runs `stemma op verify`.
   The anchor and the entry it prints go into the release notes as the section `Stemma history` ("Entry N is the commit ..."), in the format of the notes of `v0.2.0` (read them with `gh release view v0.2.0`).
   The agent does not call `stemma` and does not edit a release. Run `just release-check` again once the draft of the release exists and before it is published: only then it checks that the section is there and that no line `Not part of this release` is left; without a release it prints a hint, and the responsibility stays with the human.
+- The release carries the book as a PDF. Build it with `just book` on the commit of the tag and check that the title page shows the version.
+  Copy `docs/main.pdf` to `stemma-v<version>.pdf` (for example `stemma-v0.4.0.pdf`) and attach it to the release with `gh release upload v<version> stemma-v<version>.pdf`.
+  The human does this, or an agent on the explicit order of the human; an agent does not edit a release on its own. The releases `v0.2.0`, `v0.3.0` and `v0.4.0` carry an asset of this name (check with `gh release view`, which only reads).
 
 ## Book alongside the code
 
