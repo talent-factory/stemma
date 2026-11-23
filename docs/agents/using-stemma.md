@@ -47,11 +47,15 @@ an intermediate state is to run a command.
    working copy fail with exit code 1: stop and report it.
 3. Note the number `N` of the newest log entry: `stemma op log -n 1 --json`; the field is
    `number`. `op restore` puts back the state *before* the entry it names, so the first entry
-   that the task writes, `N+1`, is the point to go back to (`op restore N+1`, see below).
-4. Find out whether the repository is enforcing: the file `.stemma/enforcing` exists, and
-   `.stemma-actors/register` lists the identities. In an open repository (the case that the
-   steps above assume) there is no lease and no signing: `lease take` ends with exit code 1 and
-   `--key` is not read. `pr` and `check` work there as described in "Enforcing repositories".
+   that the task writes, `N+1`, is the point to go back to (`op restore N+1`, see below). Entries of
+   `lease`, `pr`, and `check` are no restore points: `op restore` refuses them. If the task writes
+   one of those first, name the first entry of a snapshot or a commit instead.
+4. Find out whether the repository is enforcing: the file `.stemma-actors/register` exists in
+   the working copy and lists the identities. In a working copy made with `worktree add` the
+   marker `.stemma/enforcing` is not there, so do not test for it; if unsure, ask the human.
+   In an open repository (the case that the steps above assume) there is no lease and no
+   signing: `lease take` ends with exit code 1 and `--key` is not read.
+   `pr` and `check` work there as described in "Enforcing repositories".
    Do not ask for the mode with `enforce`: it changes the repository.
 5. Optional: `stemma op verify` checks the whole log. It needs no actor. Keep the line
    `anchor <number>:<hash>` (if there is one) outside the repository, for example in the
@@ -131,8 +135,9 @@ an enforcing repository whose register lists more than one identity. So:
   working copy per actor, as above.
 - Where a lease exists (see the next bullet), take it by hand with `stemma lease take <branch>`
   before `pr open` on that branch, because `pr open` refuses an actor who does not hold a valid
-  one (exit code 1). A protected branch such as `main` has no lease. The lease
-  expires (60 minutes by default); `lease show <branch>` says who holds it and for how long.
+  one (exit code 1). Do not take a lease on `main`: it changes only through a pull request.
+  The lease expires (60 minutes by default); `lease show <branch>` says who holds it and for how
+  long.
   Give it back with `lease release <branch>` when the branch is done.
 - In an open repository, or one whose register lists a single identity, no lease applies:
   `lease take` ends with exit code 1, and `pr open` asks for none. Go on without it.
@@ -143,11 +148,11 @@ an enforcing repository whose register lists more than one identity. So:
 | ------- | ----------------------- |
 | `lease show <branch>` | Any time. It only reads. |
 | `lease take`, `lease release` | Around the work on its own branch, as above. |
-| `pr open <branch>` | When the task is done and the human asked for a pull request. |
+| `pr open <branch>` | When the task is done and the human asked for a pull request. `--reviewer` names identities of the register, which the human gives; an open repository has no register and takes none. |
 | `pr list` | To read the state of the pull requests. It only reads. |
 | `pr approve <n>` | Only when the human named the pull request as the review task. Not for a pull request that the agent opened or wrote a commit in (no self-approval, ADR-004). |
-| `check record <commit> --result pass\|fail` | After a test run of the agent, with the real result of that run. `check list` only reads. |
-| `pr close <n>` | Only for a pull request the agent opened itself and wants to withdraw. |
+| `check record <commit> --result pass\|fail` | After a test run of the agent, with the real result of that run. For levels 2 and 3 a result of the opener, of an author of the change, or of their agents and sponsors does not count for the gate (ADR-019), so a check of the agent on its own branch does not clear it; a failing result still counts, so report it. `check list` only reads. |
+| `pr close <n>` | Only for a pull request the agent opened itself and wants to withdraw; no instruction needed. |
 | `pr merge <n>` | Only on the instruction of the human. Never lower `--level` to get past the gate; without the option it is 3, the strictest. |
 
 An agent does not call `enforce` and `register`:
@@ -182,7 +187,7 @@ report holder and expiry to the human, or wait until it expires.
 | ---- | ----- | ------------------- |
 | 1 | `lease`, `pr`, `check` | Nothing was written. Typical causes: another actor holds the lease, the pull request is not open, self-approval, a missing or inactive key, no result of a check counts for the gate, or `Paused` from the merge gate. Fix the cause or report it; for `Paused` repeat after the next run changes the state. |
 | 3 | `pr`, `check`, `lease` | An entry is written, but a part is missing (a proof file, the move of `main`, the lease file). Do not repeat blindly. `pr merge` can be repeated: it repeats or completes the move. A repeated `pr approve` writes a second approval, which is meant to be. `check record` that says the proof is missing: the result does not count, so run it again; if it is only unclear whether the entry is saved, `check list` shows it. After `lease`, run `lease show <branch>`, then repeat `take` or `release` if the state is not what you wanted. |
-| 6 | `pr`, `lease` | The lock of the references is held. Wait, try a few times, then report. |
+| 6 | `pr`, `lease`, `check` | The lock of the references is held. Wait, try a few times, then report. |
 
 Codes 2 and 5 are as in the table above. Any command of this section that ends with 5 means
 damage: stop and call the human.
@@ -199,8 +204,7 @@ edited marker. Finish editing a conflicted file before you run a command that ta
 
 - `stemma op restore <N>`. It rewrites the working directory. Run `--dry-run` first. In this
   repository it also changes files that Git owns, so ask first.
-- `stemma pr merge`, and `pr approve` and `pr close` as the table in "Enforcing repositories"
-  says.
+- `stemma pr merge`, and `pr approve` as the table in "Enforcing repositories" says.
 
 ## Never
 
