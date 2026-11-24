@@ -749,8 +749,8 @@ impl Repository {
             &[],
             PurgeFailure::Log,
         ))?;
-        // A tag that was written since the plan, by hand or by a program that does not know the
-        // lock, must not point to a commit that the purge deletes (ADR-014). This is checked
+        // A tag or a remote reference that was written since the plan, by hand or by a program
+        // that does not know the lock, must not point to a commit that the purge deletes (ADR-014). This is checked
         // again on a resume, and before anything is written or deleted.
         self.check_tags_against(plan, &written)?;
         // The numbers of the `purge` entries that are written, for an error: once there is one,
@@ -927,7 +927,8 @@ impl Repository {
     }
 
     /// Refuses the delete set of `plan` if a tag points to a commit that it rewrites and the plan
-    /// does not move it, or if a remote reference points to one. Both are read again under the
+    /// does not move it, or if a remote reference points to a commit that it rewrites or only
+    /// deletes. Both are read again under the
     /// lock, because the plan may be older than a tag or a remote reference (a resume, or a file
     /// that was written by hand).
     fn check_tags_against(
@@ -949,9 +950,9 @@ impl Repository {
         let rewritten: HashSet<CommitId> = plan.rewrites.iter().map(|(old, _)| *old).collect();
         // A tag that the journal moves is the person's decision; any other is refused.
         let moving: Vec<_> = plan.tags.iter().map(|(name, _)| name.clone()).collect();
-        // A plan made now counts a remote reference as a root, so its commit is one that the
-        // plan rewrites. A reference that is younger than the plan may name a commit that the
-        // plan only deletes, as a leftover that nothing reached then.
+        // A plan made now counts a remote reference as a root, so its commit is kept or
+        // rewritten and is never a leftover. A reference that is younger than the plan may name
+        // a commit that the plan only deletes, a leftover that nothing reached then.
         let removed: HashSet<CommitId> = rewritten.iter().chain(&plan.commits).copied().collect();
         check_tags(&tags, &rewritten, &moving)
             .and_then(|()| check_remotes(&remotes, &removed))

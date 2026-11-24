@@ -408,8 +408,8 @@ pub enum Pointer {
     Branch(BranchName),
     /// A tag (ADR-008).
     Tag(BranchName),
-    /// A remote reference (ADR-008). No entry names one yet: `fetch` and `push` will, and
-    /// `verify` names it already.
+    /// A remote reference (ADR-008), as `verify` names it; the entries of `fetch` and `push`
+    /// name it too.
     Remote(RemoteRefName),
 }
 

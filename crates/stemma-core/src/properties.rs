@@ -1345,7 +1345,7 @@ fn the_actor_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
 fn every_seed_and_every_property_starts_from_another_state() {
     let mut firsts = std::collections::HashSet::new();
     // Every stream that a property of this crate uses, here and in `repository/purge/journal.rs`.
-    let streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23];
+    let streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23, 33, 34];
     for seed in 0..64 {
         for stream in streams {
             let mut rng = Rng::new(seed, stream);
@@ -1684,7 +1684,7 @@ fn random_remote_ref(rng: &mut Rng) -> crate::remote::RemoteRef {
 #[test]
 fn the_remote_reference_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
     use crate::remote::RemoteRef;
-    let (seed, mut rng) = (seed(), Rng::new(seed(), 31));
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 33));
     let valid: Vec<Vec<u8>> = (0..64)
         .map(|_| random_remote_ref(&mut rng).encode())
         .collect();
@@ -1716,7 +1716,7 @@ fn the_remote_configuration_reader_accepts_only_what_the_encoder_writes_and_neve
     use crate::remote::{CaFile, RemoteAddress, RemoteConfig, RepositoryId};
     const KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMt6BisKCOOMdkWowXYqXUrS1zKF4aE6QenzZ1SSB/Md";
-    let (seed, mut rng) = (seed(), Rng::new(seed(), 32));
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 34));
     let valid: Vec<Vec<u8>> = (0..64)
         .map(|n| {
             let scheme = if rng.one_in(4) { "http" } else { "https" };

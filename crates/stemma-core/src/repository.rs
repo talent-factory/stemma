@@ -694,8 +694,10 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`RemoteError::Corrupt`] if the file, or the name of another entry of the
-    /// directory, is not in canonical form, and [`RemoteError::Io`] if the storage fails.
+    /// Returns [`RemoteError::Corrupt`] if the file is not in canonical form or if an entry of
+    /// `remotes/` whose name does not start with a dot is no name of a remote, and
+    /// [`RemoteError::Io`] if the storage fails or the entry is not a regular file (a link is not
+    /// followed). A file that another change removes while it is read is `None`.
     pub fn remote(&self, name: &RemoteName) -> Result<Option<RemoteConfig>, RemoteError> {
         remote::read_one(&self.shared, name)
     }

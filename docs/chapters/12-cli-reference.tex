@@ -3112,6 +3112,7 @@ stehen. Ein Reviewer ist eine Identität des Registers und nicht der Öffner.
 \item {\bf \type{--repairs} COMMIT:} Der Commit, den der Pull Request repariert: eine
 Commit-ID, ein Branch, ein Tag oder eine Remote-Referenz
 (\type{remotes/REMOTE/heads/NAME}, \type{remotes/REMOTE/tags/NAME}).
+Ein anderer Text, der mit \type{remotes/} beginnt, ist ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Akteurs für
 \type{ssh-keygen -Y sign}: der private Schlüssel, oder der öffentliche, wenn \type{ssh-agent} ihn
 hält. In einem durchsetzenden Repository ist die Option Pflicht, in einem offenen wird sie nicht
@@ -3261,6 +3262,7 @@ stemma check list [-C VERZEICHNIS]
 Standard ist das aktuelle.
 \item {\bf COMMIT:} Der getestete Commit: eine Commit-ID, ein Branch, ein Tag oder eine
 Remote-Referenz (\type{remotes/REMOTE/heads/NAME}, \type{remotes/REMOTE/tags/NAME}).
+Ein anderer Text, der mit \type{remotes/} beginnt, ist ein Aufruffehler (Exit-Code 2).
 Trägt ein Name einen Branch und ein Tag, lehnt der Befehl ihn ab;
 \type{heads/NAME} oder \type{tags/NAME} entscheidet.
 \item {\bf \type{--result} ERGEBNIS:} \type{pass} oder \type{fail}.

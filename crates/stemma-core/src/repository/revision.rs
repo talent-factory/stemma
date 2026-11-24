@@ -26,8 +26,8 @@ use std::str::FromStr;
 
 use super::Repository;
 use crate::object::{CommitId, ObjectId, ObjectIdParseError};
-use crate::refs::{BranchName, BranchNameError, RefError, RefKind};
-use crate::remote::{RemoteNameError, RemoteRefName};
+use crate::refs::{BranchName, BranchNameError, RefError};
+use crate::remote::{RemoteNameError, RemoteRefName, RemoteRefNameError};
 
 /// The prefix of the qualified form of a branch.
 pub const BRANCH_PREFIX: &str = "heads/";
@@ -124,23 +124,14 @@ impl FromStr for Revision {
             name(rest).map(Self::Branch)
         } else if let Some(rest) = text.strip_prefix(TAG_PREFIX) {
             name(rest).map(Self::Tag)
-        } else if let Some(rest) = text.strip_prefix(REMOTE_PREFIX) {
-            let shape = || RevisionParseError::RemoteShape(text.to_owned());
-            let mut parts = rest.splitn(3, '/');
-            let (Some(remote), Some(kind), Some(reference)) =
-                (parts.next(), parts.next(), parts.next())
-            else {
-                return Err(shape());
-            };
-            let kind = [RefKind::Branch, RefKind::Tag]
-                .into_iter()
-                .find(|found| found.directory() == kind)
-                .ok_or_else(shape)?;
-            Ok(Self::Remote(RemoteRefName {
-                remote: remote.parse().map_err(RevisionParseError::Remote)?,
-                kind,
-                name: name(reference)?,
-            }))
+        } else if text.starts_with(REMOTE_PREFIX) {
+            text.parse::<RemoteRefName>()
+                .map(Self::Remote)
+                .map_err(|error| match error {
+                    RemoteRefNameError::Remote(error) => RevisionParseError::Remote(error),
+                    RemoteRefNameError::Name(error) => RevisionParseError::Name(error),
+                    _ => RevisionParseError::RemoteShape(text.to_owned()),
+                })
         } else {
             name(text).map(Self::Name)
         }
@@ -228,7 +219,7 @@ pub fn require_unreserved(name: BranchName) -> Result<BranchName, ReservedPrefix
 }
 
 impl Repository {
-    /// The commit that a branch, a tag, or a plain name leads to. A [`Revision::Commit`] is the
+    /// The commit that a branch, a tag, a remote reference, or a plain name leads to. A [`Revision::Commit`] is the
     /// business of the caller, which needs the store: it comes back as [`Missing::Commit`].
     ///
     /// The inner `Err` is a name that does not lead to one commit. A missing branch is told apart
@@ -264,13 +255,14 @@ pub(super) enum Missing {
     Commit(ObjectId),
     /// The branch of `heads/<name>`: each command has an error of its own for it.
     Branch(BranchName),
-    /// The tag, the name, or the clash of both.
+    /// The tag, the remote reference, the name, or the clash of a branch and a tag.
     Name(NameError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::refs::RefKind;
 
     fn name(text: &str) -> BranchName {
         text.parse().expect("a valid name")

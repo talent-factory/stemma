@@ -250,7 +250,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     `heads/remotes/x`.
   - **Reading** *(STEMMA-285)*. The store reads one remote reference by its exact name and lists
     all of them, sorted by the remote, then the branches before the tags, then the name. The
-    listing is as strict as the one of the branches: a directory below `refs/remotes` whose name
+    listing is as strict as the one of the branches: an entry below `refs/remotes` whose name
     is no name of a remote, an entry below a remote that is neither `heads` nor `tags`, a name
     below those that is no branch name, and a file that is not in canonical form are each
     `Corrupt` with the path, and a file in the place of a directory is an error of the file

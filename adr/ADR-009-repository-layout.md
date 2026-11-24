@@ -182,12 +182,15 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     rules of a branch name (ADR-008). The file has six lines in a fixed order, each with a
     newline: `stemma-remote 1`, `address <address>`, `repository <ID>`, `hub-key <key>`,
     `ca-file <path>`, and `sign-in yes` or `sign-in no`. The address starts with `https://` or
-    `http://` and goes on with printable ASCII characters without a space; it is kept as given,
+    `http://` and goes on with printable ASCII characters without a space. It has no `@`, `?`,
+    or `#` and does not end with `/`: every endpoint is the address and a name (ADR-023), one
+    repository has one spelling, and no password lies in the file. It is kept as given,
     and that `http://` is accepted towards a loopback address only stays a rule of the client
     (ADR-028). The ID is 32 lowercase hexadecimal digits (ADR-027). The key is an Ed25519 public
     key in the OpenSSH format without a comment, or `-` as long as none is pinned. The path of
     the CA file is text that is not empty, has no control character, and neither starts nor ends
-    with a space, or `-` for none (a file called `-` is written `./-`). The reader accepts what the writer writes and nothing else (ADR-005), and an
+    with a space, or `-` for none (a file called `-` is written `./-`). The reader accepts what
+    the writer writes and nothing else (ADR-005), and an
     entry of the directory whose name is no name of a remote is damage, except one that starts
     with a dot. One file per remote follows the branches and the leases: a change replaces one
     file atomically, and two remotes do not touch each other. A repository without the directory

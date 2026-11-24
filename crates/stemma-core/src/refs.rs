@@ -28,7 +28,7 @@
 //! A remote reference is the state of a branch or a tag on a hub as the clone last saw it
 //! (ADR-008). The store reads them ([`RefStore::remote_ref`], [`RefStore::remote_refs`]) and
 //! [`FsRefStore::verify`] checks them; only `fetch` and `push` move one, each with its entry in
-//! the operation log, and they are not built yet.
+//! the operation log (ADR-011).
 
 use std::error::Error;
 use std::fmt;
@@ -226,7 +226,7 @@ pub enum RefMalformed {
     /// The name of a state directory below `worktrees` is none that a worktree can have: the
     /// operation log and the journal of a purge could not name the worktree.
     WorktreeName,
-    /// The file of a remote reference has not exactly two lines, the commit and
+    /// The file of a remote reference does not have exactly two lines, the commit and
     /// `entry <hash>`.
     RemoteShape,
     /// An entry below the directory of a remote is neither `heads` nor `tags`.
@@ -277,7 +277,7 @@ pub enum RefParseError {
     InvalidOwner(ActorParseError),
     /// The hash of the record entry in the file of a remote reference is not in canonical form.
     InvalidRecordHash(ObjectIdParseError),
-    /// The name of a directory below `refs/remotes` is no name of a remote.
+    /// The name of an entry below `refs/remotes` is no name of a remote.
     InvalidRemoteName(RemoteNameError),
 }
 
@@ -617,8 +617,8 @@ pub enum LockHolder {
     },
 }
 
-/// The kind of a reference that is created or deleted: a branch or a tag. A branch comes before a
-/// tag in the order, which is that of a listing.
+/// The kind of a reference: a branch or a tag, of the repository or of a remote. A branch comes
+/// before a tag in the order, which [`RemoteRefName`] relies on for its listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum RefKind {
@@ -1127,8 +1127,10 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`RefError::Corrupt`] if the file is not in canonical form and [`RefError::Io`] if
-    /// the storage fails.
+    /// Returns [`RefError::Corrupt`] if the file is not in canonical form, and [`RefError::Io`] if
+    /// the storage fails or a file stands where `refs/remotes`, the directory of the remote, or
+    /// its `heads` or `tags` belongs: that is the error of [`remote_refs`](Self::remote_refs),
+    /// and no missing reference.
     fn remote_ref(&self, name: &RemoteRefName) -> Result<Option<RemoteRef>, RefError>;
 
     /// Returns all remote references, sorted by the remote, then the branches before the tags,
@@ -1138,8 +1140,8 @@ pub trait RefStore: crate::store::sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`RefError::Corrupt`] for a file that is not a valid remote reference, for a
-    /// directory below `refs/remotes` whose name is no name of a remote, for an entry below a
+    /// Returns [`RefError::Corrupt`] for a file that is not a valid remote reference, for an
+    /// entry below `refs/remotes` whose name is no name of a remote, for an entry below a
     /// remote that is neither `heads` nor `tags`, and for a name below those that is no branch
     /// name; and [`RefError::Io`] if the storage fails or a file stands where a directory belongs.
     fn remote_refs(&self) -> Result<Vec<(RemoteRefName, RemoteRef)>, RefError>;
@@ -2026,7 +2028,7 @@ impl FsRefStore {
 
     /// Whether `refs` and the directory `below` it exist; see
     /// [`namespace_exists`](Self::namespace_exists). `refs/remotes` is checked the same way: a
-    /// repository without a remote has none, which is no remote references.
+    /// repository that holds no remote reference need not have the directory.
     fn directories_exist(&self, below: &str) -> Result<bool, RefError> {
         let refs = self.root.join("refs");
         Ok(is_directory(&refs)? && is_directory(&refs.join(below))?)
@@ -2057,7 +2059,8 @@ impl FsRefStore {
         let mut relative = String::new();
         for (index, component) in components.iter().enumerate() {
             // Every directory but the first was seen to be a directory, and the first has to be
-            // one if it exists: `refs` or `heads` as a file is damage and not "no branches".
+            // one if it exists: the caller saw it (`refs/heads`, `refs/tags`, or `refs/remotes`),
+            // and a file in its place is damage and not "no references".
             let entries = match settled(|| fault::read_dir(&dir)) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
@@ -2175,11 +2178,12 @@ fn is_directory(dir: &Path) -> Result<bool, RefError> {
     }
 }
 
-/// What a name is in the file system of its namespace, the branches or the tags.
+/// What a name is in the file system of its namespace: the branches, the tags, or the remote
+/// references.
 enum Lookup {
     /// Nothing is there, and nothing is in the way.
     Absent,
-    /// The file of the branch or tag.
+    /// The file of the reference.
     Branch(PathBuf),
     /// A directory without any file below it holds the name. It is no branch and in nobody's way:
     /// it is what a change leaves behind that stopped. A change removes it.
@@ -2849,7 +2853,8 @@ impl FsRefStore {
     ///
     /// The result has one error for each reference that fails, in the order HEAD, the
     /// working-copy commit, the branches, the tags, and then the remote references, each in the
-    /// order of their listing; it is empty if all hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
+    /// order of their listing; it is empty if all hold. A commit that is missing is
+    /// [`VerifyError::Missing`]; one that is another kind of
     /// object ([`StoreError::KindMismatch`]), is damaged ([`StoreError::Corrupt`]), or cannot be
     /// read ([`StoreError::Io`]) is [`VerifyError::Store`]. Each commit is read and hashed
     /// completely, but it is not parsed, and its tree and parents are not followed.
@@ -2866,7 +2871,8 @@ impl FsRefStore {
     /// Returns [`RefError::PurgePending`] if the journal of a purge exists, before the check and
     /// after it, since a pointer may be between its old and its new commit then (ADR-014).
     /// Returns the errors of reading the references, as [`head`](RefStore::head),
-    /// [`working_copy`](Self::working_copy), and [`branches`](RefStore::branches) do: a missing
+    /// [`working_copy`](Self::working_copy), [`branches`](RefStore::branches),
+    /// [`tags`](RefStore::tags), and [`remote_refs`](RefStore::remote_refs) do: a missing
     /// HEAD or working-copy file, or a reference file that is not in canonical form, is a problem
     /// of the references themselves. All references are read before the first commit is looked
     /// up, so such an error comes without any failure of a commit.

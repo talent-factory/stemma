@@ -747,9 +747,9 @@ struct CommitArgs {
 #[derive(Debug, Args)]
 struct SwitchArgs {
     /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch,
-    /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. With
+    /// the tag, the remote reference (`remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`),
+    /// or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. With
     /// `--detach`, a name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`.
-    /// A remote reference is `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`.
     /// If HEAD names the branch already and another command moved it (the merge gate moves
     /// `main`), the working copy is brought to its tip
     #[arg(value_name = "NAME", value_parser = parse_revision)]
@@ -1207,8 +1207,8 @@ enum CliError {
     /// `branch -d` or `branch -m` names a branch that does not exist, or a name that is only a
     /// directory of branches.
     NoSuchBranch(BranchName),
-    /// `switch -c` got a qualified form (`heads/NAME`, `tags/NAME`, `remotes/...`) as the name of a new branch
-    /// (ADR-008). The core refuses a plain name with such a prefix as
+    /// `switch -c` got a qualified form (`heads/NAME`, `tags/NAME`, `remotes/...`) as the name of
+    /// a new branch (ADR-008). The core refuses a plain name with such a prefix as
     /// [`UpdateError::ReservedName`].
     ReservedName(ReservedPrefix),
     /// The branches were read, but the output could not be written.

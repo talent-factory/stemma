@@ -30,9 +30,9 @@
 //!
 //! Both follow the rule of ADR-005: one value, one encoding, and a reader that rejects everything
 //! else. This module holds the types, the two encodings, and the reader of the configuration; the
-//! remote references are read through the sealed [`RefStore`](crate::refs::RefStore). Nothing here
-//! writes a file or opens a connection: `remote add`, `fetch`, and `push` write, each with its
-//! entry in the operation log (ADR-011).
+//! remote references are read through the sealed [`RefStore`](crate::refs::RefStore). The module
+//! opens no connection, and a command that writes one of the files writes its entry in the
+//! operation log first (ADR-011).
 
 use std::error::Error;
 use std::fmt;
@@ -43,7 +43,9 @@ use std::str::FromStr;
 
 use crate::fault;
 use crate::object::{CommitId, ObjectId, ObjectIdParseError};
-use crate::refs::{BranchName, BranchNameProblem, RefKind, RefMalformed, RefParseError};
+use crate::refs::{
+    BranchName, BranchNameError, BranchNameProblem, RefKind, RefMalformed, RefParseError,
+};
 use crate::signature::PublicKey;
 
 /// The directory below the metadata directory that holds one configuration file per remote.
@@ -68,6 +70,12 @@ pub enum RemoteNameProblem {
 impl fmt::Display for RemoteNameProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // The words of a branch name would offer `/`, which a remote name cannot hold.
+            Self::Name(BranchNameProblem::InvalidCharacter(c)) => write!(
+                f,
+                "the character `{}` is not allowed; use letters, digits, `.`, `_`, and `-`",
+                c.escape_debug()
+            ),
             Self::Name(problem) => problem.fmt(f),
             Self::Separator => f.write_str("the name of a remote is one component, without `/`"),
         }
@@ -144,6 +152,7 @@ impl FromStr for RemoteName {
 /// `remotes/<remote>/tags/<name>` (ADR-008).
 ///
 /// The order is that of the remote, then the branches before the tags, then the name.
+/// [`FromStr`] reads the qualified form back, and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RemoteRefName {
     /// The remote.
@@ -163,6 +172,60 @@ impl fmt::Display for RemoteRefName {
             self.kind.directory(),
             self.name
         )
+    }
+}
+
+/// Why text is no qualified form of a remote reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RemoteRefNameError {
+    /// The text is neither `remotes/<remote>/heads/<name>` nor `remotes/<remote>/tags/<name>`.
+    /// Carries the text.
+    Shape(String),
+    /// The remote has no valid name.
+    Remote(RemoteNameError),
+    /// The name of the branch or the tag is no valid name.
+    Name(BranchNameError),
+}
+
+impl fmt::Display for RemoteRefNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Shape(text) => write!(
+                f,
+                "`{}` names no remote reference: write `{REMOTES_DIR}/<remote>/heads/<name>` \
+                 or `{REMOTES_DIR}/<remote>/tags/<name>`",
+                text.escape_debug()
+            ),
+            Self::Remote(error) => error.fmt(f),
+            Self::Name(error) => error.fmt(f),
+        }
+    }
+}
+
+impl Error for RemoteRefNameError {}
+
+impl FromStr for RemoteRefName {
+    type Err = RemoteRefNameError;
+
+    /// Reads the qualified form that [`Display`](fmt::Display) writes.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let shape = || RemoteRefNameError::Shape(text.to_owned());
+        let mut parts = text.splitn(4, '/');
+        let (Some(REMOTES_DIR), Some(remote), Some(kind), Some(name)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(shape());
+        };
+        let kind = [RefKind::Branch, RefKind::Tag]
+            .into_iter()
+            .find(|found| found.directory() == kind)
+            .ok_or_else(shape)?;
+        Ok(Self {
+            remote: remote.parse().map_err(RemoteRefNameError::Remote)?,
+            kind,
+            name: name.parse().map_err(RemoteRefNameError::Name)?,
+        })
     }
 }
 
@@ -210,8 +273,8 @@ impl RemoteRef {
     ///
     /// # Errors
     ///
-    /// Returns [`RefParseError`] for input that is not UTF-8, has no newline at its end, has not
-    /// exactly two lines of which the second starts with `entry `, or names a commit or a hash
+    /// Returns [`RefParseError`] for input that is not UTF-8, has no newline at its end, does not
+    /// have exactly two lines of which the second starts with `entry `, or names a commit or a hash
     /// that is not in canonical form.
     pub fn parse(bytes: &[u8]) -> Result<Self, RefParseError> {
         let text = std::str::from_utf8(bytes).map_err(|error| RefParseError::NotUtf8 {
@@ -235,7 +298,7 @@ impl RemoteRef {
     }
 }
 
-/// A line of the configuration of a remote whose value is rejected.
+/// A line of the configuration of a remote, as an error names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RemoteField {
@@ -256,8 +319,8 @@ impl RemoteField {
     fn rule(self) -> &'static str {
         match self {
             Self::Address => {
-                "an address starts with `https://` or `http://` and goes on with at least one \
-                 printable ASCII character, without a space"
+                "an address starts with `https://` or `http://` and goes on with printable ASCII \
+                 characters without a space; it has no `@`, `?`, or `#` and does not end with `/`"
             }
             Self::RepositoryId => "a repository ID is 32 lowercase hexadecimal digits",
             Self::HubKey => {
@@ -318,8 +381,10 @@ fn rejected(field: RemoteField, text: &str) -> RemoteValueError {
 
 /// The address of a remote: the address of the repository on the hub,
 /// `<hub>/<namespace>/<repository>` (ADR-023). It is kept as it was given and is not normalised.
-/// The rule here is only that of a value that fits a line; that `http://` is accepted towards a
-/// loopback address alone is a rule of the client (ADR-028).
+/// Every endpoint of the repository is this address and a name (ADR-023), so it has no query, no
+/// fragment, and no `/` at its end, and one repository has one spelling. It has no `@` either: a
+/// password in the address would lie in the file and in every message that names the address.
+/// That `http://` is accepted towards a loopback address alone is a rule of the client (ADR-028).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RemoteAddress(String);
 
@@ -329,14 +394,21 @@ impl RemoteAddress {
     /// # Errors
     ///
     /// Returns [`RemoteValueError`] unless the text starts with `https://` or `http://` and goes
-    /// on with at least one printable ASCII character and no space.
+    /// on with at least one printable ASCII character and no space, without `@`, `?`, or `#`
+    /// and without `/` at its start or its end.
     pub fn try_new(address: impl Into<String>) -> Result<Self, RemoteValueError> {
         let address = address.into();
         let rest = ["https://", "http://"]
             .iter()
             .find_map(|scheme| address.strip_prefix(scheme));
         match rest {
-            Some(rest) if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_graphic()) => {
+            Some(rest)
+                if !rest.is_empty()
+                    && rest.chars().all(|c| c.is_ascii_graphic())
+                    && !rest.contains(['@', '?', '#'])
+                    && !rest.starts_with('/')
+                    && !rest.ends_with('/') =>
+            {
                 Ok(Self(address))
             }
             _ => Err(rejected(RemoteField::Address, &address)),
@@ -390,7 +462,9 @@ impl fmt::Display for RepositoryId {
 
 /// The path of an additional CA file of a remote, for a hub with a certificate of an own CA
 /// (ADR-028). It is text that fits a line; whether the file exists is the business of the client
-/// that reads it.
+/// that reads it. The type does not ask for an absolute path. The configuration is shared by
+/// every worktree, so a relative path would name another file from another directory: the
+/// command that writes the configuration has to make the path absolute.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CaFile(String);
 
@@ -438,6 +512,8 @@ pub struct RemoteConfig {
     /// The ID that the hub assigned to the repository (ADR-025, ADR-027).
     pub repository: RepositoryId,
     /// The public key of the hub that the clone pinned, or `None` before it pinned one (ADR-026).
+    /// Whether a command ever leaves a remote without a key is the decision of the slice that
+    /// writes the configuration; a `fetch` or a `push` must not trust a hub while it is `None`.
     pub hub_key: Option<PublicKey>,
     /// An additional CA file for the connection (ADR-028).
     pub ca_file: Option<CaFile>,
@@ -799,6 +875,11 @@ mod tests {
             assert_eq!(error.problem, RemoteNameProblem::Name(problem), "{name}");
         }
         assert_eq!(
+            RemoteName::try_new("a b").unwrap_err().to_string(),
+            "invalid remote name `a b`: the character ` ` is not allowed; use letters, digits, \
+             `.`, `_`, and `-`"
+        );
+        assert_eq!(
             "a/b".parse::<RemoteName>().unwrap_err().to_string(),
             "invalid remote name `a/b`: the name of a remote is one component, without `/`"
         );
@@ -815,6 +896,30 @@ mod tests {
         let tag = named("origin", RefKind::Tag, "a");
         assert_eq!(branch.to_string(), "remotes/origin/heads/feat/x");
         assert_eq!(tag.to_string(), "remotes/origin/tags/a");
+        // The text reads back, and nothing but the qualified form does.
+        for name in [&branch, &tag] {
+            assert_eq!(&name.to_string().parse::<RemoteRefName>().unwrap(), name);
+        }
+        for text in [
+            "origin/heads/x",
+            "remotes/origin/x",
+            "remotes/origin/heads",
+            "heads/x",
+        ] {
+            assert_eq!(
+                text.parse::<RemoteRefName>(),
+                Err(RemoteRefNameError::Shape(text.to_owned())),
+                "{text}"
+            );
+        }
+        assert!(matches!(
+            "remotes/.o/heads/x".parse::<RemoteRefName>(),
+            Err(RemoteRefNameError::Remote(_))
+        ));
+        assert!(matches!(
+            "remotes/o/tags/x//y".parse::<RemoteRefName>(),
+            Err(RemoteRefNameError::Name(_))
+        ));
         let mut names = vec![tag.clone(), named("hub", RefKind::Tag, "z"), branch.clone()];
         names.sort();
         assert_eq!(names, [named("hub", RefKind::Tag, "z"), branch, tag]);
@@ -1014,6 +1119,27 @@ mod tests {
             (
                 changed(1, &["address ftp://hub.example/a"]),
                 value(RemoteField::Address, "ftp://hub.example/a"),
+            ),
+            // One repository has one spelling, and no secret lies in the address.
+            (
+                changed(1, &["address https://hub.example/a/b/"]),
+                value(RemoteField::Address, "https://hub.example/a/b/"),
+            ),
+            (
+                changed(1, &["address https:///a/b"]),
+                value(RemoteField::Address, "https:///a/b"),
+            ),
+            (
+                changed(1, &["address https://hub.example/a/b?x=1"]),
+                value(RemoteField::Address, "https://hub.example/a/b?x=1"),
+            ),
+            (
+                changed(1, &["address https://hub.example/a/b#f"]),
+                value(RemoteField::Address, "https://hub.example/a/b#f"),
+            ),
+            (
+                changed(1, &["address https://me:secret@hub.example/a/b"]),
+                value(RemoteField::Address, "https://me:secret@hub.example/a/b"),
             ),
             (
                 changed(4, &["ca-file  /a"]),

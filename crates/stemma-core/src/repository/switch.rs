@@ -914,7 +914,8 @@ pub enum SwitchError {
     Checkout(CheckoutError),
     /// There is no branch with the name (`switch -c` makes one).
     NoSuchBranch(BranchName),
-    /// The name of a revision is a tag that does not exist, neither a branch nor a tag, or both
+    /// The name of a revision is a tag that does not exist, a remote reference that the clone does
+    /// not hold, neither a branch nor a tag, or both
     /// (ADR-008).
     Name(NameError),
     /// The store has no commit with the ID.

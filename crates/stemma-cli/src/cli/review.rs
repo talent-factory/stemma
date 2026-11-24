@@ -427,7 +427,8 @@ fn register_of(repository: &Repository) -> Result<Option<Register>, ReviewError>
 }
 
 /// The commit that a revision names: a commit ID that the store holds, the tip of a branch or
-/// a tag, or the commit of a remote reference. A bare name that is both a branch and a tag is refused; `heads/` or `tags/` decide.
+/// a tag, or the commit of a remote reference. A bare name that is both a branch and a tag is
+/// refused; `heads/` or `tags/` decide.
 fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, ReviewError> {
     let refs = repository.refs();
     let read =

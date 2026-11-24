@@ -393,6 +393,8 @@ Die Prüfung der Referenzen prüft auch den Commit jeder Remote-Referenz.
 Der Plan eines Purge geht von den Remote-Referenzen aus wie von einem Branch.
 Er bewegt und entfernt aber keine: Zeigt eine auf einen Commit, den der Purge umschreiben würde,
 lehnt er ab und nennt jede solche Referenz.
+Die Prüfung läuft unter der Sperre noch einmal und trifft dann auch einen Commit, den der Plan
+nur löscht: Eine Remote-Referenz, die jünger ist als der Plan, kann auf ihn zeigen.
 Was ein Purge am Ende mit ihnen tut, ist offen (\in{Abschnitt}[sec:phase5-open]).
 \stopinfobox
 
