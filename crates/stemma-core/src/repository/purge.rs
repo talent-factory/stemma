@@ -188,6 +188,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<PurgePlan, PurgeError> {
+        self.require_oplog("purge").map_err(PurgeError::Refs)?;
         self.plan_purge_with(blob, actor, authorizer, TagPolicy::Refuse)
     }
 
@@ -206,6 +207,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
         tags: TagPolicy,
     ) -> Result<PurgePlan, PurgeError> {
+        self.require_oplog("purge").map_err(PurgeError::Refs)?;
         let (blob, _) = self.check_purge(blob, actor, authorizer)?;
         self.plan_blob(blob, tags).map(|(plan, _)| plan)
     }

@@ -37,6 +37,7 @@ impl Repository {
     ///
     /// Returns [`PullError::Log`] if the log cannot be read.
     pub fn pull_requests(&self) -> Result<Vec<PullRequest>, PullError> {
+        self.require_oplog("read the pull requests")?;
         let entries = self.oplog().entries().map_err(PullError::Log)?;
         Ok(pull::pull_requests(&entries))
     }
@@ -71,6 +72,7 @@ impl Repository {
         register: Option<&Register>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("open a pull request")?;
         let lock = self.lock_for_pull(PR_OPEN, branch.as_str(), actor, authorizer)?;
         if branch.as_str() == TARGET {
             return Err(PullError::TargetBranch);
@@ -132,6 +134,7 @@ impl Repository {
         register: Option<&Register>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("close a pull request")?;
         let lock = self.lock_for_pull(PR_CLOSE, &format!("pull {number}"), actor, authorizer)?;
         let pulls = self.pull_requests()?;
         let pull = open_pull_of(&pulls, number)?;
@@ -159,6 +162,7 @@ impl Repository {
         commit: CommitId,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("record the merge of a pull request")?;
         let lock = self.lock_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
         self.record_pull_merge_locked(&lock, number, actor, commit)
     }
@@ -220,6 +224,7 @@ impl Repository {
         signer: Option<&dyn Signer>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("approve a pull request")?;
         let signed = match register {
             None => None,
             Some(_) => {
@@ -291,6 +296,7 @@ impl Repository {
         number: u64,
         register: Option<&Register>,
     ) -> Result<Recount, PullError> {
+        self.require_oplog("read the pull requests")?;
         let entries = self.oplog().entries().map_err(PullError::Log)?;
         let pulls = pull::pull_requests(&entries);
         let pull = pulls
@@ -768,7 +774,7 @@ mod tests {
         let pull = entry.pull().unwrap();
         assert_eq!(pull.kind(), PullKind::Open);
         assert_eq!(pull.commit(), Some(&start));
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
         let pulls = repository.pull_requests().unwrap();
         assert_eq!(pulls.len(), 1);
         assert_eq!(pulls[0].number(), entry.number());

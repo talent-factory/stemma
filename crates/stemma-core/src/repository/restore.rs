@@ -146,6 +146,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<RestorePlan>, RestoreError> {
+        self.require_working_copy("restore")
+            .map_err(RestoreError::Refs)?;
         Ok(self.prepare(number, force, actor, authorizer)?.plan)
     }
 
@@ -207,6 +209,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Restored, RestoreError> {
+        self.require_working_copy("restore")
+            .map_err(RestoreError::Refs)?;
         // A purge that has not finished is named first, before the entry is judged; the lock
         // below refuses it again.
         self.refs_store()

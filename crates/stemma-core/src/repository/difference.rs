@@ -336,6 +336,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
         comparison: Comparison<'_>,
     ) -> Result<Diff, DiffError> {
+        self.require_working_copy("diff").map_err(DiffError::Refs)?;
         self.diff_paths(actor, authorizer, comparison, &[])
     }
 
@@ -359,6 +360,7 @@ impl Repository {
         comparison: Comparison<'_>,
         paths: &[String],
     ) -> Result<Diff, DiffError> {
+        self.require_working_copy("diff").map_err(DiffError::Refs)?;
         if let Some(path) = paths.iter().find(|path| !is_repository_path(path)) {
             return Err(DiffError::InvalidPath { path: path.clone() });
         }

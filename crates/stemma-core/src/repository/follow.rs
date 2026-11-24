@@ -141,6 +141,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Followed, WorktreeError> {
+        self.require_working_copy("follow main")
+            .map_err(WorktreeError::Refs)?;
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let (rows, damaged) = self.scan_worktrees()?;
         let Some(row) = rows

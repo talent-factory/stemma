@@ -137,6 +137,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Rewritten, RewriteError> {
+        self.require_working_copy("rewrite the working copy")
+            .map_err(RewriteError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`rewrite` is a valid operation name");
         self.refs_store()

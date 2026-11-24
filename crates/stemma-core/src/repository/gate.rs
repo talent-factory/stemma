@@ -415,6 +415,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<GateMerge, GateError> {
+        self.require_oplog("merge through the gate")
+            .map_err(GateError::Refs)?;
         self.merge_gate_with(number, Some(level), register, actor, authorizer)
     }
 
@@ -447,6 +449,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<GateMerge, GateError> {
+        self.require_oplog("merge through the gate")
+            .map_err(GateError::Refs)?;
         let register = match mode {
             Mode::Open => None,
             Mode::Enforcing(register) => Some(register),

@@ -447,6 +447,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Purged, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         self.apply_purge_with(blob, actor, authorizer, TagPolicy::Refuse)
     }
 
@@ -466,6 +468,8 @@ impl Repository {
         authorizer: &dyn Authorizer,
         tags: TagPolicy,
     ) -> Result<Purged, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         self.apply_purge_policy_until(blob, actor, authorizer, tags, None)
             .map(|purged| purged.expect("only a test stops a purge"))
     }
@@ -491,6 +495,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Purged, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         self.resume_purge_until(actor, authorizer, None)
             .map(|purged| purged.expect("only a test stops a purge"))
     }
@@ -509,6 +515,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Aborted, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         let (journal, lock) = self.take_over(actor, authorizer)?;
         let written = self.written_purge(&journal).map_err(stopped(
             PurgeStep::Abort,
@@ -1211,7 +1219,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 13\n");
+        assert_eq!(format(dir), "stemma-repository 15\n");
     }
 
     #[test]
@@ -1710,7 +1718,7 @@ mod tests {
             repository.verify_refs().unwrap().is_empty(),
             "verify is clean"
         );
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
     }
 
     #[test]
@@ -2156,7 +2164,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -2278,7 +2286,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 13\n",
+            "stemma-repository 15\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -2901,7 +2909,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);

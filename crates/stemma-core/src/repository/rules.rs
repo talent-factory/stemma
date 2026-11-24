@@ -108,7 +108,8 @@ impl Repository {
     /// `enforcing` says whether the repository is in the enforcing mode. Without a file the open
     /// mode gets the built-in default, and the enforcing mode an error (see the module). The
     /// callers derive it from the [`Mode`] of the repository; the function is not public so that
-    /// no caller can pass a flag that disagrees with the register.
+    /// no caller can pass a flag that disagrees with the register. [`policy_of`](Self::policy_of)
+    /// is the public form, which takes the mode.
     ///
     /// # Errors
     ///
@@ -149,6 +150,23 @@ impl Repository {
             return Err(PolicyError::NotAFile);
         }
         Policy::parse(raw.body()).map_err(PolicyError::Invalid)
+    }
+
+    /// The policy of a base commit for a repository in `mode`: the file [`policy::FILE_NAME`] in
+    /// its root. It is the public entry for a caller outside the crate, such as a hub that judges
+    /// a ref update against the tip of `main` (ADR-022, ADR-025). It reads the object store only,
+    /// takes no lock, and needs no working copy, so it works on a bare repository.
+    ///
+    /// Without a policy file the open mode gets the built-in default and the enforcing mode an
+    /// error; a file that exists and cannot be used is an error in both modes (see the module).
+    ///
+    /// # Errors
+    ///
+    /// [`PolicyError::Missing`] for an enforcing repository without a file,
+    /// [`PolicyError::NotAFile`], [`PolicyError::Invalid`] for a file that does not parse, and
+    /// [`PolicyError::Unreadable`] if an object cannot be read, in both modes.
+    pub fn policy_of(&self, base: &CommitId, mode: &Mode) -> Result<Policy, PolicyError> {
+        self.policy_at(base, matches!(mode, Mode::Enforcing(_)))
     }
 
     /// The policy of the tip of `main`, the base commit of every merge and of the leases. See
@@ -223,6 +241,7 @@ impl Repository {
         mode: &Mode,
         authorizer: &dyn Authorizer,
     ) -> Result<Claimed, LeaseError> {
+        self.require_oplog("claim a lease")?;
         let minutes = self
             .policy_of_main(matches!(mode, Mode::Enforcing(_)))
             .map_err(LeaseError::Policy)?

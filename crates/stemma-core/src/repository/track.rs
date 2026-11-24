@@ -85,6 +85,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Tracking, TrackError> {
+        self.require_working_copy("track")
+            .map_err(|error| TrackError::Snapshot(SnapshotError::Refs(error)))?;
         let operation =
             OperationName::try_new(OPERATION).expect("`track` is a valid operation name");
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |root| {

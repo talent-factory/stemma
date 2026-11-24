@@ -104,6 +104,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Committed, CommitError> {
+        self.require_working_copy("commit")
+            .map_err(CommitError::Refs)?;
         if message.trim().is_empty() {
             return Err(CommitError::EmptyMessage);
         }

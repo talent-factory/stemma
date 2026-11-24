@@ -173,6 +173,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<RemovedWorktree, WorktreeError> {
+        self.require_working_copy("remove a worktree")
+            .map_err(WorktreeError::Refs)?;
         let operation = OperationName::try_new(REMOVE_OPERATION)
             .expect("`worktree-remove` is a valid operation name");
         self.refs_store()
@@ -502,6 +504,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<AddedWorktree, WorktreeError> {
+        self.require_working_copy("add a worktree")
+            .map_err(WorktreeError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`worktree-add` is a valid operation name");
         if let WorktreeBranch::Create(name) = branch {
@@ -794,6 +798,8 @@ impl Repository {
     /// when more than one is. [`WorktreeError::Io`] also stands for a directory of the worktrees
     /// that cannot be listed.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>, WorktreeError> {
+        self.require_working_copy("list the worktrees")
+            .map_err(WorktreeError::Refs)?;
         let (rows, damaged) = self.scan_worktrees()?;
         if damaged.len() > 1 {
             return Err(WorktreeError::SeveralDamaged {

@@ -151,6 +151,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Status, StatusError> {
+        self.require_working_copy("status")
+            .map_err(|error| StatusError::Snapshot(SnapshotError::Refs(error)))?;
         let operation =
             OperationName::try_new(OPERATION).expect("`status` is a valid operation name");
         // Only the question counts here: the writes come through `snapshot`, which asks again.

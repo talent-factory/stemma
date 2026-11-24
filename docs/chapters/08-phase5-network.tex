@@ -62,6 +62,39 @@ Eine einzige Operation nimmt ein Ref-Update an und legt die Reihenfolge der Prü
 Der Hub liefert ihr die Belege und wendet ihr Ergebnis an; er setzt keine Prüfung selbst
 zusammen und kann deshalb keine auslassen.
 
+Ein Bare-Repository ist bereits gebaut (ADR-009).
+Sein Verzeichnis enthält direkt, was sonst in \type{.stemma} liegt, und kein \type{.stemma}
+darin, sodass die Suche der Befehlszeile es nie findet:
+
+\starttyping
+<verzeichnis>/
+    format        stemma-repository 15
+    bare          stemma-bare (die Markierung eines Bare-Repositorys)
+    objects/      Objekte (ADR-007)
+    refs/heads/   Branches (ADR-008)
+    refs/tags/    Tags, mit dem ersten Tag angelegt
+    tmp/          temporäre Dateien der beiden Speicher
+\stoptyping
+
+Es fehlen \type{HEAD}, der Working-Copy-Commit, das Operation Log, die Leases und die
+Zustandsverzeichnisse der Worktrees.
+Die Datei \type{bare} unterscheidet die beiden Layouts; ein fehlendes \type{HEAD} taugt nicht
+als Zeichen, weil es auch ein Schaden sein kann.
+Das Format trägt die Version 15, damit ein älteres Programm ein Bare-Repository an der Version
+ablehnt und nicht als beschädigt meldet.
+
+Eine Operation, die eine Arbeitskopie oder das Operation Log braucht, lehnt auf einem
+Bare-Repository mit einem eigenen Fehler ab (\type{RefError::Bare}).
+Der Fehler nennt das Verzeichnis, die Operation und was fehlt, und er kommt, bevor der
+Autorisierer gefragt und bevor etwas gelesen oder geschrieben wird.
+Ohne Arbeitskopie und ohne Sperre der Referenzen laufen dagegen die Prüfungen, die der Hub
+braucht: das Register und die Policy eines Basis-Commits, die Stufe einer Änderung mit der
+Eskalation bei abgeschwächten Tests, der Tree-Merge und die Prüfung von Objekten, Branches und
+Tags.
+Sie lesen nur den Objektspeicher und ihre Argumente.
+Eine Referenz bewegt auf einem Bare-Repository erst die annehmende Operation
+(\in{Abschnitt}[sec:hub-enforcement]); bis sie gebaut ist, bewegt der Kern dort keine.
+
 \startinfobox
 {\bf Wie Klon und Hub gemeinsam getestet werden.}
 Die Tests dieses Repositorys verbinden zwei Repositories im Speicher über \type{Transport}; die

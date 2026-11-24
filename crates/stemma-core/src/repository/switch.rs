@@ -250,6 +250,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Switched, SwitchError> {
+        self.require_working_copy("switch")
+            .map_err(SwitchError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
         if let SwitchTarget::Create { name, .. } = target {
@@ -425,6 +427,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Planned, SwitchError> {
+        self.require_working_copy("switch")
+            .map_err(SwitchError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
         if let SwitchTarget::Create { name, .. } = target {

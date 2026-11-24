@@ -50,6 +50,7 @@ impl Repository {
     /// Returns [`LeaseError::Corrupt`] for a file that is not a lease of this branch and
     /// [`LeaseError::Io`] if it cannot be read.
     pub fn lease(&self, branch: &BranchName) -> Result<Option<Lease>, LeaseError> {
+        self.require_oplog("read a lease")?;
         read_lease(&self.leases_dir(), branch)
     }
 
@@ -77,6 +78,7 @@ impl Repository {
         minutes: u32,
         authorizer: &dyn Authorizer,
     ) -> Result<Claimed, LeaseError> {
+        self.require_oplog("claim a lease")?;
         let lock = self.lock_for_lease(branch, actor, CLAIM, authorizer)?;
         self.claim_lease_locked(&lock, branch, actor, minutes, now())
     }
@@ -133,6 +135,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, LeaseError> {
+        self.require_oplog("release a lease")?;
         let lock = self.lock_for_lease(branch, actor, LEASE_RELEASE, authorizer)?;
         let current = read_lease(&self.leases_dir(), branch)?
             .filter(|current| !current.is_expired(now()))
@@ -182,6 +185,7 @@ impl Repository {
         reason: &str,
         authorizer: &dyn Authorizer,
     ) -> Result<Claimed, LeaseError> {
+        self.require_oplog("override a lease")?;
         if Identity::of(owner).kind() != IdentityKind::Human || !register.is_owner(owner) {
             return Err(LeaseError::NotOwner {
                 actor: Box::new(owner.clone()),
@@ -1093,7 +1097,7 @@ mod tests {
         let format = repository.metadata_dir().join("format");
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 15\n"
         );
         // A repository of version 7 moves to the current version with its next entry, a lease
         // entry among them.
@@ -1103,14 +1107,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 15\n"
         );
-        // A program that reads up to version 13 refuses version 14: the number is not one of
+        // A program that reads up to version 15 refuses version 16: the number is not one of
         // its own.
-        fs::write(&format, "stemma-repository 14\n").unwrap();
+        fs::write(&format, "stemma-repository 16\n").unwrap();
         let error = Repository::open(dir.path()).map(|_| ()).unwrap_err();
         assert!(
-            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "14"),
+            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "16"),
             "{error:?}"
         );
     }

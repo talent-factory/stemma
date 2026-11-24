@@ -2,7 +2,8 @@
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-269) and, for the
 properties that must stay, on 2026-11-24 (STEMMA-277), and carried into the ADRs by STEMMA-280.
-Nothing of it is implemented yet; the slices are children of STEMMA-15.
+The bare repository is implemented (STEMMA-284, ADR-009); the other slices are children of
+STEMMA-15.
 
 ## Context
 
@@ -123,7 +124,7 @@ without internet. No phase schedules it.
 
 ## Open items
 
-- [ ] The design of the bare repository: what it contains exactly (no `HEAD`, no index, no
-      operation log by ADR-011) belongs to the slice that builds it (ADR-009).
+- [x] The design of the bare repository: what it contains exactly, how it is created and opened,
+      and the typed refusal are in ADR-009, "A bare repository" (STEMMA-284).
 - [ ] How much of the hub is passed on to third parties. The answer "a hub of one's own" to
       working without the central hub (ADR-003) depends on it; it is not decided.

@@ -305,6 +305,7 @@ impl Repository {
     ///
     /// [`CheckError::Log`], [`CheckError::Io`], [`CheckError::History`], or [`CheckError::Refs`].
     pub fn red_window(&self, register: Option<&Register>) -> Result<Vec<CommitId>, CheckError> {
+        self.require_oplog("read the checks")?;
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let Some(tip) = self.refs().branch(&main)? else {
             return Ok(Vec::new());

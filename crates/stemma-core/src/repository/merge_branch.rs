@@ -155,6 +155,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Merged, MergeBranchError> {
+        self.require_working_copy("merge")
+            .map_err(MergeBranchError::Refs)?;
         if message.is_some_and(|text| text.trim().is_empty()) {
             return Err(MergeBranchError::EmptyMessage);
         }

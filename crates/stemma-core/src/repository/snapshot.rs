@@ -85,6 +85,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, SnapshotError> {
+        self.require_working_copy("snapshot")
+            .map_err(SnapshotError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`snapshot` is a valid operation name");
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |_| {

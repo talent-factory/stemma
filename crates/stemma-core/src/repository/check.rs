@@ -50,6 +50,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, CheckError> {
+        self.require_oplog("record a check")?;
         let name = OperationName::try_new(CHECK).expect("`check` is an operation name");
         let target = commit.to_string();
         let allowed = self
@@ -80,6 +81,7 @@ impl Repository {
     ///
     /// Returns [`CheckError::Log`] if the log cannot be read.
     pub fn checks(&self) -> Result<Vec<Check>, CheckError> {
+        self.require_oplog("read the checks")?;
         let entries = self.oplog().entries().map_err(CheckError::Log)?;
         Ok(check::checks(&entries))
     }
@@ -147,6 +149,7 @@ impl Repository {
         level: RiskLevel,
         register: Option<&Register>,
     ) -> Result<Vec<Check>, CheckError> {
+        self.require_oplog("read the checks")?;
         let entries = self.oplog().entries().map_err(CheckError::Log)?;
         let pulls = crate::pull::pull_requests(&entries);
         let pull = pulls
@@ -202,6 +205,7 @@ impl Repository {
         main_tip: &CommitId,
         register: Option<&Register>,
     ) -> Result<Option<Check>, CheckError> {
+        self.require_oplog("read the checks")?;
         let main: Vec<CommitId> =
             history::ancestors(self.objects(), *main_tip, Parents::First, None)?
                 .into_iter()
@@ -566,7 +570,7 @@ mod tests {
         assert_eq!(check.result(), CheckResult::Pass);
         assert_eq!(
             std::fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 15\n"
         );
         let found = f.repository.checks().unwrap();
         assert_eq!(found.len(), 1);

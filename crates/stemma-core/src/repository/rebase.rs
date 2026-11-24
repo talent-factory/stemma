@@ -150,6 +150,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Rebased, RebaseError> {
+        self.require_working_copy("rebase")
+            .map_err(RebaseError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`rebase` is a valid operation name");
         self.refs_store()

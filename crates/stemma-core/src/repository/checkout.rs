@@ -156,6 +156,8 @@ impl Repository {
         from: Option<TreeId>,
         to: TreeId,
     ) -> Result<CheckoutPlan, CheckoutError> {
+        self.require_working_copy("checkout")
+            .map_err(|error| CheckoutError::Snapshot(SnapshotError::Refs(error)))?;
         let objects = self.objects();
         let old = match from {
             Some(tree) => flatten(objects, tree)?,
@@ -260,6 +262,8 @@ impl Repository {
     /// file cannot be removed. All of them are reported as [`CheckoutError::Interrupted`] once a
     /// file was removed or written.
     pub fn apply_checkout(&self, plan: &CheckoutPlan) -> Result<(), CheckoutError> {
+        self.require_working_copy("checkout")
+            .map_err(|error| CheckoutError::Snapshot(SnapshotError::Refs(error)))?;
         if plan.root != self.path() {
             return Err(CheckoutError::ForeignPlan {
                 made_for: plan.root.clone(),
