@@ -1022,7 +1022,8 @@ pub enum PurgeError {
         /// that does. Never empty.
         tags: Vec<(BranchName, CommitId)>,
     },
-    /// Remote references point to commits that the purge would rewrite. A remote reference is
+    /// Remote references point to commits that the purge would rewrite, or, when a purge is
+    /// resumed, delete. A remote reference is
     /// the state of a hub as the clone last saw it, and only a fetch or a push moves it
     /// (ADR-008); how a purge treats one is not decided (ADR-014), so the purge is refused.
     RemoteReference {
@@ -1125,8 +1126,9 @@ impl PurgeError {
                 }
                 write!(
                     f,
-                    ", which the purge would rewrite; a remote reference says what a hub holds, \
-                     and a purge neither moves nor removes it"
+                    ", which the purge would rewrite or delete; a remote reference says what a \
+                     hub holds, and a purge neither moves nor removes it, and no command removes \
+                     one yet (if a purge is pending, abort it with `stemma purge --abort`)"
                 )
             }
             Self::Unsound { id } => write!(
@@ -1195,7 +1197,8 @@ fn check_tags(
 }
 
 /// Refuses a purge that would rewrite the commit of a remote reference (ADR-008, ADR-014): lists
-/// every such reference, so that one refusal names them all.
+/// every such reference, so that one refusal names them all. `rewritten` holds the commits that
+/// the purge takes away: those it rewrites, and on a resume also those it only deletes.
 pub(super) fn check_remotes(
     remotes: &[(RemoteRefName, RemoteRef)],
     rewritten: &HashSet<CommitId>,
@@ -1694,7 +1697,8 @@ mod tests {
         let message = error.to_string();
         assert!(
             message.contains("the remote reference `remotes/origin/tags/v1` points to the commit")
-                && message.contains("neither moves nor removes it"),
+                && message.contains("neither moves nor removes it")
+                && message.contains("stemma purge --abort"),
             "{message}"
         );
         assert_eq!(

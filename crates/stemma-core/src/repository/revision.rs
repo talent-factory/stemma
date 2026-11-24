@@ -355,6 +355,15 @@ mod tests {
             "remotes/origin/tags/v1".parse::<Revision>().unwrap(),
             Revision::Remote(remote("origin", RefKind::Tag, "v1"))
         );
+        // A branch or a tag from before the prefix `remotes/` was reserved keeps its way in.
+        assert_eq!(
+            "heads/remotes/x".parse::<Revision>().unwrap(),
+            Revision::Branch(name("remotes/x"))
+        );
+        assert_eq!(
+            "tags/remotes/x".parse::<Revision>().unwrap(),
+            Revision::Tag(name("remotes/x"))
+        );
         // A prefix is a prefix of the whole name, not of a component further in.
         assert_eq!(
             "feat/heads/x".parse::<Revision>().unwrap(),

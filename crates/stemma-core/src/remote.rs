@@ -683,10 +683,17 @@ fn configured(root: &Path) -> Result<Vec<(RemoteName, PathBuf)>, RemoteError> {
     Ok(found)
 }
 
-/// Reads one configuration file, which has to be a regular file; a link is not followed.
-fn read_config(path: &Path) -> Result<RemoteConfig, RemoteError> {
+/// Reads one configuration file, which has to be a regular file; a link is not followed. A file
+/// that is gone since the listing is `None`: a reader holds no lock, so a change may remove a
+/// remote in between, and the remote then does not exist.
+fn read_config(path: &Path) -> Result<Option<RemoteConfig>, RemoteError> {
     let operation = "read the configuration of the remote";
-    let metadata = fs::symlink_metadata(path).map_err(io_error(operation, path))?;
+    let gone = |error: &io::Error| error.kind() == io::ErrorKind::NotFound;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if gone(&error) => return Ok(None),
+        Err(error) => return Err(io_error(operation, path)(error)),
+    };
     if !metadata.is_file() {
         return Err(RemoteError::Io {
             operation,
@@ -694,19 +701,28 @@ fn read_config(path: &Path) -> Result<RemoteConfig, RemoteError> {
             source: io::Error::new(io::ErrorKind::InvalidInput, "not a regular file"),
         });
     }
-    let bytes = fault::read(path).map_err(io_error(operation, path))?;
-    RemoteConfig::parse(&bytes).map_err(|source| RemoteError::Corrupt {
-        path: path.to_path_buf(),
-        source,
-    })
+    let bytes = match fault::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if gone(&error) => return Ok(None),
+        Err(error) => return Err(io_error(operation, path)(error)),
+    };
+    RemoteConfig::parse(&bytes)
+        .map(Some)
+        .map_err(|source| RemoteError::Corrupt {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// The configuration of every remote below the metadata directory `root`, sorted by name.
 pub(crate) fn read_all(root: &Path) -> Result<Vec<(RemoteName, RemoteConfig)>, RemoteError> {
-    configured(root)?
-        .into_iter()
-        .map(|(name, path)| read_config(&path).map(|config| (name, config)))
-        .collect()
+    let mut found = Vec::new();
+    for (name, path) in configured(root)? {
+        if let Some(config) = read_config(&path)? {
+            found.push((name, config));
+        }
+    }
+    Ok(found)
 }
 
 /// The configuration of the remote with exactly this name, or `None` if there is none. The name
@@ -716,11 +732,13 @@ pub(crate) fn read_one(
     root: &Path,
     name: &RemoteName,
 ) -> Result<Option<RemoteConfig>, RemoteError> {
-    configured(root)?
+    match configured(root)?
         .into_iter()
         .find(|(found, _)| found == name)
-        .map(|(_, path)| read_config(&path))
-        .transpose()
+    {
+        Some((_, path)) => read_config(&path),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -981,6 +999,26 @@ mod tests {
                 changed(5, &["sign-in Yes"]),
                 value(RemoteField::SignIn, "Yes"),
             ),
+            (
+                changed(1, &["address https://hub.example/\u{e4}"]),
+                value(RemoteField::Address, "https://hub.example/\u{e4}"),
+            ),
+            (
+                changed(1, &["address https://hub.example/a\u{7f}"]),
+                value(RemoteField::Address, "https://hub.example/a\u{7f}"),
+            ),
+            (
+                changed(1, &["address HTTPS://hub.example/a"]),
+                value(RemoteField::Address, "HTTPS://hub.example/a"),
+            ),
+            (
+                changed(1, &["address ftp://hub.example/a"]),
+                value(RemoteField::Address, "ftp://hub.example/a"),
+            ),
+            (
+                changed(4, &["ca-file  /a"]),
+                value(RemoteField::CaFile, " /a"),
+            ),
         ] {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             assert_eq!(RemoteConfig::parse(&bytes), Err(expected), "{text:?}");
@@ -1001,7 +1039,14 @@ mod tests {
 
     #[test]
     fn every_accepted_configuration_reads_back_to_its_bytes() {
-        for config in [config(), full()] {
+        // `http://` is a valid address; that only a loopback address may have it is a rule of
+        // the client. A file called `-` is written `./-`.
+        let local = RemoteConfig {
+            address: RemoteAddress::try_new("http://127.0.0.1:8080/a/b").unwrap(),
+            ca_file: Some(CaFile::try_new("./-").unwrap()),
+            ..config()
+        };
+        for config in [config(), full(), local] {
             let bytes = config.encode();
             assert_eq!(RemoteConfig::parse(&bytes).unwrap().encode(), bytes);
         }
@@ -1108,6 +1153,31 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_place_of_a_file_is_not_followed() {
+        let dir = TempDir::new();
+        let elsewhere = dir.path().join("elsewhere");
+        fs::write(&elsewhere, config().encode()).unwrap();
+        fs::create_dir_all(dir.path().join(REMOTES_DIR)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join(REMOTES_DIR).join("origin"))
+            .unwrap();
+        for error in [
+            read_all(dir.path()).unwrap_err(),
+            read_one(dir.path(), &remote("origin")).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("not a regular file"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_gone_since_the_listing_is_no_remote() {
+        let dir = TempDir::new();
+        fs::create_dir_all(dir.path().join(REMOTES_DIR)).unwrap();
+        let gone = dir.path().join(REMOTES_DIR).join("origin");
+        assert_eq!(read_config(&gone).unwrap(), None);
     }
 
     #[test]

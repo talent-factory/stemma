@@ -255,7 +255,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     below those that is no branch name, and a file that is not in canonical form are each
     `Corrupt` with the path, and a file in the place of a directory is an error of the file
     system. Entries whose name starts with a dot are skipped. A repository without
-    `refs/remotes` has no remote reference. The store has no operation that writes one: the
+    `refs/remotes` has no remote reference. The lookup of one reference agrees with the listing
+    about a file in the place of the directory of the remote or of its `heads` or `tags`: it is
+    an error and no missing reference. The store has no operation that writes one: the
     writers come with `fetch` and `push`, each with its entry.
   - **Tags stay in the namespace of the remote.** A local tag arises only through `tag` with its
     own log entry, because a tag never moves. A fetch creates no local tag.

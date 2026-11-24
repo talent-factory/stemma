@@ -8,6 +8,7 @@
 //! nothing is lost, and `--abort` removes the new objects and the journal; after it, the purge can
 //! only go forward.
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
@@ -945,11 +946,15 @@ impl Repository {
             &entries,
             PurgeFailure::Refs,
         ))?;
-        let rewritten = plan.rewrites.iter().map(|(old, _)| *old).collect();
+        let rewritten: HashSet<CommitId> = plan.rewrites.iter().map(|(old, _)| *old).collect();
         // A tag that the journal moves is the person's decision; any other is refused.
         let moving: Vec<_> = plan.tags.iter().map(|(name, _)| name.clone()).collect();
+        // A plan made now counts a remote reference as a root, so its commit is one that the
+        // plan rewrites. A reference that is younger than the plan may name a commit that the
+        // plan only deletes, as a leftover that nothing reached then.
+        let removed: HashSet<CommitId> = rewritten.iter().chain(&plan.commits).copied().collect();
         check_tags(&tags, &rewritten, &moving)
-            .and_then(|()| check_remotes(&remotes, &rewritten))
+            .and_then(|()| check_remotes(&remotes, &removed))
             .map_err(|error| ApplyPurgeError::Stopped {
                 step: PurgeStep::Objects,
                 entries,
@@ -1982,6 +1987,75 @@ mod tests {
         assert!(!journal_exists(&dir));
     }
 
+    /// A commit with the tree of `like` and the parent `parent`, which no pointer reaches.
+    fn loose_commit(repository: &Repository, like: CommitId, parent: CommitId) -> CommitId {
+        let store = repository.objects();
+        let raw = store.get(&like.object_id()).unwrap().unwrap();
+        let tree = crate::object::Commit::parse(raw.body()).unwrap().tree();
+        let commit = crate::object::Commit::try_new(
+            tree,
+            vec![parent],
+            crate::change::ChangeId::generate().unwrap(),
+            actor(),
+            7,
+            "loose",
+        )
+        .unwrap();
+        store.put_commit(&commit).unwrap()
+    }
+
+    #[test]
+    fn a_purge_leaves_a_remote_reference_on_a_clean_commit_and_what_it_reaches() {
+        use crate::testutil::write_remote_ref;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, ..] = history(&dir, &repository);
+        // A commit that only a remote reference reaches, as a fetch leaves it.
+        let fetched = loose_commit(&repository, first, first);
+        let root = repository.metadata_dir();
+        write_remote_ref(&root, "origin/heads/old", first);
+        write_remote_ref(&root, "origin/heads/fetched", fetched);
+        let before = repository.refs().remote_refs().unwrap();
+        let file = root.join("refs/remotes/origin/heads/fetched");
+        let bytes = fs::read(&file).unwrap();
+
+        apply(&repository);
+
+        assert!(!repository.objects().contains(&secret()).unwrap());
+        assert_eq!(repository.refs().remote_refs().unwrap(), before);
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+        assert!(repository.verify_refs().unwrap().is_empty());
+        assert_reachable_objects_exist(&repository);
+    }
+
+    #[test]
+    fn a_remote_reference_on_a_leftover_that_the_plan_deletes_stops_the_resume() {
+        use crate::testutil::write_remote_ref;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        // Nothing reaches the commit when the plan is made, and it follows a rewritten commit:
+        // the plan deletes it and does not rewrite it.
+        let leftover = loose_commit(&repository, first, second);
+        stop_at(&repository, Stop::Journal);
+        write_remote_ref(&repository.metadata_dir(), "origin/heads/late", leftover);
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        match &error {
+            ApplyPurgeError::Stopped { source, .. } => assert!(
+                matches!(&**source, PurgeFailure::Plan(plan)
+                    if matches!(&**plan, PurgeError::RemoteReference { references }
+                        if references.len() == 1 && references[0].1 == leftover)),
+                "{error:?}"
+            ),
+            other => panic!("expected a stopped purge, got {other:?}"),
+        }
+        assert!(repository
+            .objects()
+            .contains(&leftover.object_id())
+            .unwrap());
+        assert!(journal_exists(&dir));
+    }
+
     #[test]
     fn a_tag_written_by_hand_after_the_journal_stops_the_resume_before_any_delete() {
         let dir = TempDir::new();
@@ -2850,6 +2924,12 @@ mod tests {
         let store = repository.objects();
         let refs = repository.refs();
         let mut todo: Vec<ObjectId> = vec![refs.working_copy().unwrap().object_id()];
+        todo.extend(
+            refs.remote_refs()
+                .unwrap()
+                .iter()
+                .map(|(_, reference)| reference.commit.object_id()),
+        );
         todo.extend(
             refs.branches()
                 .unwrap()

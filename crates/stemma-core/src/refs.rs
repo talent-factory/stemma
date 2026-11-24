@@ -3929,8 +3929,16 @@ impl RefStore for FsRefStore {
         components.extend(name.name.as_str().split('/'));
         match Self::lookup_below(self.remotes_dir(), &components)? {
             Lookup::Branch(path) => self.listed(path, &RemoteRef::parse),
-            // What is in the way of a name is the business of the change that writes it.
-            Lookup::Absent | Lookup::EmptyDirectory(_) | Lookup::Conflict(..) => Ok(None),
+            // What is in the way of a name is the business of the change that writes it. A file
+            // in the place of the directory of the remote, or of its `heads` or `tags`, is not
+            // such a name: it is the error that the listing reports, and no missing reference.
+            Lookup::Absent | Lookup::EmptyDirectory(_) | Lookup::Conflict(..) => {
+                let remote = self.remotes_dir().join(name.remote.as_str());
+                if is_directory(&remote)? {
+                    is_directory(&remote.join(name.kind.directory()))?;
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -4881,11 +4889,17 @@ mod tests {
         ] {
             let (dir, _objects, refs) = setup();
             write_reference(&dir, relative, "a file\n");
-            let error = refs.remote_refs().unwrap_err();
-            assert!(
-                matches!(&error, RefError::Io { path, .. } if path == &dir.path().join(relative)),
-                "{relative}: {error}"
-            );
+            // The lookup of one reference agrees with the listing: it is no missing reference.
+            let main = remote_name("origin", RefKind::Branch, "main");
+            for error in [
+                refs.remote_refs().unwrap_err(),
+                refs.remote_ref(&main).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, RefError::Io { path, .. } if path == &dir.path().join(relative)),
+                    "{relative}: {error}"
+                );
+            }
         }
     }
 
