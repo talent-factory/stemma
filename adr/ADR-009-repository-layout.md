@@ -5,7 +5,9 @@ the bundle of the stores were confirmed by the author on 2026-10-19, the other d
 2026-10-24 (STEMMA-9); all are implemented in Phase 1, and the linked worktrees of Phase 3
 (STEMMA-175, STEMMA-176) came on top. The reason for a denial moves to Phase 4, bare
 repositories to Phase 5; the other open items stay open, among them `worktree repair`,
-`--json` for `worktree list`, and the undo of `worktree remove`.
+`--json` for `worktree list`, and the undo of `worktree remove`. The additions of Phase 5 to the
+layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"); none of them is
+implemented yet.
 
 ## Context
 
@@ -161,6 +163,34 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   the actor is not stored in the format file or in HEAD.
 - **The directory is created if it does not exist** *(confirmed)*, as `git init` does.
 
+- **The layout in Phase 5** *(decided in STEMMA-56, STEMMA-269, STEMMA-270, STEMMA-272,
+  STEMMA-273 and STEMMA-274; not implemented yet)*. A clone that knows a remote gets new files in
+  `.stemma/`. Each slice that adds one raises `stemma-repository` by the rule above; the names and
+  the strict forms are set by the slices.
+  - The configuration of remotes: per remote its address, the ID of the repository on the hub
+    (ADR-025), the pinned public key of the hub (ADR-026), an additional CA file (ADR-028), and
+    whether a sign-in is needed (ADR-023).
+  - `refs/remotes/<remote>/heads/` and `refs/remotes/<remote>/tags/`, the remote references
+    (ADR-008).
+  - The ID of the log: random, created by `init` and `clone`; an existing repository gets it when
+    it is first needed (ADR-026).
+  - The set of statements: the signed statements that the clone made and those that a fetch
+    brought (ADR-025).
+  - The journal of a running fetch, which records the commits that arrived completely, as
+    `purge-pending` does for a purge (ADR-023).
+  - The namespace policy that the clone last fetched (ADR-027), and the last confirmation of an
+    anchor (ADR-026); where they are kept is left to their slices.
+- **A bare repository** *(decided in STEMMA-269 and STEMMA-272; not implemented yet)*. A hub opens
+  a bare `Repository`: the layout above without a working copy. It has no `HEAD`, no index and no
+  operation log (ADR-011); what it contains exactly belongs to the slice that builds it. An
+  operation that needs a working copy refuses with a typed error. The stores stay sealed, so a
+  bare repository is written and read through `stemma-core` (ADR-022). The record of ref updates,
+  the statements and the anchors of a hub lie beside the bare repository, not inside it: the core
+  knows their formats and writes them into a destination that the caller passes, so the layout
+  gets no file that only a hub knows (ADR-025). `tmp/` and `objects/` lie on one file system
+  (ADR-007). The removal of unreachable objects is an operation of the core on a bare repository
+  (ADR-007).
+
 ## Consequences
 
 - **Finding the repository** (STEMMA-72). `Repository::discover(start)` opens the repository at
@@ -315,4 +345,6 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       `renameat2(RENAME_NOREPLACE)` or a platform call with the same effect.
 - [ ] The authorizer cannot give a reason for a denial (ADR-002); `init` reports only that it is
       not allowed. Phase 4, with the policy model (ADR-004).
-- [ ] Bare repositories (no working copy) for a hub (phase 5).
+- [ ] Bare repositories (no working copy) for a hub (phase 5). Decided in the section above; the
+      exact content and the typed error of an operation that needs a working copy belong to the
+      slice.

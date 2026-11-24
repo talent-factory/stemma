@@ -1458,8 +1458,8 @@ ihr Baum des Verlaufs senkt ihn auf $O(\log N)$ \cite[crosby2009tamper].
 Für die Arbeit mit Agenten zählt das besonders:
 Ein Agent, der im Repository arbeitet, kann \type{.stemma} schreiben,
 und erst ein Anker beim Sponsor zeigt, ob das Log nach der Sitzung noch dasselbe ist.
-Ein Hub, der den letzten Eintrag bestätigt, wäre ein Anker, den der Akteur selbst nicht ändern
-kann; er gehört zu stemma-hub (ADR-003).
+Ein Hub, der den letzten Eintrag bestätigt, ist ein Anker, den der Akteur selbst nicht ändern
+kann; er ist für Phase 5 entschieden und noch nicht gebaut (ADR-026, \in{Kapitel}[chap:phase5]).
 Signaturen der Akteure stoppen das Abschneiden des Log-Endes nicht.
 
 \startinfobox
@@ -2376,7 +2376,7 @@ In der Sitzung beginnt die Kette mit Eintrag 1.
 Der Agent kann seine eigenen Einträge ändern,
 etwa seinen Akteur durch \type{human daniel} ersetzen,
 oder das Log nach $n$ abschneiden, und der Anker hält trotzdem.
-Dagegen hilft erst ein Hub, der den letzten Eintrag bestätigt (stemma-hub, ADR-003);
+Dagegen hilft erst ein Hub, der den letzten Eintrag bestätigt (ADR-026);
 Signaturen der Akteure allein genügen nicht.
 \item Nennt der Anker einen Eintrag, den das Log nicht hat,
 oder einen Eintrag aus der Zeit vor der Kette, lehnt der Befehl ebenfalls mit Exit-Code 5 ab.

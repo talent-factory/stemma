@@ -3,7 +3,9 @@
 **Status:** Accepted. Decisions marked *(confirmed)* earlier keep their date; the rest were
 confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1.
 Pack files, streaming, and the cheaper flush move to a later phase; garbage collection comes with
-the retention of snapshot entries in a later phase (ADR-011). The flush of directories on Windows
+the retention of snapshot entries in a later phase (ADR-011). For a bare repository on a hub,
+phase 5 decides the removal of unreachable objects and a directory of its own for an upload
+(STEMMA-270, STEMMA-272; see "Open", not implemented yet). The flush of directories on Windows
 was decided on 2026-10-24 (STEMMA-84), and the replacement of a damaged object on 2026-10-30
 (STEMMA-85); the other guarantees on Windows stay open.
 
@@ -144,14 +146,36 @@ server will later keep objects elsewhere (API-first). The implementation is
 
 ## Open
 
-- [ ] Pack files and compression: format, and when objects are packed.
+- [ ] Pack files and compression: format, and when objects are packed. Phase 5 decides for the
+      transfer and leaves the store as it is (STEMMA-270): a request carries whole objects in the
+      encoding above, and the stream is compressed as a property of the transport (ADR-023,
+      ADR-029). The item stays open for the store. ADR-023 names what would make a pack format
+      necessary; one trigger is that the store itself needs packs.
 - [ ] Garbage collection of unreachable objects. Its roots, the lock it runs under, and the
       pending purge that stops it are decided in ADR-011 ("Retention", STEMMA-39); it comes in
       one slice with the retention of snapshot entries, in a later phase (decided in
       STEMMA-9). Phase 1
       removes nothing but what a purge removes, so the store only grows.
+      For a bare repository the removal is decided for phase 5 (STEMMA-272), as an operation of
+      the core, because the stores are sealed. Its rules: the roots are the current references
+      alone (branches and tags), and what they do not reach is removed; the record of ref updates
+      is not a root, so a rewritten history can leave a hub (ADR-025); it runs under `refs.lock`,
+      reads commits and trees and no blobs, and is started rarely; and it keeps objects that are
+      younger than a grace period, by the age of the file, because objects lie unnamed between an
+      upload and its ref update and the receiver keeps no state in between. A grace period that
+      is too short costs a repeated upload and never data: the ref update reports missing objects
+      and the client uploads again. An age is used here although ADR-011 rejected it for `tmp/`:
+      there the lock decides, and an age would be a guess that cuts a slow writer short; here no
+      lock spans an upload and its ref update, and a wrong guess costs a second upload. The clock
+      serves the age of files only and occurs in no repository. The operation
+      treats objects that a computation stored like every unnamed object (ADR-025).
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
-      them (ADR-011, STEMMA-31).
+      them (ADR-011, STEMMA-31). An upload on a hub runs without the lock, so it writes its
+      temporary files into a subdirectory of its own in `tmp/`: the writer that takes the lock
+      empties `tmp/` of files and leaves directories. The upload removes the subdirectory at its
+      end, and what a crashed upload left is removed at the start of the hub. This amends the
+      rule for the receiving operation, as ADR-019 did for the gate; the exact form belongs to
+      the slice (STEMMA-272, not implemented yet).
 - [ ] A cheaper flush of each file of a batch: an ordinary `fsync` per file and one full flush
       of the device at the end, as Git does in its batch mode. On macOS this would remove most
       of the remaining cost of the first `track`; it needs `fcntl` through `libc` and `unsafe`

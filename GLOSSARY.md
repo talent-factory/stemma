@@ -6,6 +6,9 @@ every change to its pointers, together with the actor who made it.
 Each term names the German word that the book uses in parentheses. The book's terminology table
 in `docs/agents/book-style.md` lists the same pairs.
 
+What an entry says about a hub, a remote, a namespace, or "from phase 5 on" is decided
+(ADR-022 to ADR-027) and not implemented yet.
+
 ## Content and history
 
 **Object**:
@@ -158,7 +161,8 @@ _Avoid_: Limit
 
 **Approval**:
 The entry `pr-approve`: a reviewer signs the head of a pull request. It binds that head, so a new
-commit on the branch voids it, and a reviewer never approves their own work. (Freigabe)
+commit on the branch voids it, and a reviewer never approves their own work. From phase 5 on the
+signed part is a statement, and the entry names its hash. (Freigabe)
 _Avoid_: Review (for the entry)
 
 **Head of a pull request**:
@@ -275,8 +279,10 @@ Whether the moves of an entry took effect, as far as the log can tell. (Ausgang)
 The link from each entry to the hash of the entry before it. (Hash-Kette)
 
 **Anchor**:
-The number and hash of the last entry, kept outside the repository to detect a rewritten log.
-(Anker)
+The number and hash of an entry of a chain, kept by someone who does not write that chain, to
+detect a rewritten chain. It names both directions: a hub confirms the anchor of the tip of an
+operation log, and the receipt of a ref update is an anchor of the record of the hub that the
+clone holds (ADR-011, ADR-026). (Anker)
 
 **Stub**:
 An entry whose operation and object IDs were removed, keeping its number, time, and actor.
@@ -371,18 +377,21 @@ operation renews it, and it lasts 60 minutes by default. (Lease)
 _Avoid_: Lock (for a branch)
 
 **Write owner**:
-The one actor that holds the lease of a branch and may write to it. (Schreibinhaber)
+The one actor that holds the lease of a branch and may write to it. On a hub it is the actor of
+the last record entry of that branch name (ADR-025). (Schreibinhaber)
 _Avoid_: Owner of a branch
 
 **Owner override**:
 Taking a branch over before its lease expires. Only a human with the owner role may do it, signed
 and with a reason; it leaves an entry in the operation log that names no commit, so the purge never
-touches it, and it never bypasses the merge gate. (Owner-Override)
+touches it, and it never bypasses the merge gate. On a hub it is a signed statement that every
+reader of the repository sees (ADR-027). (Owner-Override)
 
 **Pull request**:
 The request of a write owner to merge a branch into `main`. It has no object of its own: it is the
 sequence of its entries in the operation log, and its state (open, merged, closed) is what those
-entries add up to. (Pull Request)
+entries add up to. From phase 5 on its evidence is signed statements, and the hash of the signed
+opening names it in every clone and on a hub (ADR-025). (Pull Request)
 _Avoid_: Merge request
 
 **Risk level**:
@@ -390,16 +399,172 @@ A level from 0 to 3 that decides how many independent reviews a change needs. (R
 _Avoid_: Severity, tier
 
 **Policy**:
-The rules of a repository, including its risk levels per path; policies per namespace belong to
-stemma-hub. (Policy)
+The rules of a repository, including its risk levels per path, in the file `.stemma-policy` of
+the base commit. Where a repository belongs to a namespace, its policy and the namespace policy
+are both evaluated and the stricter counts (ADR-027). (Policy)
 
 **Policy floor**:
-A minimum risk level in the policy that cannot be lowered. (Mindeststufe)
+A minimum risk level in the policy that cannot be lowered. The policy file, the register files
+and the file of a namespace policy are always level 3. (Mindeststufe)
 _Avoid_: Boden
 
+**Token key**:
+A key of the type `sk-ssh-ed25519@openssh.com`, whose private part lies on a hardware token. The
+verifier demands the flag "user present" on every signature of such a key, so a process cannot use
+it without a touch (ADR-020). Not the token of a hub. (Hardware-Schlüssel)
+_Avoid_: Security key, FIDO key
+
+## Network and hub
+
+The terms of this section, and the token key above, belong to phase 5. They are decided in
+ADR-022 to ADR-027 and not implemented yet.
+
+**Clone**:
+A repository on the machine of an actor, with the full object store and a working copy
+(ADR-015). It may know a remote. (Klon)
+
+**Hub**:
+A server that stores repositories and enforces their rules in addition to the local enforcement.
+It accepts ref updates, writes their record, keeps the statements and the anchors, and never
+merges and never signs for an actor. A hub is known by its address and its key. It is built in
+stemma-hub, not in this repository. (Hub)
+_Avoid_: Server (for the role), origin
+
+**Remote**:
+A repository on a hub as a clone knows it: a name, the address, the repository ID, and the pinned
+key of the hub. A remote is always a hub: a clone never accepts a push and is never the authority
+over a shared branch. (Remote)
+
+**Remote reference**:
+The state of a branch or a tag on a hub as the clone last saw it: the commit and the record entry.
+Only `fetch` and `push` move it (ADR-008). (Remote-Referenz)
+_Avoid_: Remote-tracking branch
+
+**Bare repository**:
+A repository without a working copy, `HEAD`, index, and operation log, as a hub holds it
+(ADR-009). (Bare-Repository)
+
+**Transport**:
+The trait of the core through which `fetch` and `push` exchange messages. It is pure I/O; the
+HTTP client in `stemma-remote` and an in-memory variant for tests implement it (ADR-022).
+(Transport)
+
+**Protocol version**:
+The number `stemma-protocol <n>`, the first line of every message between a clone and a hub. It is
+independent of the repository format, and every extension is a new number (ADR-023).
+(Protokollversion)
+
+**Object stream**:
+The body of a fetch or an upload: whole objects in the encoding of the store, ancestors first,
+without deltas (ADR-023). (Objektstrom)
+_Avoid_: Pack
+
+**Account**:
+A name on a hub with a set of public keys and no secret of its own. It is needed only above a
+repository: to create one, for a namespace, and to read without a register entry. An agent has
+none (ADR-024). (Konto)
+_Avoid_: User, login
+
+**Sign-in**:
+The signed challenge that yields a token, once per command (ADR-024). (Anmeldung)
+_Avoid_: Login
+
+**Upload**:
+The first step of a push: the object stream goes to the hub, which stores the objects unnamed
+until a ref update names them (ADR-023). (Upload)
+
+**Challenge**:
+A nonce of a hub that the key of the sender signs once per command, bound to the address of the
+hub. It yields a token (ADR-024). (Challenge)
+
+**Token**:
+A short-lived credential of a hub that says which key speaks. It is transport: it never enters a
+repository and is no proof (ADR-024). (Token)
+_Avoid_: Session, proof
+
+**Ref update**:
+A signed request of an actor to move, create, or delete one or several references on a hub, all
+or nothing. It names per reference the last record entry of that name, so it counts once
+(ADR-025). (Ref-Update)
+_Avoid_: Push (for the signed request)
+
+**Record of ref updates**:
+The hash chain of all accepted ref updates of a repository, written and signed by the hub alone.
+It fixes the order across all references and keeps no commit alive (ADR-025). (Aufzeichnung der
+Ref-Updates)
+_Avoid_: Reflog, protocol, journal
+
+**Record entry**:
+One entry of the record: the signed payload of the actor as received, the lines of the hub
+(number, time, register commit, policy commits, whether each move was a fast-forward, the actor,
+the hash of the previous entry), and the signature of the hub. (Eintrag der Aufzeichnung)
+
+**Receipt**:
+The record entry that a hub returns for an accepted ref update. The clone checks it and only then
+moves its remote references; it is an anchor of the record. (Quittung)
+
+**Statement**:
+A signed proof that stands on its own and binds a repository, not the log of a clone: the opening
+of a pull request, an approval, a check result, a closing, an owner override, a purge of `main`,
+and the statements of a namespace owner. A clone and a hub fold the same statements with one
+function (ADR-025). (signierte Erklärung)
+_Avoid_: Claim, attestation
+
+**Lines of the hub**:
+What a hub adds when it accepts something, signed with the key of the hub. For a record entry: a
+running number, its time, the register commit, the policy commits, whether each move was a
+fast-forward, the actor, and the hash of the previous entry. For a statement: a running number,
+its time, the register commit, and the number of the last record entry. (Zeilen des Hubs)
+
+**Order of the hub**:
+The order that the numbers in the lines of the hub fix across clones. A revocation acts from the
+record entry that moves `main` to it, and a statement lies before it if its lines name a smaller
+record number (ADR-026). (Ordnung des Hubs)
+
+**Accepting operation**:
+The operation of the core that judges a ref update or a statement on a bare repository and fixes
+the order of the checks, so that a hub composes none itself (ADR-025). (annehmende Operation)
+
+**Key of the hub**:
+The one Ed25519 key of a hub instance. It signs only what the hub itself says (record entries,
+the lines of the hub, confirmations of an anchor), never for an actor; a clone pins it in the
+configuration of the remote (ADR-026). (Schlüssel des Hubs)
+
+**Confirmation (of an anchor)**:
+The signed answer of a hub to an anchor of an operation log; it names the time of the hub and the
+number of the last record entry (ADR-026). (Bestätigung)
+
+**Log ID**:
+The random ID of the operation log of one `.stemma`. A hub keeps anchors per repository and log
+ID (ADR-026). (Log-ID)
+
 **Namespace**:
-A group of repositories with their own policy, such as an organisation, a course, or a project.
-It is built in stemma-hub, not in this repository. (Namespace)
+A flat group of repositories on a hub with an ID, a name, and one namespace policy, such as an
+organisation, a course, or a project. The address of a repository is
+`<hub>/<namespace>/<repository>` (ADR-027). (Namespace)
+_Avoid_: Organisation, group (as a type)
+
+**Namespace repository**:
+The one Stemma repository of a namespace that holds its register and the namespace policy. The
+human owners of its register are the owners of the namespace (ADR-027). (Namespace-Repository)
+
+**Namespace policy**:
+A policy file in the namespace repository that holds for every repository of the namespace. It is
+combined with the policy of a repository by the maximum, so it can only raise, and it is always
+level 3 (ADR-027). (Namespace-Policy)
+
+**Grant**:
+The right `create` or `read` that an owner of a namespace gives to an account with a signed
+statement (ADR-027). (Gewährung)
+
+**Freeze**:
+The state in which a hub refuses every ref update and every statement to a repository while
+reading goes on. An owner of the namespace sets and lifts it with a signed statement; no role of
+the namespace sets a repository back (ADR-027). (Einfrieren)
+
+**Operator**:
+Whoever runs a hub. The operator can block a key and set bounds, and can change no register.
+(Betreiber)
 
 ## Behaviour
 

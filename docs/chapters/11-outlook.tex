@@ -14,7 +14,7 @@ Ein Purge braucht die ID des Blobs; ein Befehl, der sie zu einem Pfad nennt,
 fehlt noch, ebenso eine dauerhafte Liste der entfernten Blobs, die \type{track} und
 \type{status} prüfen (ADR-014).
 Einen Blob, dessen Datei beschädigt ist, kann der Purge nicht entfernen.
-Einen Anker, den der Akteur nicht ändern kann, liefert erst der Hub (stemma-hub, ADR-003),
+Einen Anker, den der Akteur nicht ändern kann, liefert erst der Hub (ADR-026),
 und einen Befehl, der eine gebrochene Hash-Kette repariert, gibt es nicht (ADR-011).
 
 Die Arbeitskopie gehört einem Akteur; das Programm erzwingt diese Regel seit Format 5 (ADR-010).
@@ -77,11 +77,14 @@ sie gehören zum getrennten Projekt stemma-hub.
 
 \section{Netzwerk und Agenten-Schnittstellen}
 
-Für den Hub sind das Übertragungsformat, Einzelobjekte oder Pakete mit Deltas,
-und die Authentifizierung von Menschen und Agenten offen.
-Ob der Hub Merges für Agenten ohne Klon ausführt, entscheidet ADR-015 für den ersten Hub
-dagegen; ob Peer-to-Peer-Sync später kommt oder bewusst ausgeschlossen bleibt,
-ist offen und gehört zu stemma-hub (ADR-003, \in{Kapitel}[chap:phase5]).
+Für den Hub ist der Entwurf entschieden und noch nicht umgesetzt (\in{Kapitel}[chap:phase5]):
+das Übertragungsformat, die Anmeldung von Menschen und Agenten, die Durchsetzung auf dem Hub
+und die Namespaces.
+Ein Klon ist nie die Autorität über einen geteilten Branch; der Austausch zwischen zwei Klonen
+ohne Hub wird nicht gebaut (ADR-003).
+Merges für Agenten ohne Klon führt der Hub in Phase 5 nicht aus (ADR-015).
+Offen bleiben die Befehle, die Folgen eines Purge auf dem Hub für die Klone, die Messungen, aus
+denen die Schwellen für ein Pack-Format kommen, und die Weitergabe des Hubs an Dritte.
 Policies und Signaturen liegen nach ADR-003 im Repository, nicht auf dem Hub.
 Für die Agenten-Schnittstellen sind die Körnung der Werkzeuge, die Authentifizierung und der
 Ablauf von Zugriffstoken, das Verhalten bei Konflikten paralleler Agenten und Commits auf dem

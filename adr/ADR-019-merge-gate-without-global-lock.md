@@ -11,6 +11,8 @@ phase 4.
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".
+The gate on a hub was decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, see "The gate
+and a hub"); it is not implemented yet.
 
 ## Context
 
@@ -268,6 +270,33 @@ meaning: different actor IDs.
   another sponsor than the true one, and the sponsor rule does not reach it. The check of the
   writer asks for a registered actor wherever a register exists; the same for the authors is a
   rule for the gate.
+
+### The gate and a hub
+
+Decided for phase 5 (STEMMA-273, ADR-025); not implemented yet.
+
+- The verdict about `main` is a pure function over the commits, the register and the policy of
+  the tip `T`, the namespace policy (ADR-027), and the signed statements. `merge_gate` calls it
+  locally, and the accepting
+  operation calls it on a hub, so the rule stands in one place.
+- The evidence is signed statements. An approval and a check result are statements of registered
+  actors, and the gate folds the set of statements instead of the entries of the log; the entries
+  `pr-open`, `pr-approve` and `check` name the hash of the statement they made (ADR-011). The
+  rule for who counts as independent holds unchanged.
+- A hub enforces all bounds: the pause at a red tip with the exemption of a repair, the
+  reservation and `max_unverified`. They are computed over the order and the time in the lines
+  that the hub adds to every accepted statement. A fetch brings the statements with these lines,
+  so a clone comes to the same verdict except for what arrived since its fetch; statements not
+  yet submitted are ordered by the local log.
+- In a repository whose `main` follows a remote, the optimistic swap runs across the network:
+  the gate builds `M` on the tip `T` of the remote without a move, sends the ref update, and
+  moves `main` only after the receipt. On `Stale` the command fetches and repeats, bounded, and
+  signs again each time. Without a remote the gate stays as described above.
+- The write owner of an unprotected branch may push a move that is no fast-forward, and the
+  record of the hub says so, which is the way of this ADR for a rebase.
+- The accepting operation takes `refs.lock` itself in the middle, as the gate does. Pure
+  computations over immutable objects may run before the lock; the fold of the statements, the
+  bounds, the record entry and the move stand under it.
 
 ## Consequences
 

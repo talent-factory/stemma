@@ -6,8 +6,9 @@ tags (STEMMA-54) was taken on 2026-10-29 and implemented in the store; the opera
 the command followed on 2026-10-30 (STEMMA-183), and so did the deletion of a tag (STEMMA-184).
 The rule for a name that is both a branch and a tag was decided on 2026-11-04 (STEMMA-186).
 The command `branch` (create, list, rename, delete) was added in Phase 3 (STEMMA-166).
-The open items move to Phase 5 (remote references); packed references have no phase yet, and the
-rename on Windows waits for the CI run (STEMMA-33).
+Remote references were decided for Phase 5 on 2026-11-23 (STEMMA-56, see "Remote references"
+below; not implemented yet); packed references have no phase yet, and the rename on Windows waits
+for the CI run (STEMMA-33).
 
 ## Context
 
@@ -218,6 +219,38 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   its decision as well. The module has the trait `RefStore` (sealed, like `ObjectStore`) and the
   implementation `FsRefStore`.
 
+- **Remote references** *(decided for Phase 5, STEMMA-56; not implemented yet)*. A remote
+  reference is the state of a branch or a tag on a hub as the clone last saw it.
+  - **Layout.** A namespace of their own, one file per reference:
+    `<metadata directory>/refs/remotes/<remote>/heads/<name>` and
+    `<metadata directory>/refs/remotes/<remote>/tags/<name>`. Each is a file of two lines in a
+    strict form, the commit and the hash of the record entry of that name on the hub (ADR-025).
+    They are part of the sealed `RefStore`, so `verify`, the reachability and the plan of a purge
+    know them. The new files are a change of the layout (ADR-009).
+  - **Names.** The name of a remote is one component by the rules of a branch name. The qualified
+    form is `remotes/<remote>/heads/<name>` and `remotes/<remote>/tags/<name>`, and the prefix
+    `remotes/` is reserved for new branch and tag names as `heads/` and `tags/` are.
+  - **Tags stay in the namespace of the remote.** A local tag arises only through `tag` with its
+    own log entry, because a tag never moves. A fetch creates no local tag.
+  - **Only `fetch` and `push` move a remote reference**, with one log entry each (ADR-011). A
+    fetch writes one entry of the operation `fetch` with all remote references it moves (old and
+    new state, commit and record entry) and moves them then. A remote reference that the list of
+    the hub no longer names is removed in the same entry, because the list is always complete,
+    and `op restore` brings it back. A push writes, after the receipt, one entry `push` with the
+    remote references it moved and the number and hash of the receipt. A stale push (`Stale`)
+    moves no remote reference: the clone may not have the new commit (`MissingCommit`), and only
+    a fetch moves remote references, after the connectivity check (ADR-023).
+  - **Remote references are roots of the reachability.** The level and the target for the
+    authorizer are set by the slice according to ADR-004.
+  - **The compare-and-swap on a hub** names the hash of the last record entry of the reference in
+    place of the bare commit ID, so an update counts once even when an old value returns
+    (ADR-025). The local compare-and-swap is unchanged.
+  - Rejected: the layout of Git with tags fetched into the local tags (a fetch would create local
+    tags without the operation `tag`, and two values of one reference would lie in two files), one
+    file per remote with the whole list (a second form of reference beside the file per branch),
+    removal only on request (the clone would show a state of the hub that no longer exists), and
+    no log entry (against ADR-011).
+
 ## Consequences
 
 - A reader sees a branch or HEAD in canonical form or gets an error with the path: `Corrupt`.
@@ -325,4 +358,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       hand (see ADR-007 for the same question about objects).
 - [x] The log of changes of a reference (a reflog) is part of the operation log (ADR-005), which
       ADR-011 designs: one entry for each change of a pointer, with the old and the new value.
-- [ ] Remote references and the record of a ref update on a hub (ADR-003, handed to stemma-hub).
+- [x] Remote references and the record of a ref update on a hub (ADR-003, handed to stemma-hub).
+      Decided in STEMMA-56: the layout and the moves of a remote reference are in the decision
+      above, the signed ref update and the record of a hub in ADR-025. Not implemented yet. Open
+      stay how a purge treats remote references in a clone (ADR-014), and which local branch
+      follows which remote reference, which belongs to the command surface.

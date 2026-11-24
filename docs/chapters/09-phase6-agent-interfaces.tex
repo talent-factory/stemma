@@ -19,6 +19,15 @@ Agenten arbeiten über definierte Werkzeuge. Jeder Aufruf ist autorisiert und pr
 \item Auswahl der Werkzeuge: Wie grob oder fein sind die Operationen?
 \item Authentifizierung und Ablauf von Zugriffstoken für Agenten.
 \item Verhalten bei Konflikten zwischen parallelen Agenten.
-\item Commits und Merges auf dem Server für Agenten ohne Klon, falls Phase 5 sie nicht bringt
-(ADR-015).
+\item Commits und Merges auf dem Hub für Agenten ohne Klon.
+Phase 5 baut sie nicht, legt aber die Richtung fest, die Phase 6 beim Bauen bestätigen muss
+(ADR-015): Der Hub rechnet und liefert, der Akteur setzt den Commit zusammen und signiert.
+Auf Anfrage würde der Hub dann den Tree des sauberen Merges und eine Vorschau des Urteils des
+Merge-Gates berechnen; der Agent baut den Merge-Commit selbst, lädt ihn hoch und signiert ein
+gewöhnliches Ref-Update (\in{Kapitel}[chap:phase5]).
+Der Hub erzeugt also keinen Commit und signiert nie für einen Akteur.
+Die Grenzen: Ein Akteur ohne Klon hat kein Operation Log und damit keinen Anker, die Aufzeichnung
+des Hubs ist die einzige Spur seiner Handlungen, und er vertraut der Vorschau.
+Offen sind die Anfragen selbst, auch die für das Lesen ohne Klon, das an eine Referenz gebunden
+bleibt.
 \stopitemize
