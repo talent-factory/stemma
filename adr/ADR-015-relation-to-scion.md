@@ -97,7 +97,8 @@ step, as in Scion, are a goal for the hub, where many actors write to one reposi
 (STEMMA-19). Phase 5 is decided to reach the goal for the hub without rebuilding the lock
 (STEMMA-272, STEMMA-273; not implemented yet): the upload of objects runs without the lock, and
 `refs.lock` covers the ref update only, that is the connectivity check, the accepting operation,
-the record entry and the compare-and-swap (ADR-025). No finer lock and no ref update without a lock is built.
+the record entry and the compare-and-swap (ADR-025). No finer lock and no ref update without a
+lock is built.
 
 ### Rejected for now *(confirmed)*
 
