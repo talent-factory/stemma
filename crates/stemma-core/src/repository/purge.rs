@@ -32,6 +32,7 @@ use crate::oplog::PullKind;
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
 use crate::pull::{self, PullRequest};
 use crate::refs::{BranchName, Head, RefError};
+use crate::remote::{RemoteRef, RemoteRefName};
 use crate::store::{Batch, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, ActorRef, Allowed, Authorizer};
 
@@ -160,7 +161,8 @@ impl Repository {
     /// The actor must be a human: an agent is refused before anything else, whatever the
     /// authorizer says, because a purge removes history that cannot be brought back. Then the
     /// authorizer is asked for `purge`, with the blob as the target. The plan starts from the
-    /// pointers (HEAD, the working-copy commit, the branches, the tags) and from every commit
+    /// pointers (HEAD, the working-copy commit, the branches, the tags, the remote references) and
+    /// from every commit
     /// that an entry of the log names, and follows the parents. A tree that becomes empty leaves its parent
     /// tree, as a snapshot never makes an empty directory; the tree of a commit can become empty.
     /// Last, the store is scanned for trees and commits that no pointer and no entry reaches,
@@ -181,7 +183,9 @@ impl Repository {
     /// plan would replace more entries of the log than a journal lists,
     /// [`PurgeError::OpenPullRequest`] if it would replace the opening of an open pull request, and
     /// [`PurgeError::Unsound`] if the check fails, and [`PurgeError::TaggedCommit`] if a tag
-    /// points to a commit that the purge would rewrite, because a tag never moves (ADR-008).
+    /// points to a commit that the purge would rewrite, because a tag never moves (ADR-008), and
+    /// [`PurgeError::RemoteReference`] if a remote reference does, because only a fetch or a push
+    /// moves one.
     pub fn plan_purge(
         &self,
         blob: ObjectId,
@@ -264,12 +268,16 @@ impl Repository {
         let worktrees = self.refs_store().all_pointers().map_err(PurgeError::Refs)?;
         let branches = refs.branches().map_err(PurgeError::Refs)?;
         let tags = refs.tags().map_err(PurgeError::Refs)?;
+        // A remote reference is a root as well (ADR-008): what the clone last saw on a hub stays
+        // in the store, and a commit that only a remote reference reaches is walked for the blob.
+        let remotes = refs.remote_refs().map_err(PurgeError::Refs)?;
         let log = self.oplog().entries().map_err(PurgeError::Log)?;
 
         let mut planner = Planner::new(self.objects(), blob);
         let mut roots: Vec<CommitId> = worktrees.iter().map(|(_, _, commit)| *commit).collect();
         roots.extend(branches.iter().map(|(_, commit)| *commit));
         roots.extend(tags.iter().map(|(_, commit)| *commit));
+        roots.extend(remotes.iter().map(|(_, reference)| reference.commit));
         for (_, head, _) in &worktrees {
             if let Head::Detached(commit) = head {
                 roots.push(*commit);
@@ -287,6 +295,10 @@ impl Repository {
         if policy == TagPolicy::Refuse {
             check_tags(&tags, &rewritten, &[])?;
         }
+        // A remote reference says what a hub holds, and only a fetch or a push moves it. How a
+        // purge treats one is not decided (ADR-014), so the purge neither moves nor removes it
+        // and is refused while one names a commit that it would rewrite.
+        check_remotes(&remotes, &rewritten)?;
         let new = |commit: CommitId| planner.commits[&commit];
         let tag_moves: Vec<(BranchName, Moved<CommitId>)> = tags
             .iter()
@@ -359,6 +371,8 @@ impl Repository {
             .collect();
         kept_roots.extend(branches.iter().map(|(_, commit)| new(*commit)));
         kept_roots.extend(tags.iter().map(|(_, commit)| new(*commit)));
+        // None of them is rewritten, or the plan was refused above.
+        kept_roots.extend(remotes.iter().map(|(_, reference)| reference.commit));
         for (_, head, _) in &worktrees {
             if let Head::Detached(commit) = head {
                 kept_roots.push(new(*commit));
@@ -1008,6 +1022,13 @@ pub enum PurgeError {
         /// that does. Never empty.
         tags: Vec<(BranchName, CommitId)>,
     },
+    /// Remote references point to commits that the purge would rewrite. A remote reference is
+    /// the state of a hub as the clone last saw it, and only a fetch or a push moves it
+    /// (ADR-008); how a purge treats one is not decided (ADR-014), so the purge is refused.
+    RemoteReference {
+        /// Every such remote reference with the commit it points to. Never empty.
+        references: Vec<(RemoteRefName, CommitId)>,
+    },
     /// The plan would keep an object reachable that holds the blob or that it deletes. This is a
     /// mistake of the plan and not of the repository; it is an error so that the secret does not
     /// stay without a word.
@@ -1092,6 +1113,22 @@ impl PurgeError {
                      first with `stemma purge --abort`)"
                 )
             }
+            Self::RemoteReference { references } => {
+                write!(f, "the purge cannot proceed while ")?;
+                for (index, (reference, commit)) in references.iter().enumerate() {
+                    let separator = if index == 0 { "" } else { ", " };
+                    write!(
+                        f,
+                        "{separator}the remote reference `{reference}` points to the commit \
+                         {commit}"
+                    )?;
+                }
+                write!(
+                    f,
+                    ", which the purge would rewrite; a remote reference says what a hub holds, \
+                     and a purge neither moves nor removes it"
+                )
+            }
             Self::Unsound { id } => write!(
                 f,
                 "the plan would keep {id} reachable although it holds the blob or is deleted; \
@@ -1131,6 +1168,7 @@ impl Error for PurgeError {
             | Self::TooManyEntries { .. }
             | Self::OpenPullRequest { .. }
             | Self::TaggedCommit { .. }
+            | Self::RemoteReference { .. }
             | Self::Unsound { .. } => None,
         }
     }
@@ -1153,6 +1191,24 @@ fn check_tags(
         Ok(())
     } else {
         Err(PurgeError::TaggedCommit { tags: tagged })
+    }
+}
+
+/// Refuses a purge that would rewrite the commit of a remote reference (ADR-008, ADR-014): lists
+/// every such reference, so that one refusal names them all.
+pub(super) fn check_remotes(
+    remotes: &[(RemoteRefName, RemoteRef)],
+    rewritten: &HashSet<CommitId>,
+) -> Result<(), PurgeError> {
+    let held: Vec<(RemoteRefName, CommitId)> = remotes
+        .iter()
+        .filter(|(_, reference)| rewritten.contains(&reference.commit))
+        .map(|(name, reference)| (name.clone(), reference.commit))
+        .collect();
+    if held.is_empty() {
+        Ok(())
+    } else {
+        Err(PurgeError::RemoteReference { references: held })
     }
 }
 
@@ -1603,6 +1659,100 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(error, PurgeError::OpenPullRequest { number: n } if n == number),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_remote_reference_on_a_commit_that_would_be_rewritten_refuses_the_purge() {
+        use crate::testutil::write_remote_ref;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, third] = history(&dir, &repository);
+        let root = repository.metadata_dir();
+        write_remote_ref(&root, "origin/heads/old", first);
+        write_remote_ref(&root, "origin/heads/main", third);
+        write_remote_ref(&root, "origin/tags/v1", second);
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        let PurgeError::RemoteReference { references } = &error else {
+            panic!("expected a remote reference, got {error:?}");
+        };
+        let found: Vec<(String, CommitId)> = references
+            .iter()
+            .map(|(name, commit)| (name.to_string(), *commit))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("remotes/origin/heads/main".to_owned(), third),
+                ("remotes/origin/tags/v1".to_owned(), second),
+            ],
+            "the reference before the secret does not stand in the way"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("the remote reference `remotes/origin/tags/v1` points to the commit")
+                && message.contains("neither moves nor removes it"),
+            "{message}"
+        );
+        assert_eq!(
+            crate::failure::Classify::kind(&error),
+            crate::failure::FailureKind::Other
+        );
+        // Moving the tags does not move a remote reference.
+        let error = repository
+            .plan_purge_with(secret(), &actor(), &AllowAll, TagPolicy::Move)
+            .unwrap_err();
+        assert!(
+            matches!(error, PurgeError::RemoteReference { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_remote_reference_is_a_root_of_the_plan() {
+        use crate::testutil::write_remote_ref;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [first, second, _] = history(&dir, &repository);
+        let store = repository.objects();
+        let clean_tree = read_commit(store, first).unwrap().tree();
+        let make = |parents, message: &str| {
+            let commit = Commit::try_new(
+                clean_tree,
+                parents,
+                crate::change::ChangeId::generate().unwrap(),
+                actor(),
+                7,
+                message,
+            )
+            .unwrap();
+            store.put_commit(&commit).unwrap()
+        };
+        // Two commits that no branch reaches, as a fetch leaves them. Without a remote
+        // reference the one after the secret is a leftover that the purge deletes.
+        let after = make(vec![second], "after the secret");
+        let clean = make(vec![first], "clean");
+        assert!(plan(&repository).deleted_commits().contains(&after));
+
+        // A remote reference keeps the clean one: it is reached, and nothing of it is deleted.
+        let root = repository.metadata_dir();
+        write_remote_ref(&root, "origin/heads/clean", clean);
+        let kept = plan(&repository);
+        assert!(!kept.deleted_commits().contains(&clean));
+        assert!(!kept.rewrites().iter().any(|(old, _)| *old == clean));
+
+        // One on the commit after the secret makes it a commit that the purge would rewrite,
+        // and no leftover that goes without a word.
+        write_remote_ref(&root, "origin/heads/after", after);
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(&error, PurgeError::RemoteReference { references }
+                if references.len() == 1 && references[0].1 == after),
             "{error:?}"
         );
     }

@@ -101,7 +101,7 @@ use stemma_core::repository::{
     OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
     ReservedPrefix, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
     SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
-    WorktreeBranch, WorktreeError, BRANCH_PREFIX, TAG_PREFIX,
+    WorktreeBranch, WorktreeError, BRANCH_PREFIX, REMOTE_PREFIX, TAG_PREFIX,
 };
 use stemma_core::signature::{self, PayloadKind, PublicKey, Signature, SshKeygen};
 use stemma_core::{Actor, ActorParseError, AllowAll};
@@ -749,6 +749,7 @@ struct SwitchArgs {
     /// The branch to change to; with `-c` the name of the new branch; with `--detach` the branch,
     /// the tag, or the commit (`b3:` and 64 hexadecimal digits) that HEAD is detached at. With
     /// `--detach`, a name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`.
+    /// A remote reference is `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`.
     /// If HEAD names the branch already and another command moved it (the merge gate moves
     /// `main`), the working copy is brought to its tip
     #[arg(value_name = "NAME", value_parser = parse_revision)]
@@ -756,7 +757,8 @@ struct SwitchArgs {
 
     /// With `-c`: where the new branch starts, a branch, a tag, or a commit (`b3:` and 64
     /// hexadecimal digits); by default the commit that HEAD leads to. A name that is a branch and
-    /// a tag is refused: write `heads/NAME` or `tags/NAME`
+    /// a tag is refused: write `heads/NAME` or `tags/NAME`. A remote reference is
+    /// `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`
     #[arg(value_name = "START", value_parser = parse_revision, requires = "create")]
     start: Option<Revision>,
 
@@ -802,7 +804,8 @@ struct SwitchArgs {
 #[derive(Debug, Args)]
 struct RebaseArgs {
     /// The branch, the tag, or the commit (`b3:` and 64 hexadecimal digits) to replay the current
-    /// branch on. A name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`
+    /// branch on. A name that is a branch and a tag is refused: write `heads/NAME` or `tags/NAME`.
+    /// A remote reference is `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`
     #[arg(value_name = "TARGET", value_parser = parse_revision)]
     target: Revision,
 
@@ -859,8 +862,9 @@ struct MergeArgs {
     take_over: bool,
 }
 
-/// Reads a revision argument: a commit ID, `heads/NAME`, `tags/NAME`, or a name that the core
-/// looks up as a branch and as a tag (ADR-008). `switch` reads its target with the same rule, and
+/// Reads a revision argument: a commit ID, `heads/NAME`, `tags/NAME`, a remote reference
+/// (`remotes/REMOTE/heads/NAME`, `remotes/REMOTE/tags/NAME`), or a name that the core looks up as
+/// a branch and as a tag (ADR-008). `switch` reads its target with the same rule, and
 /// decides afterwards which forms its mode accepts.
 fn parse_revision(text: &str) -> Result<Revision, String> {
     text.parse::<Revision>().map_err(|error| error.to_string())
@@ -1203,7 +1207,7 @@ enum CliError {
     /// `branch -d` or `branch -m` names a branch that does not exist, or a name that is only a
     /// directory of branches.
     NoSuchBranch(BranchName),
-    /// `switch -c` got a qualified form (`heads/NAME`, `tags/NAME`) as the name of a new branch
+    /// `switch -c` got a qualified form (`heads/NAME`, `tags/NAME`, `remotes/...`) as the name of a new branch
     /// (ADR-008). The core refuses a plain name with such a prefix as
     /// [`UpdateError::ReservedName`].
     ReservedName(ReservedPrefix),
@@ -2111,11 +2115,20 @@ fn switch(args: SwitchArgs, out: &mut dyn Write) -> Result<(), CliError> {
         // A qualified form as the name of a new branch is a reserved prefix (ADR-008).
         (false, true, Revision::Branch(name)) => return Err(reserved(BRANCH_PREFIX, &name)),
         (false, true, Revision::Tag(name)) => return Err(reserved(TAG_PREFIX, &name)),
+        (false, true, Revision::Remote(name)) => {
+            return Err(CliError::ReservedName(ReservedPrefix {
+                name: name.to_string(),
+                prefix: REMOTE_PREFIX,
+            }))
+        }
         (false, false, Revision::Name(name) | Revision::Branch(name)) => {
             SwitchTarget::Existing(name)
         }
         (false, _, Revision::Tag(name)) => switch_usage_error(&format!(
             "tags/{name} is a tag and not a branch name; `--detach` detaches HEAD at it"
+        )),
+        (false, _, Revision::Remote(name)) => switch_usage_error(&format!(
+            "{name} is a remote reference and not a branch name; `--detach` detaches HEAD at it"
         )),
         (false, _, Revision::Commit(id)) => switch_usage_error(&format!(
             "{id} is a commit and not a branch name; `--detach` detaches HEAD at it"

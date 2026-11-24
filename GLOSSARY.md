@@ -432,12 +432,14 @@ _Avoid_: Server (for the role), origin
 
 **Remote**:
 A repository on a hub as a clone knows it: a name, the address, the repository ID, and the pinned
-key of the hub. A remote is always a hub: a clone never accepts a push and is never the authority
+key of the hub, kept in one file per remote, `.stemma/remotes/<name>` (ADR-009). A remote is
+always a hub: a clone never accepts a push and is never the authority
 over a shared branch. (Remote)
 
 **Remote reference**:
 The state of a branch or a tag on a hub as the clone last saw it: the commit and the record entry.
-Only `fetch` and `push` move it (ADR-008). (Remote-Referenz)
+Only `fetch` and `push` move it (ADR-008). Its qualified name is `remotes/<remote>/heads/<name>`
+or `remotes/<remote>/tags/<name>`. (Remote-Referenz)
 _Avoid_: Remote-tracking branch
 
 **Bare repository**:

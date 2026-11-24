@@ -6,8 +6,9 @@ the bundle of the stores were confirmed by the author on 2026-10-19, the other d
 (STEMMA-175, STEMMA-176) came on top. The reason for a denial moves to Phase 4, bare
 repositories to Phase 5; the other open items stay open, among them `worktree repair`,
 `--json` for `worktree list`, and the undo of `worktree remove`. The additions of Phase 5 to the
-layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"); none of them is
-implemented yet.
+layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"). Of them, the
+configuration of the remotes and the remote references are implemented (STEMMA-285, format 14);
+the others are not yet.
 
 ## Context
 
@@ -28,7 +29,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007),
   `oplog/` and `oplog-tip` (ADR-011),
   `leases/` (one file per branch with a lease, made by the first lease; ADR-004, ADR-011),
-  `refs/heads/`, `refs/tags/` (made by the first tag, ADR-008), `refs.lock` (while a command
+  `refs/heads/`, `refs/tags/` (made by the first tag, ADR-008), `refs/remotes/` (the remote
+  references, ADR-008) and `remotes/` (the configuration of the remotes, one file per remote; see
+  "The layout in Phase 5"), `refs.lock` (while a command
   writes), and `refs.lock.guard` (the guard of the
   lock, which stays; ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
   it stopped, ADR-014), `derived/` (the cache of derived data, optional, ADR-017), `worktrees/`
@@ -117,15 +120,18 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 13, the version of the line `former-owner` of a `worktree-remove`
-  entry (ADR-011, STEMMA-217), and `open` reads versions 2 to 13: a repository made before the purge existed (2), before the chain
+  supports: `init` writes version 14, the version of the remotes (the configuration of the
+  remotes and the remote references, STEMMA-285), and `open` reads versions 2 to 14: a repository
+  made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
   `lease-override` and the directory `leases/`; ADR-004, ADR-011), before the pull requests (8, the
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
-  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub (11), or before the former owner of a
-  worktree (12) rises to 13 with its next
-  entry or purge (ADR-014, ADR-011, ADR-010).
+  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub (11),
+  before the former owner of a worktree (12), or before the remotes (13) rises to 14 with its
+  next entry or purge (ADR-014, ADR-011, ADR-010). Version 14 adds files and changes none: a
+  program that knows only version 13 would not count a remote reference as a root, and its purge
+  could remove what the reference names, so it has to refuse the repository.
   Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
   raises the version records none, and the next entry of a change does (ADR-010). A version
@@ -164,14 +170,33 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - **The directory is created if it does not exist** *(confirmed)*, as `git init` does.
 
 - **The layout in Phase 5** *(decided in STEMMA-56, STEMMA-269, STEMMA-270, STEMMA-272,
-  STEMMA-273 and STEMMA-274; not implemented yet)*. A clone that knows a remote gets new files in
+  STEMMA-273 and STEMMA-274; the first two items are implemented in STEMMA-285, the others not
+  yet)*. A clone that knows a remote gets new files in
   `.stemma/`. Each slice that adds one raises `stemma-repository` by the rule above; the names and
   the strict forms are set by the slices.
   - The configuration of remotes: per remote its address, the ID of the repository on the hub
     (ADR-025), the pinned public key of the hub (ADR-026), an additional CA file (ADR-028), and
     whether a sign-in is needed (ADR-023).
+    It is one file per remote, `remotes/<remote>` *(STEMMA-285)*, in the metadata directory that
+    every worktree shares. The name of the file is the name of the remote, one component by the
+    rules of a branch name (ADR-008). The file has six lines in a fixed order, each with a
+    newline: `stemma-remote 1`, `address <address>`, `repository <ID>`, `hub-key <key>`,
+    `ca-file <path>`, and `sign-in yes` or `sign-in no`. The address starts with `https://` or
+    `http://` and goes on with printable ASCII characters without a space; it is kept as given,
+    and that `http://` is accepted towards a loopback address only stays a rule of the client
+    (ADR-028). The ID is 32 lowercase hexadecimal digits (ADR-027). The key is an Ed25519 public
+    key in the OpenSSH format without a comment, or `-` as long as none is pinned. The path of
+    the CA file is text without a control character, or `-` for none (a file called `-` is
+    written `./-`). The reader accepts what the writer writes and nothing else (ADR-005), and an
+    entry of the directory whose name is no name of a remote is damage, except one that starts
+    with a dot. One file per remote follows the branches and the leases: a change replaces one
+    file atomically, and two remotes do not touch each other. A repository without the directory
+    knows no remote. The core reads the configuration (`Repository::remote`, `remotes`) and has
+    the encoding; the commands that write it (`remote add`, `clone`, pinning a key again) come
+    with their slices and their entries in the log.
   - `refs/remotes/<remote>/heads/` and `refs/remotes/<remote>/tags/`, the remote references
-    (ADR-008).
+    (ADR-008). Their file and their readers are built *(STEMMA-285)*; `fetch` and `push` write
+    them.
   - The ID of the log: random, created by `init` and `clone`; an existing repository gets it when
     it is first needed (ADR-026).
   - The set of statements: the signed statements that the clone made and those that a fetch
@@ -286,6 +311,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       entry: version 7 (STEMMA-185). A program that knows only version 6 refuses such a
       repository with the unsupported version and does not report damage for a log or a journal
       that it cannot read.
+- [x] The format is raised with the configuration of the remotes and the remote references:
+      version 14 (STEMMA-285). No command writes either yet, so a repository reaches the version
+      with its next entry or purge, and a program that knows only version 13 refuses it with the
+      unsupported version.
 - [ ] `worktree remove` does not undo with `op restore`: the entries of `worktree add` and
       `worktree remove` are refused by a restore. A removed worktree is added again with
       `worktree add` on its branch, and its last working-copy commit is named by the entry.

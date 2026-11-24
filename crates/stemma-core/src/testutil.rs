@@ -231,3 +231,17 @@ pub(crate) fn conflicted_commit(repository: &Repository) -> (CommitId, Vec<u8>) 
         Merge::try_from_terms(vec![Some(&b"one\n"[..]), Some(b"base\n"), Some(b"two\n")]).unwrap();
     (id, marker_text(&sum).unwrap())
 }
+
+/// Writes a remote reference below the metadata directory `root`, as a fetch will: `name` is the
+/// path below `refs/remotes`, such as `origin/heads/main`. The record entry is a fixed hash.
+pub(crate) fn write_remote_ref(root: &Path, name: &str, commit: CommitId) {
+    let reference = crate::remote::RemoteRef {
+        commit,
+        entry: format!("b3:{}", "e".repeat(64))
+            .parse()
+            .expect("a valid hash"),
+    };
+    let path = root.join("refs/remotes").join(name);
+    fs::create_dir_all(path.parent().expect("a name with a directory")).expect("create dirs");
+    fs::write(path, reference.encode()).expect("write the remote reference");
+}

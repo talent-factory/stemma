@@ -13,7 +13,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::journal::{self, Journal, JournalError};
-use super::{check_tags, refuse_agent, Planner, PurgeError, PurgePlan, TagPolicy};
+use super::{check_remotes, check_tags, refuse_agent, Planner, PurgeError, PurgePlan, TagPolicy};
 use crate::object::{BlobId, CommitId, ObjectId};
 use crate::oplog::{Entry, EntryError, OpLogError, Purge, Record};
 use crate::refs::{Logged, PurgeLock, RefError};
@@ -926,8 +926,9 @@ impl Repository {
     }
 
     /// Refuses the delete set of `plan` if a tag points to a commit that it rewrites and the plan
-    /// does not move it. Tags are read again under the lock, because the plan may be older than a
-    /// tag (a resume, or a tag that was written by hand).
+    /// does not move it, or if a remote reference points to one. Both are read again under the
+    /// lock, because the plan may be older than a tag or a remote reference (a resume, or a file
+    /// that was written by hand).
     fn check_tags_against(
         &self,
         plan: &PurgePlan,
@@ -939,14 +940,21 @@ impl Repository {
             &entries,
             PurgeFailure::Refs,
         ))?;
+        let remotes = self.refs().remote_refs().map_err(stopped(
+            PurgeStep::Objects,
+            &entries,
+            PurgeFailure::Refs,
+        ))?;
         let rewritten = plan.rewrites.iter().map(|(old, _)| *old).collect();
         // A tag that the journal moves is the person's decision; any other is refused.
         let moving: Vec<_> = plan.tags.iter().map(|(name, _)| name.clone()).collect();
-        check_tags(&tags, &rewritten, &moving).map_err(|error| ApplyPurgeError::Stopped {
-            step: PurgeStep::Objects,
-            entries,
-            source: Box::new(PurgeFailure::Plan(Box::new(error))),
-        })
+        check_tags(&tags, &rewritten, &moving)
+            .and_then(|()| check_remotes(&remotes, &rewritten))
+            .map_err(|error| ApplyPurgeError::Stopped {
+                step: PurgeStep::Objects,
+                entries,
+                source: Box::new(PurgeFailure::Plan(Box::new(error))),
+            })
     }
 
     /// Removes the journal: the last step of a purge (`entries` are its `purge` entries) and of
@@ -1211,7 +1219,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 13\n");
+        assert_eq!(format(dir), "stemma-repository 14\n");
     }
 
     #[test]
@@ -1710,7 +1718,7 @@ mod tests {
             repository.verify_refs().unwrap().is_empty(),
             "verify is clean"
         );
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 14\n");
     }
 
     #[test]
@@ -1946,6 +1954,35 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_reference_written_after_the_journal_stops_the_resume_before_any_delete() {
+        use crate::testutil::write_remote_ref;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        stop_at(&repository, Stop::Journal);
+        // A program that does not know the lock writes the remote reference.
+        write_remote_ref(&repository.metadata_dir(), "origin/heads/main", second);
+        let error = repository.resume_purge(&actor(), &AllowAll).unwrap_err();
+        match &error {
+            ApplyPurgeError::Stopped { source, .. } => assert!(
+                matches!(&**source, PurgeFailure::Plan(plan)
+                    if matches!(**plan, PurgeError::RemoteReference { .. })),
+                "{error:?}"
+            ),
+            other => panic!("expected a stopped purge, got {other:?}"),
+        }
+        assert!(repository.objects().contains(&secret()).unwrap());
+        assert!(
+            journal_exists(&dir),
+            "the journal stays, so the purge can be aborted"
+        );
+        // With the remote reference gone, the resume finishes the purge.
+        fs::remove_file(dir.path().join(".stemma/refs/remotes/origin/heads/main")).unwrap();
+        repository.resume_purge(&actor(), &AllowAll).unwrap();
+        assert!(!journal_exists(&dir));
+    }
+
+    #[test]
     fn a_tag_written_by_hand_after_the_journal_stops_the_resume_before_any_delete() {
         let dir = TempDir::new();
         let repository = repository(&dir);
@@ -2156,7 +2193,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 14\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -2278,7 +2315,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 13\n",
+            "stemma-repository 14\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -2901,7 +2938,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 13\n");
+        assert_eq!(format(&dir), "stemma-repository 14\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);

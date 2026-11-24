@@ -7,8 +7,9 @@ the command followed on 2026-10-30 (STEMMA-183), and so did the deletion of a ta
 The rule for a name that is both a branch and a tag was decided on 2026-11-04 (STEMMA-186).
 The command `branch` (create, list, rename, delete) was added in Phase 3 (STEMMA-166).
 Remote references were decided for Phase 5 on 2026-11-23 (STEMMA-56, see "Remote references"
-below; not implemented yet); packed references have no phase yet, and the rename on Windows waits
-for the CI run (STEMMA-33).
+below). Their files, their names, and what reads them were built on 2026-11-24 (STEMMA-285);
+`fetch` and `push`, which move them, are not built yet. Packed references have no phase yet, and
+the rename on Windows waits for the CI run (STEMMA-33).
 
 ## Context
 
@@ -180,7 +181,9 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   1. Text that starts with `b3:` is a commit ID (a name holds no colon) and is no name.
   2. `heads/<name>` is the branch `<name>`, and `tags/<name>` is the tag `<name>`. These two
      prefixes are the qualified form. They are tried before the lookup and never fall through
-     to it: if the branch or the tag does not exist, the name is unknown.
+     to it: if the branch or the tag does not exist, the name is unknown. Since STEMMA-285,
+     `remotes/<remote>/heads/<name>` and `remotes/<remote>/tags/<name>` are the qualified forms
+     of a remote reference, with the same rule (see "Remote references" below).
   3. Any other text is looked up as a branch and as a tag. If exactly one exists, it is the
      answer. If none exists, the name is unknown. If both exist, the command fails with an
      error that names both and asks for `heads/<name>` or `tags/<name>`. It does not pick one,
@@ -219,7 +222,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   its decision as well. The module has the trait `RefStore` (sealed, like `ObjectStore`) and the
   implementation `FsRefStore`.
 
-- **Remote references** *(decided for Phase 5, STEMMA-56; not implemented yet)*. A remote
+- **Remote references** *(decided for Phase 5, STEMMA-56; the layout, the names, and the
+  readers are implemented in STEMMA-285, the moves by `fetch` and `push` are not yet)*. A remote
   reference is the state of a branch or a tag on a hub as the clone last saw it.
   - **Layout.** A namespace of their own, one file per reference:
     `<metadata directory>/refs/remotes/<remote>/heads/<name>` and
@@ -227,9 +231,32 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     strict form, the commit and the hash of the record entry of that name on the hub (ADR-025).
     They are part of the sealed `RefStore`, so `verify`, the reachability and the plan of a purge
     know them. The new files are a change of the layout (ADR-009).
+  - **The file** *(STEMMA-285)*. The first line is the ID of the commit, as in the file of a
+    branch. The second is `entry ` and the hash of the record entry, in the text of an object ID
+    (`b3:` and 64 lowercase hexadecimal digits), and each line ends with a newline. The hash names
+    an entry of the record and no object, so nothing looks it up in the store. The reader accepts
+    what the writer writes and nothing else (ADR-005): the file of a branch, with its one line,
+    is no remote reference.
   - **Names.** The name of a remote is one component by the rules of a branch name. The qualified
     form is `remotes/<remote>/heads/<name>` and `remotes/<remote>/tags/<name>`, and the prefix
     `remotes/` is reserved for new branch and tag names as `heads/` and `tags/` are.
+  - **Resolving and reserving** *(STEMMA-285)*. Every place that takes any revision reads the
+    two qualified forms. They never fall through to a branch or a tag: a remote reference that
+    the clone does not hold is an unknown name. Text that starts with `remotes/` and has another
+    shape (`remotes/origin`, `remotes/origin/main`) is refused when it is read, so it is never
+    looked up as a plain name. The same entry points of the core that refuse `heads/` and
+    `tags/` refuse `remotes/` for a new branch or tag. A branch or a tag that has such a name
+    already is not rewritten and is reached by its own qualified form, such as
+    `heads/remotes/x`.
+  - **Reading** *(STEMMA-285)*. The store reads one remote reference by its exact name and lists
+    all of them, sorted by the remote, then the branches before the tags, then the name. The
+    listing is as strict as the one of the branches: a directory below `refs/remotes` whose name
+    is no name of a remote, an entry below a remote that is neither `heads` nor `tags`, a name
+    below those that is no branch name, and a file that is not in canonical form are each
+    `Corrupt` with the path, and a file in the place of a directory is an error of the file
+    system. Entries whose name starts with a dot are skipped. A repository without
+    `refs/remotes` has no remote reference. The store has no operation that writes one: the
+    writers come with `fetch` and `push`, each with its entry.
   - **Tags stay in the namespace of the remote.** A local tag arises only through `tag` with its
     own log entry, because a tag never moves. A fetch creates no local tag.
   - **Only `fetch` and `push` move a remote reference**, with one log entry each (ADR-011). A
@@ -241,7 +268,10 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     moves no remote reference: the clone may not have the new commit (`MissingCommit`), and only
     a fetch moves remote references, after the connectivity check (ADR-023).
   - **Remote references are roots of the reachability.** The level and the target for the
-    authorizer are set by the slice according to ADR-004.
+    authorizer are set by the slice according to ADR-004. The plan of a purge walks from them as
+    it does from a branch (STEMMA-285). A purge neither moves nor removes one, so it is refused
+    (`RemoteReference`) while a remote reference names a commit that it would rewrite; what a
+    purge does with them in the end is open (ADR-014).
   - **The compare-and-swap on a hub** names the hash of the last record entry of the reference in
     place of the bare commit ID, so an update counts once even when an old value returns
     (ADR-025). The local compare-and-swap is unchanged.
@@ -300,8 +330,10 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - The names of `con` and its kind are refused on every platform, also for people who never use
   Windows.
 - `FsRefStore::verify` (and `Repository::verify_refs`) checks, without the lock, that a detached
-  HEAD, the working-copy commit, every branch, and every tag name a commit that the store has.
-  The result lists the references in this order, the tags after the branches. A write
+  HEAD, the working-copy commit, every branch, every tag, and every remote reference name a
+  commit that the store has. The result lists the references in this order, the tags after the
+  branches and the remote references last. Of a remote reference the commit is checked; its
+  record entry names nothing in the store. A write
   checks this already, so a failure means that an object was removed or damaged, or that a
   reference file was edited by hand. The check is shallow: the commit is read and its hash
   checked, but it is not parsed, and its tree and parents are not followed. The result lists
@@ -360,6 +392,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       ADR-011 designs: one entry for each change of a pointer, with the old and the new value.
 - [x] Remote references and the record of a ref update on a hub (ADR-003, handed to stemma-hub).
       Decided in STEMMA-56: the layout and the moves of a remote reference are in the decision
-      above, the signed ref update and the record of a hub in ADR-025. Not implemented yet. Open
-      stay how a purge treats remote references in a clone (ADR-014), and which local branch
-      follows which remote reference, which belongs to the command surface.
+      above, the signed ref update and the record of a hub in ADR-025. The files, the names,
+      and the readers are built (STEMMA-285); the moves by `fetch` and `push` are not. Open stay
+      how a purge treats remote references in a clone (ADR-014; until then it is refused), and
+      which local branch follows which remote reference, which belongs to the command surface.

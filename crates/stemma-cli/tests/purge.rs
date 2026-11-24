@@ -210,7 +210,7 @@ fn move_tags_sets_the_tag_again_at_the_commit_that_the_purge_leaves() {
     ok(dir.path(), &["op", "verify"]);
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 13\n"
+        "stemma-repository 14\n"
     );
 }
 
@@ -266,7 +266,7 @@ fn apply_purges_the_blob_and_keeps_the_repository_at_format_4() {
     );
     assert_eq!(
         fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-        "stemma-repository 13\n"
+        "stemma-repository 14\n"
     );
     assert!(!dir.path().join(".stemma/purge-pending").exists());
 

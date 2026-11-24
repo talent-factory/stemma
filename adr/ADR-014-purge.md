@@ -457,7 +457,12 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
 - [ ] The reachability check of the last step has to know every kind of reference that holds
       objects, including those that come later (remote references). Tags are known (STEMMA-54).
       Remote references are decided as roots of the reachability and as part of the sealed
-      `RefStore` (ADR-008); how a purge treats them in a clone is open.
+      `RefStore` (ADR-008), and the plan walks from them (STEMMA-285). How a purge treats them
+      in a clone is open: it could move them, remove them, or wait for a fetch after the purge
+      on the hub. Until that is decided, a purge does neither and is refused
+      (`PurgeError::RemoteReference`) while a remote reference names a commit that it would
+      rewrite; the refusal names every such reference and is repeated under the lock, as for a
+      tag. No command removes a remote reference yet, so such a purge waits for the decision.
 - [x] A purge that deals with a tag on a commit that it would rewrite, instead of refusing:
       the human who runs the purge may let it move the tag to the new commit (`--move-tags`),
       and the `purge` entry counts the tags that moved (STEMMA-185).

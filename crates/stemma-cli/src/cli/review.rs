@@ -437,6 +437,10 @@ fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, R
             .map_err(|error: StoreError| ReviewError::of_kind(error.to_string(), error.kind()))?,
         Revision::Branch(name) => refs.branch(name).map_err(read)?,
         Revision::Tag(name) => refs.tag(name).map_err(read)?,
+        Revision::Remote(name) => refs
+            .remote_ref(name)
+            .map_err(read)?
+            .map(|reference| reference.commit),
         Revision::Name(name) => match (
             refs.branch(name).map_err(read)?,
             refs.tag(name).map_err(read)?,
