@@ -72,7 +72,7 @@ darin, sodass die Suche der Befehlszeile es nie findet:
     bare          stemma-bare (die Markierung eines Bare-Repositorys)
     objects/      Objekte (ADR-007)
     refs/heads/   Branches (ADR-008)
-    refs/tags/    Tags, mit dem ersten Tag angelegt
+    refs/tags/    Tags, mit dem ersten Tag angelegt (noch von keiner Operation)
     tmp/          temporäre Dateien der beiden Speicher
 \stoptyping
 
@@ -91,7 +91,7 @@ Ohne Arbeitskopie und ohne Sperre der Referenzen laufen dagegen die Prüfungen, 
 braucht: das Register und die Policy eines Basis-Commits, die Stufe einer Änderung mit der
 Eskalation bei abgeschwächten Tests, der Tree-Merge und die Prüfung von Objekten, Branches und
 Tags.
-Sie lesen nur den Objektspeicher und ihre Argumente.
+Sie lesen nur den Objektspeicher, die Branches und Tags und ihre Argumente.
 Eine Referenz bewegt auf einem Bare-Repository erst die annehmende Operation
 (\in{Abschnitt}[sec:hub-enforcement]); bis sie gebaut ist, bewegt der Kern dort keine.
 

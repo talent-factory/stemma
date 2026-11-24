@@ -80,6 +80,10 @@ impl Repository {
     /// is read, and held to the move (ADR-014): a purge cannot start in between, and a lock that
     /// another command holds is `UpdateError::Refs` with [`RefError::Locked`], as is the journal
     /// of a purge that has not finished with [`RefError::PurgePending`]. Both write nothing.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn snapshot(
         &self,
         actor: &Actor,

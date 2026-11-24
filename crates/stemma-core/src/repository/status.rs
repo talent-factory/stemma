@@ -146,6 +146,10 @@ impl Repository {
     /// the commits, and the trees; they carry what the snapshot did ([`StatusError::saved`]). A
     /// snapshot that moved the pointer but could not flush it is not an error: see
     /// [`Saved::late`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn status(
         &self,
         actor: &Actor,

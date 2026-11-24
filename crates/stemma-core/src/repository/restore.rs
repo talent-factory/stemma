@@ -139,6 +139,10 @@ impl Repository {
     /// # Errors
     ///
     /// Returns what [`restore`](Self::restore) returns before it takes the snapshot.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_restore(
         &self,
         number: u64,
@@ -202,6 +206,10 @@ impl Repository {
     /// entry of the restore, or `None` if there was nothing to restore, and the restore is *not*
     /// to be repeated), and in the `late` field of [`RestoreError::AfterSnapshot`] when a later
     /// step failed. [`RestoreError::pointer_moved`] is true in both.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn restore(
         &self,
         number: u64,

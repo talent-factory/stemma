@@ -441,6 +441,10 @@ impl Repository {
     /// the snapshot fails (with [`RefError::Locked`] while another command holds the lock; nothing
     /// is written then), [`ApplyPurgeError::Start`] if the purge cannot start under the lock, and
     /// [`ApplyPurgeError::Stopped`] if a step after the journal fails; then the journal stays.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn apply_purge(
         &self,
         blob: ObjectId,
@@ -461,6 +465,10 @@ impl Repository {
     ///
     /// The errors of [`apply_purge`](Self::apply_purge); [`PurgeError::TaggedCommit`] (inside
     /// [`ApplyPurgeError::Plan`]) only with [`TagPolicy::Refuse`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn apply_purge_with(
         &self,
         blob: ObjectId,
@@ -490,6 +498,10 @@ impl Repository {
     /// the actor is an agent or the authorizer refuses, [`ApplyPurgeError::NotPending`] if there is
     /// no journal, and [`ApplyPurgeError::Stopped`] if a step fails again, among them a pointer
     /// that is at neither of its values ([`RefError::PurgeStale`]).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn resume_purge(
         &self,
         actor: &Actor,
@@ -510,6 +522,10 @@ impl Repository {
     ///
     /// Returns the errors of [`resume_purge`](Self::resume_purge) before a step, and
     /// [`ApplyPurgeError::PastNoReturn`] if the `purge` entry is written.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn abort_purge(
         &self,
         actor: &Actor,

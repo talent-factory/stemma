@@ -539,10 +539,14 @@ pub enum RefError {
     /// The repository is bare, and the operation needs what a bare repository does not have: a
     /// working copy with its `HEAD`, or the operation log (ADR-009). The operation is refused
     /// before it reads or writes anything.
+    /// [`Repository::is_bare`](crate::repository::Repository::is_bare) lists what is refused and
+    /// what works.
     Bare {
         /// The directory of the bare repository.
         path: PathBuf,
-        /// The operation that was refused, for example `snapshot`.
+        /// The operation that was refused, for example `snapshot`, as words for the message. It
+        /// is no identifier: several calls share one text, and the text may change, so a caller
+        /// does not match on it.
         operation: &'static str,
         /// What the operation needs.
         lacks: BareLacks,
@@ -568,8 +572,10 @@ pub enum RefError {
 pub enum BareLacks {
     /// The working copy: the files, `HEAD`, and the working-copy commit (ADR-010).
     WorkingCopy,
-    /// The operation log (ADR-011). On a hub the record of ref updates takes its place, and it
-    /// lies beside the bare repository (ADR-025).
+    /// The operation log (ADR-011), and with it what is recorded through its entries: the moves
+    /// of the branches and the tags, the leases with their directory `leases/`, the pull
+    /// requests, and the checks. On a hub the record of ref updates takes its place, and it lies
+    /// beside the bare repository (ADR-025).
     OperationLog,
 }
 

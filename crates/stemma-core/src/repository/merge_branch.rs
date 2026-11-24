@@ -133,8 +133,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Before anything of the merge is written (the message is checked first, even for a
-    /// fast-forward or "up to date"): [`MergeBranchError::EmptyMessage`],
+    /// Before anything of the merge is written (the message is checked first of these, even for
+    /// a fast-forward or "up to date"): [`MergeBranchError::EmptyMessage`],
     /// [`MergeBranchError::DetachedHead`], [`MergeBranchError::NoSuchBranch`],
     /// [`MergeBranchError::NoCommit`], [`MergeBranchError::Update`] for a refusal of the question
     /// `merge`, [`MergeBranchError::Refs`] for a lock that another command holds or a purge that
@@ -148,6 +148,10 @@ impl Repository {
     /// [`MergeBranchError::PartlyMoved`], [`MergeBranchError::NotDurable`], and a
     /// [`MergeBranchError::Rewrite`] that holds a failure of the files say how far the merge
     /// came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn merge(
         &self,
         other: &BranchName,

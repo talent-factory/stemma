@@ -98,6 +98,10 @@ impl Repository {
     /// commit at the tip of the branch, [`CommitError::Store`] storing the new commits,
     /// [`CommitError::ChangeId`] the random source, and [`CommitError::Log`] reading the log to
     /// tell a stopped commit from a restored working copy.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn commit(
         &self,
         message: &str,

@@ -68,9 +68,12 @@ dependency.
   and applies the result; it composes no checks itself. The operation is described in ADR-025.
 - Callable without a working copy, `HEAD` and index: the authorizer against the register of a
   commit (on a hub the register at the tip of `main`, ADR-024 and ADR-025); the policy of the base
-  commit and the level of a change (`policy_at` becomes reachable); the escalation when tests are
-  weakened; write ownership and lease; the rule table and the bounds of the gate with the count of
-  approvals; the verification of received objects, references and signatures.
+  commit and the level of a change (`Repository::policy_of`, the public form of `policy_at`,
+  which takes the mode); the escalation when tests are weakened; the rule table and the bounds of
+  the gate with the count of approvals, as functions that judge given evidence; the verification
+  of received objects, references and signatures. Write ownership and the lease are judged by the
+  accepting operation from the record of the hub (ADR-025); the lease operations of a clone
+  write the operation log and are refused on a bare repository (ADR-009).
 - Not needed on the hub: `snapshot`, `track`, `status`, `checkout`, `switch`, `restore`,
   `worktree`, `rebase`, `follow_main`.
 - `ObjectStore` and `RefStore` stay sealed. The store of the hub is therefore a Stemma layout per

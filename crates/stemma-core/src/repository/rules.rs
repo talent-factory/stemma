@@ -234,6 +234,10 @@ impl Repository {
     /// # Errors
     ///
     /// [`LeaseError::Policy`], and the errors of [`claim_lease`](Self::claim_lease).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn claim_lease_by_policy(
         &self,
         branch: &BranchName,

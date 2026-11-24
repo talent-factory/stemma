@@ -136,6 +136,10 @@ impl Repository {
     /// Returns [`WorktreeError`] if the worktrees cannot be listed or the state of the main
     /// worktree cannot be read. Everything that happens to the worktree itself is in
     /// [`Followed`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn follow_main(
         &self,
         actor: &Actor,

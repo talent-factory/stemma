@@ -165,6 +165,10 @@ impl Repository {
     /// [`WorktreeError::RemoveFailed`],
     /// [`WorktreeError::RemoveMoveFailed`], [`WorktreeError::RemovePartlyMoved`], and
     /// [`WorktreeError::RemoveNotDurable`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn remove_worktree(
         &self,
         worktree: &str,
@@ -496,6 +500,10 @@ impl Repository {
     /// [`WorktreeError::NotCleaned`] names one that cannot be. After the entry:
     /// [`WorktreeError::CheckoutFailed`], [`WorktreeError::MoveFailed`],
     /// [`WorktreeError::PartlyMoved`], and [`WorktreeError::NotDurable`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn add_worktree(
         &self,
         path: &Path,
@@ -797,6 +805,10 @@ impl Repository {
     /// when one worktree is damaged, and [`WorktreeError::SeveralDamaged`], which names all of them,
     /// when more than one is. [`WorktreeError::Io`] also stands for a directory of the worktrees
     /// that cannot be listed.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>, WorktreeError> {
         self.require_working_copy("list the worktrees")
             .map_err(WorktreeError::Refs)?;

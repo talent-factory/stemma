@@ -407,6 +407,10 @@ impl Repository {
     /// written but objects. [`GateError::MoveFailed`] and [`GateError::PullNotRecorded`] leave
     /// the entry of the move, as above. The other variants wrap a failure of the store, the
     /// references, or the log.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn merge_gate(
         &self,
         number: u64,
@@ -442,6 +446,10 @@ impl Repository {
     ///
     /// The errors of [`merge_gate`](Self::merge_gate), [`GateError::Policy`], and
     /// [`GateError::Level`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn merge_gate_by_policy(
         &self,
         number: u64,

@@ -151,6 +151,10 @@ impl Repository {
     /// tracked, and [`CheckoutError::Snapshot`] for a tree or a blob that the store lacks or that
     /// is damaged, and for a file that cannot be inspected. [`CheckoutError::Ignore`] is the error
     /// of reading `.stemmaignore`.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_checkout(
         &self,
         from: Option<TreeId>,
@@ -261,6 +265,10 @@ impl Repository {
     /// a [`CheckoutError::ChangedSincePlan`]) is wrapped in [`CheckoutError::TempLeft`] if that
     /// file cannot be removed. All of them are reported as [`CheckoutError::Interrupted`] once a
     /// file was removed or written.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn apply_checkout(&self, plan: &CheckoutPlan) -> Result<(), CheckoutError> {
         self.require_working_copy("checkout")
             .map_err(|error| CheckoutError::Snapshot(SnapshotError::Refs(error)))?;

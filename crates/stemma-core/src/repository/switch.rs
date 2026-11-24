@@ -243,6 +243,10 @@ impl Repository {
     /// wrapped in [`SwitchError::AfterSnapshot`] when the snapshot wrote an entry. Then
     /// [`SwitchError::CheckoutFailed`], [`SwitchError::MoveFailed`],
     /// [`SwitchError::PartlyMoved`], and [`SwitchError::NotDurable`] say how far the switch came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn switch(
         &self,
         target: &SwitchTarget,
@@ -420,6 +424,10 @@ impl Repository {
     ///
     /// Returns what [`switch`](Self::switch) returns before the snapshot, among them
     /// [`SwitchError::Stopped`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_switch(
         &self,
         target: &SwitchTarget,

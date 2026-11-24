@@ -182,6 +182,10 @@ impl Repository {
     /// [`PurgeError::OpenPullRequest`] if it would replace the opening of an open pull request, and
     /// [`PurgeError::Unsound`] if the check fails, and [`PurgeError::TaggedCommit`] if a tag
     /// points to a commit that the purge would rewrite, because a tag never moves (ADR-008).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_purge(
         &self,
         blob: ObjectId,
@@ -200,6 +204,10 @@ impl Repository {
     ///
     /// The errors of [`plan_purge`](Self::plan_purge); [`PurgeError::TaggedCommit`] only with
     /// [`TagPolicy::Refuse`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_purge_with(
         &self,
         blob: ObjectId,

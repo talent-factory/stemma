@@ -167,7 +167,7 @@ fn init_bare_makes_the_layout_without_head_working_copy_and_log() {
         b"stemma-repository 15\n"
     );
     assert_eq!(fs::read(root.join("bare")).unwrap(), b"stemma-bare\n");
-    // The temporary directory of `init_bare` is gone: only the repository is beside nothing.
+    // The temporary directory of `init_bare` is gone: nothing else lies beside the repository.
     let beside: Vec<_> = fs::read_dir(dir.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -731,9 +731,10 @@ fn the_object_store_takes_and_verifies_objects_without_the_lock() {
     )
     .unwrap();
     assert!(orphan.verify(repository.objects()).is_err());
-    // Nothing took the lock or made a file outside `objects/`.
+    // Nothing took the lock, whose guard would stay, or made a log.
     assert!(!repository.refs().is_locked().unwrap());
     assert!(!repository.path().join("refs.lock").exists());
+    assert!(!repository.path().join("refs.lock.guard").exists());
     assert!(!repository.path().join("oplog").exists());
 }
 
@@ -1108,4 +1109,157 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
     // A path through a file names nothing.
     let error = Repository::open_bare(elsewhere.join("hub")).unwrap_err();
     assert!(matches!(error, OpenError::Missing { .. }), "{error}");
+}
+
+/// The public methods of `Repository` that run on a bare repository, or that make or open one.
+/// Every other public method starts with the check of the bare repository.
+const WITHOUT_CHECK: [&str; 18] = [
+    "init",
+    "init_bare",
+    "open",
+    "open_bare",
+    "discover",
+    "path",
+    "metadata_dir",
+    "worktree_name",
+    "is_bare",
+    "objects",
+    "refs",
+    "verify_refs",
+    "oplog",
+    "taking_over",
+    "taken_over",
+    "policy_of",
+    "level_of_change",
+    "refs_store",
+];
+
+/// The public methods of the `impl Repository` blocks in `source`, each with the first statement
+/// of its body. The reading relies on the layout of rustfmt.
+fn public_methods(source: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut found = Vec::new();
+    let mut inside = false;
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if line == "impl Repository {" {
+            inside = true;
+        } else if line == "}" {
+            inside = false;
+        } else if inside {
+            if let Some(rest) = line.strip_prefix("    pub fn ") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                while !lines[index].ends_with('{') {
+                    index += 1;
+                }
+                found.push((name, lines[index + 1].trim().to_owned()));
+            }
+        }
+        index += 1;
+    }
+    found
+}
+
+#[test]
+fn every_public_operation_starts_with_the_check_of_the_bare_repository() {
+    // A method that is added without the check would run on a bare repository until it meets a
+    // missing file; this test names it instead.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = vec![root.join("repository.rs")];
+    for directory in [root.join("repository"), root.join("repository/purge")] {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(path);
+            }
+        }
+    }
+    let mut checked = 0;
+    let mut seen = BTreeSet::new();
+    for path in sources {
+        for (name, first) in public_methods(&fs::read_to_string(&path).unwrap()) {
+            seen.insert(name.clone());
+            if WITHOUT_CHECK.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                first.starts_with("self.require_working_copy(\"")
+                    || first.starts_with("self.require_oplog(\""),
+                "`{name}` in {} does not start with the check: `{first}`",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    // The reading found the methods: a change of the layout must not empty the test.
+    assert!(checked >= 50, "{checked}");
+    for name in WITHOUT_CHECK {
+        assert!(name == "refs_store" || seen.contains(name), "{name}");
+    }
+}
+
+#[test]
+fn an_entry_of_the_log_is_refused_even_past_the_checks_of_the_operations() {
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    // A directory that someone gave a log by hand: without the refusal an entry would be
+    // written into it.
+    fs::create_dir(repository.path().join("oplog")).unwrap();
+    let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("push"), "main").unwrap();
+    let lock = repository.refs_store().lock_writer(&allowed).unwrap();
+    let commit = commit_of(&repository, &[("a.txt", "one\n")], vec![]);
+    let change = Change::try_new(
+        1,
+        daniel(),
+        operation("push"),
+        None,
+        None,
+        vec![(name("main"), Moved::from_to(None, Some(commit)))],
+    )
+    .unwrap();
+
+    let error = repository.append(&lock, &change).unwrap_err();
+
+    let OpLogError::Io { source, .. } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(source.kind(), io::ErrorKind::Unsupported);
+    assert!(matches!(
+        source
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<RefError>()),
+        Some(RefError::Bare {
+            lacks: BareLacks::OperationLog,
+            ..
+        })
+    ));
+    drop(lock);
+    // No entry and no tip were written.
+    assert!(fs::read_dir(repository.path().join("oplog"))
+        .unwrap()
+        .next()
+        .is_none());
+    assert!(!repository.path().join("oplog-tip").exists());
+}
+
+#[test]
+fn the_message_of_an_unsupported_version_names_the_versions_that_are_read() {
+    let text = supported_versions();
+    for version in READ_VERSIONS {
+        let named = text.split(" and ").any(|run| match run.split_once(" to ") {
+            Some((first, last)) => {
+                (first.parse::<u32>().unwrap()..=last.parse().unwrap()).contains(&version)
+            }
+            None => run.parse::<u32>().unwrap() == version,
+        });
+        assert!(named, "{version} in `{text}`");
+    }
+    // A version between two that are read is not named as supported.
+    let gaps =
+        (READ_VERSIONS[0]..FORMAT_VERSION).filter(|version| !READ_VERSIONS.contains(version));
+    assert_eq!(text.matches(" and ").count(), gaps.count(), "{text}");
 }

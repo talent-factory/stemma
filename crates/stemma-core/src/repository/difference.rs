@@ -330,6 +330,10 @@ impl Repository {
     /// working-copy reference cannot be read, [`DiffError::UnknownCommit`] for an operand that
     /// names no commit, and [`DiffError::Store`], [`DiffError::Missing`] or
     /// [`DiffError::Damaged`] if a commit, a tree, or a blob that the diff needs cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn diff(
         &self,
         actor: &Actor,
@@ -353,6 +357,10 @@ impl Repository {
     /// empty, absolute, or has a part `..`, before the working copy is saved; and
     /// [`DiffError::NoSuchPath`] for a path that selects no file of either side, even if no file
     /// differs below it.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn diff_paths(
         &self,
         actor: &Actor,

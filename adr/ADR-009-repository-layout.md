@@ -187,9 +187,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   - **Where it lies.** The directory of a bare repository is the metadata directory itself; there
     is no `.stemma/` inside it and no directory of a working copy around it. `discover` therefore
     never finds one, and no command of the command line works in one by accident.
-  - **What it contains.** `format`, the marker `bare`, `objects/` (ADR-007), `refs/heads/`,
-    `refs/tags/` (made by the first tag, ADR-008), `refs.lock` and `refs.lock.guard` (while a
-    writer holds the lock, and the guard stays), and `tmp/`. It has no `HEAD`, no `working-copy`
+  - **What it contains.** `format`, the marker `bare`, `objects/` (ADR-007), `refs/heads/`, and
+    `tmp/`. `refs/tags/` (made by the first tag, ADR-008) and `refs.lock` with
+    `refs.lock.guard` (while a writer holds the lock, and the guard stays) come with the first
+    writer of a reference, which is the accepting operation of ADR-025; nothing that is built
+    yet makes them. It has no `HEAD`, no `working-copy`
     (so no index, which is the tree of the working-copy commit, ADR-010), no `oplog/` and
     `oplog-tip` (ADR-011), no `leases/`, no `worktrees/`, no `purge-pending`, and no `derived/`.
     `tmp/` and `objects/` lie on one file system (ADR-007).
@@ -215,8 +217,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     temporary name is `.stemma-bare-<pid>-<n>-<random>` and not the one of `init`: a writer of a
     repository removes the `.stemma-init-…` directories next to its `.stemma` as stale, and a
     bare repository may be made in such a directory. As for `init`, an empty directory that
-    appears at `path` between the check and the rename is replaced on Unix. Nothing records the actor: there is no log, and the one who holds the bare
-    repository records who made it (on a hub the record beside it, ADR-025).
+    appears at `path` between the check and the rename is replaced on Unix. Nothing records the
+    actor: there is no log, and the one who holds the bare repository records who made it (on a
+    hub the record beside it, ADR-025).
     `Repository::open_bare(path)` checks `format` and the marker and nothing else, checks no
     owner, and follows links, as `open` does. No command of the command line creates or opens a
     bare repository; both are calls of the library for a hub (ADR-022).
@@ -248,10 +251,17 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     `policy_at`, which takes the mode and not a flag) and the level of a change
     (`level_of_change`); the escalation when tests are weakened; the tree merge
     (`merge_commits`, `merge_trees`); and the functions of the gate that judge given evidence
-    (the modules `check`, `bounds`, and `pull`). All of them are functions of the object store or
-    of their arguments, take no lock, create no commit by themselves, and move no reference
-    (ADR-025). The mode of a repository (`Mode::of`) is read from the commit of `HEAD` and is
-    refused; a hub reads the register of the tip of `main` (ADR-024). The step to the enforcing
+    (the modules `check`, `bounds`, and `pull`). All of them read the object store, the
+    branches and the tags, or their arguments, take no lock, create no commit by themselves, and
+    move no reference (ADR-025). `verify_refs` refuses while the journal of a purge exists, as
+    in every repository; nothing makes one in a bare repository.
+    The refusal is found by matching the error of the operation that was called, not through
+    the chain of sources, and its field `operation` is wording for the message. `init_bare`
+    reports a final flush that failed with the directory above the repository
+    (`NotDurable`), and an entry of the log that code past the checks tries to write is
+    refused once more (`OpLogError::Io` of the kind `Unsupported`).
+    The mode of a repository (`Mode::of`) is read from the commit of `HEAD` and is refused; a
+    hub reads the register of the tip of `main` (ADR-024). The step to the enforcing
     mode (`enter_enforcing`) writes the register file into the working copy and is refused too.
     `Repository::oplog()` is still handed out: reading through it fails with an error of the
     storage, as the directory does not exist, so a caller asks `is_bare` first.
@@ -427,6 +437,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - [ ] A process that is killed during `init_bare` leaves its `.stemma-bare-…` directory next to
       the place of the repository. No writer removes it, as one does for `init`, because the
       directory above a bare repository belongs to the one who holds it; a hub removes it.
+- [ ] `open_bare` checks `format` and the marker only. A directory with the marker that also
+      holds `HEAD`, `working-copy`, or `oplog/`, put together by hand, opens as bare and the
+      files are ignored; refusing it costs three looks at the directory and a variant.
+- [ ] Whether a bare repository stays the type `Repository` with a check at the start of each
+      operation, or becomes a type of its own: to decide with the accepting operation
+      (ADR-025). Until then a test reads the source and fails for a public operation without
+      the check.
 - [ ] `Repository::oplog()` and `Mode::of` do not give the typed refusal on a bare repository:
       the first is handed out and fails on reading with an error of the storage, the second
       carries the refusal as text (`ModeError::Head`). Both change with the slice that gives a

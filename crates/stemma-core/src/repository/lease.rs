@@ -49,6 +49,10 @@ impl Repository {
     ///
     /// Returns [`LeaseError::Corrupt`] for a file that is not a lease of this branch and
     /// [`LeaseError::Io`] if it cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn lease(&self, branch: &BranchName) -> Result<Option<Lease>, LeaseError> {
         self.require_oplog("read a lease")?;
         read_lease(&self.leases_dir(), branch)
@@ -71,6 +75,10 @@ impl Repository {
     /// the log, and the file is the old one or, if only the flush of the directory failed, the new
     /// one. After [`OpLogError::NotFlushed`] the entry may be in the log and no file is written.
     /// In every case the next claim reads the file and decides again.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn claim_lease(
         &self,
         branch: &BranchName,
@@ -129,6 +137,10 @@ impl Repository {
     /// errors of [`claim_lease`](Self::claim_lease). After [`LeaseError::Io`] the entry
     /// `lease-release` is in the log, and the file may still stand (or come back after a crash)
     /// until its expiry; a second release writes a second entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn release_lease(
         &self,
         branch: &BranchName,
@@ -176,6 +188,10 @@ impl Repository {
     /// over, no override is needed), [`LeaseError::Entry`] for a reason that is empty, longer than
     /// 1 KiB, or on several lines, or if the owner holds the lease already, and the errors of
     /// [`claim_lease`](Self::claim_lease).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn override_lease(
         &self,
         branch: &BranchName,

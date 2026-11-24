@@ -196,6 +196,29 @@ const FORMAT_MAX_LEN: u64 = 64;
 /// How many names are tried for the temporary directory of `init` before it gives up.
 const STAGING_ATTEMPTS: usize = 16;
 
+/// The versions of [`READ_VERSIONS`] as a phrase for a message: each run of versions that follow
+/// each other as `a to b`, so a version that is left out is not named as supported.
+fn supported_versions() -> String {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for &version in &READ_VERSIONS {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == version => *last = version,
+            _ => runs.push((version, version)),
+        }
+    }
+    let runs: Vec<String> = runs
+        .into_iter()
+        .map(|(first, last)| {
+            if first == last {
+                first.to_string()
+            } else {
+                format!("{first} to {last}")
+            }
+        })
+        .collect();
+    runs.join(" and ")
+}
+
 /// The content of the file `format` that `init` writes: the prefix, the version, and a newline.
 fn format_content() -> String {
     format_of(FORMAT_VERSION)
@@ -579,7 +602,7 @@ impl Repository {
         })?;
         install_with(&staging, path, &allowed, fill_bare)?;
         flush_directory(parent).map_err(|source| InitError::NotDurable {
-            path: path.to_path_buf(),
+            path: parent.to_path_buf(),
             source,
         })?;
         Ok(Self::bare_at(path))
@@ -588,8 +611,9 @@ impl Repository {
     /// Opens the bare repository in `path`, the directory that [`init_bare`](Self::init_bare)
     /// made: the metadata directory itself, not a directory that contains `.stemma/`. It checks
     /// the file `format` and the marker `bare` before it returns, and nothing else; the stores
-    /// report what is wrong with the rest when they are used. It checks no owner and follows
-    /// links, as [`open`](Self::open) does.
+    /// report what is wrong with the rest when they are used. It checks no owner and follows a
+    /// link at `path` and at `format`, as [`open`](Self::open) does; a link in the place of the
+    /// marker is not followed and is [`OpenError::MalformedBareMarker`].
     ///
     /// The result has the object store and the references of the repository, and every operation
     /// that needs a working copy or the operation log is refused with [`RefError::Bare`]
@@ -872,10 +896,18 @@ impl Repository {
     ///
     /// Every other operation of this type is refused with [`RefError::Bare`], inside the error
     /// of the operation, before it asks the authorizer and before it reads or writes anything.
+    /// Four things are not operations in that sense: [`taking_over`](Self::taking_over) and
+    /// [`taken_over`](Self::taken_over) only make and read a value;
+    /// [`RefsView`] returns the refusal itself for `HEAD` and the working-copy commit and
+    /// answers `is_locked`; and [`oplog`](Self::oplog) is handed out, so reading through it
+    /// fails with an error of the storage and not with the refusal.
+    /// A caller finds the refusal by matching the error of the operation that it called; the
+    /// chain of [`Error::source`] does not lead to it. It says that the call was the wrong one
+    /// for this repository, and a later call does not succeed either.
     /// The error says what the operation needs ([`BareLacks`]): the working copy for the
     /// operations that read or change files, `HEAD`, or the working-copy commit (`snapshot`,
     /// `track`, `status`, `commit`, `diff`, `checkout`, `switch`, `restore`, `merge`, `rebase`,
-    /// `follow_main`, the worktrees, and the moves of `HEAD` and the working-copy commit), and
+    /// the rewrite of the working copy, `follow_main`, the worktrees, and the moves of `HEAD` and the working-copy commit), and
     /// the operation log for those that write an entry or read the log (the moves of a branch
     /// and a tag, the leases, the pull requests, the checks, the gate, and the purge). A
     /// reference of a bare repository moves through the accepting operation (ADR-025), which
@@ -892,10 +924,26 @@ impl Repository {
     }
 
     /// Fails with [`RefError::Bare`] if the repository is bare: `operation` writes an entry of
-    /// the operation log or reads the log. The operations call it first, before they ask the
+    /// the operation log, reads the log, or reads what is recorded through its entries, as the
+    /// file of a lease in `leases/`. The operations call it first, before they ask the
     /// authorizer.
     pub(crate) fn require_oplog(&self, operation: &'static str) -> Result<(), RefError> {
         self.require(operation, BareLacks::OperationLog)
+    }
+
+    /// Fails if the repository is bare: the last check before an entry of the log is written.
+    /// Every operation that writes one is refused at its start
+    /// ([`require_oplog`](Self::require_oplog)), so this holds only for code that came past
+    /// that check, and for a directory that someone gave an `oplog/` by hand. The error is
+    /// [`OpLogError::Io`] of the kind [`io::ErrorKind::Unsupported`], with [`RefError::Bare`] as
+    /// the inner error.
+    fn refuse_append(&self) -> Result<(), OpLogError> {
+        self.require_oplog("write an entry of the operation log")
+            .map_err(|error| OpLogError::Io {
+                operation: "write an entry of the log in",
+                path: self.shared.clone(),
+                source: io::Error::new(io::ErrorKind::Unsupported, error),
+            })
     }
 
     fn require(&self, operation: &'static str, lacks: BareLacks) -> Result<(), RefError> {
@@ -974,7 +1022,7 @@ impl Repository {
     /// version if the raise failed, unless that could not be put back either (see
     /// [`raise_format`]); once it is raised, it stays raised, even if the entry fails after it.
     pub(crate) fn append(&self, lock: &WriteLock, change: &Change) -> Result<Entry, OpLogError> {
-        debug_assert!(!self.bare, "a bare repository has no operation log");
+        self.refuse_append()?;
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
         // The entry names the linked worktree it was made in; an entry that names one already (the
         // add and the removal of a worktree) keeps it. The main worktree leaves the name out.
@@ -1002,7 +1050,7 @@ impl Repository {
         _lock: &WriteLock,
         lease: &LeaseEntry,
     ) -> Result<Entry, OpLogError> {
-        debug_assert!(!self.bare, "a bare repository has no operation log");
+        self.refuse_append()?;
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append_lease(lease)
     }
@@ -1019,7 +1067,7 @@ impl Repository {
         _lock: &WriteLock,
         pull: &PullEntry,
     ) -> Result<Entry, OpLogError> {
-        debug_assert!(!self.bare, "a bare repository has no operation log");
+        self.refuse_append()?;
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append_pull(pull)
     }
@@ -1036,7 +1084,7 @@ impl Repository {
         _lock: &WriteLock,
         check: &CheckEntry,
     ) -> Result<Entry, OpLogError> {
-        debug_assert!(!self.bare, "a bare repository has no operation log");
+        self.refuse_append()?;
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append_check(check)
     }
@@ -1052,7 +1100,7 @@ impl Repository {
         _lock: &PurgeLock,
         purge: Purge,
     ) -> Result<Vec<Entry>, OpLogError> {
-        debug_assert!(!self.bare, "a bare repository has no operation log");
+        self.refuse_append()?;
         self.oplog.append_purge(purge)
     }
 
@@ -1084,6 +1132,10 @@ impl Repository {
     /// too large (the actor or a name is too long) is such an error, and nothing is written. An
     /// entry that was written belongs to [`UpdateError::MoveFailed`], [`UpdateError::NotDurable`],
     /// and [`UpdateError::Log`] with [`OpLogError::NotFlushed`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn update_branch(
         &self,
         operation: &OperationName,
@@ -1129,6 +1181,10 @@ impl Repository {
     /// [`RefError::Stale`] with `expected` `None`. A name that starts with `heads/` or `tags/` is
     /// [`UpdateError::ReservedName`] (ADR-008), checked before the authorizer is asked. A refusal
     /// writes no entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn create_branch(
         &self,
         operation: &OperationName,
@@ -1137,6 +1193,7 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, UpdateError> {
+        self.require_oplog("create a branch")?;
         let start = CommitId::new(start);
         Ok(self
             .update_branch(operation, name, None, start, actor, authorizer)?
@@ -1161,6 +1218,10 @@ impl Repository {
     /// another; [`RefError::Locked`]), and [`UpdateError::Log`], [`UpdateError::MoveFailed`], and
     /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
     /// writes no entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn create_tag(
         &self,
         operation: &OperationName,
@@ -1215,6 +1276,10 @@ impl Repository {
     /// [`UpdateError::MoveFailed`], and
     /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
     /// writes no entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn delete_tag(
         &self,
         operation: &OperationName,
@@ -1266,6 +1331,10 @@ impl Repository {
     /// [`RefError::Locked`], [`RefError::PurgePending`], and [`RefError::Corrupt`]), and
     /// [`UpdateError::Log`], [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
     /// [`update_branch`](Self::update_branch). A refusal writes no entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn delete_branch(
         &self,
         operation: &OperationName,
@@ -1323,6 +1392,10 @@ impl Repository {
     /// [`UpdateError::Log`], [`UpdateError::MoveFailed`], [`UpdateError::PartlyMoved`], and
     /// [`UpdateError::NotDurable`], as for [`update_branch`](Self::update_branch). A refusal
     /// writes no entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn rename_branch(
         &self,
         operation: &OperationName,
@@ -1386,6 +1459,10 @@ impl Repository {
     /// unreadable HEAD, [`RefError::StaleHead`], [`RefError::Locked`]), [`UpdateError::Log`],
     /// [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
     /// [`update_branch`](Self::update_branch).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn set_head(
         &self,
         operation: &OperationName,
@@ -1428,6 +1505,10 @@ impl Repository {
     /// is not in the store, [`RefError::Locked`]), and [`UpdateError::Log`],
     /// [`UpdateError::MoveFailed`], and [`UpdateError::NotDurable`], as for
     /// [`update_branch`](Self::update_branch).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn update_working_copy(
         &self,
         operation: &OperationName,
@@ -2221,7 +2302,8 @@ fn install_with(
         Err(error) => match fault::remove_dir_all(staging) {
             Ok(()) => Err(error),
             // The directory is gone already: a writer of a repository that another `init` made
-            // here in the meantime removed it as stale (ADR-009). Nothing is left behind.
+            // here in the meantime removed it as stale (ADR-009), which happens to a directory
+            // of `init` only. Nothing is left behind.
             Err(source) if source.kind() == io::ErrorKind::NotFound => Err(error),
             Err(source) => Err(InitError::Leftover {
                 path: staging.to_path_buf(),
@@ -2343,7 +2425,8 @@ fn fill_bare(dir: &Path) -> Result<(), InitError> {
 ///
 /// Returns [`OpenError::MalformedBareMarker`] if something else is at the name: a directory, a
 /// link, or a file with another content. A repository is bare or it is not, and a marker that
-/// cannot be read must not decide it either way.
+/// cannot be read must not decide it either way. Returns [`OpenError::Io`] if the marker cannot
+/// be inspected, opened, or read.
 fn has_bare_marker(dir: &Path) -> Result<bool, OpenError> {
     let path = dir.join(BARE_MARKER);
     match fs::symlink_metadata(&path) {
@@ -2384,7 +2467,7 @@ fn exists(path: &Path) -> io::Result<bool> {
     }
 }
 
-/// Reasons why [`Repository::init`] fails.
+/// Reasons why [`Repository::init`] and [`Repository::init_bare`] fail.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum InitError {
@@ -2393,9 +2476,10 @@ pub enum InitError {
         /// The directory that was to become a repository.
         path: PathBuf,
     },
-    /// The directory contains `.stemma` already. Nothing was changed.
+    /// The directory contains `.stemma` already, or, for a bare repository, something is at the
+    /// path that was to become it. Nothing was changed.
     AlreadyExists {
-        /// The existing `.stemma`.
+        /// The existing `.stemma`; for a bare repository the path that is taken.
         path: PathBuf,
     },
     /// The storage failed. The cause is the field `source`, and its message ends the message of
@@ -2404,15 +2488,18 @@ pub enum InitError {
         /// What was being done, for example "write the file".
         operation: &'static str,
         /// The file or directory involved. It can be inside the temporary directory
-        /// `.stemma-init-…`, which becomes `.stemma`.
+        /// `.stemma-init-…`, which becomes `.stemma`, or `.stemma-bare-…`, which becomes the
+        /// bare repository.
         path: PathBuf,
         /// The error of the file system.
         source: io::Error,
     },
     /// The repository is complete, but flushing its directory to disk failed, so a crash can
-    /// lose it. [`Repository::open`] opens it; the call does not undo it.
+    /// lose it. [`Repository::open`] opens it, or [`Repository::open_bare`] a bare one; the call
+    /// does not undo it.
     NotDurable {
-        /// The directory that could not be flushed, the one that holds `.stemma`.
+        /// The directory that could not be flushed: the one that holds `.stemma`, or the one
+        /// that holds the bare repository.
         path: PathBuf,
         /// The error of the file system.
         source: io::Error,
@@ -2428,7 +2515,8 @@ pub enum InitError {
     ChangeId(GenerateError),
     /// An operation failed, and the temporary directory could not be removed afterwards. It is
     /// named here and can be removed by hand; the next command that writes in a repository in the
-    /// same directory also removes it (ADR-009, STEMMA-31).
+    /// same directory also removes it (ADR-009, STEMMA-31). The directory of
+    /// [`Repository::init_bare`] has another name, which no command removes.
     Leftover {
         /// The temporary directory that stayed behind.
         path: PathBuf,
@@ -3145,11 +3233,9 @@ impl fmt::Display for OpenError {
             ),
             Self::UnsupportedFormat { path, found } => write!(
                 f,
-                "the format file `{}` names version {found}, but this code supports versions \
-                 {} to {}",
+                "the format file `{}` names version {found}, but this code supports versions {}",
                 path.display(),
-                READ_VERSIONS[0],
-                READ_VERSIONS[READ_VERSIONS.len() - 1]
+                supported_versions()
             ),
             Self::Io {
                 operation,
@@ -5316,7 +5402,7 @@ mod tests {
                     path: path.clone(),
                     found: "16".to_string(),
                 },
-                "version 16, but this code supports versions 2 to 15",
+                "version 16, but this code supports versions 2 to 13 and 15",
             ),
         ];
         for (error, text) in cases {

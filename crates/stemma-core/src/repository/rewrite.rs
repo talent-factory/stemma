@@ -131,6 +131,10 @@ impl Repository {
     /// [`RewriteError::AfterSnapshot`]. Then [`RewriteError::CheckoutFailed`],
     /// [`RewriteError::MoveFailed`], and [`RewriteError::NotDurable`] say how far the rewrite
     /// came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn rewrite_working_copy(
         &self,
         onto: CommitId,

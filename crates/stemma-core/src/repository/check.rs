@@ -42,6 +42,10 @@ impl Repository {
     /// has no commit of that ID (nothing is written), and [`CheckError::Refs`],
     /// [`CheckError::Store`], and [`CheckError::Log`] for a failure of the lock, the store, or
     /// the log.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn record_check(
         &self,
         commit: CommitId,
@@ -80,6 +84,10 @@ impl Repository {
     /// # Errors
     ///
     /// Returns [`CheckError::Log`] if the log cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn checks(&self) -> Result<Vec<Check>, CheckError> {
         self.require_oplog("read the checks")?;
         let entries = self.oplog().entries().map_err(CheckError::Log)?;
@@ -141,6 +149,10 @@ impl Repository {
     /// the commits cannot be walked,
     /// [`CheckError::Io`] if a proof file cannot be read, and [`CheckError::Log`] if the log
     /// cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn counted_checks(
         &self,
         pull: u64,
@@ -200,6 +212,10 @@ impl Repository {
     ///
     /// Returns [`CheckError::Log`] if the log cannot be read, [`CheckError::History`] if the
     /// history of `main` cannot be walked, and [`CheckError::Io`] if a proof file cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn last_green_tip(
         &self,
         main_tip: &CommitId,
