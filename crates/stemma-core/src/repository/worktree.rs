@@ -1190,6 +1190,13 @@ pub(super) fn open_linked(path: &Path, owned: bool) -> Result<Repository, OpenEr
         });
     }
     super::check_format(shared, owned)?;
+    // A bare repository has no worktrees (ADR-009); a marker in the shared directory says that
+    // the state was made by hand.
+    if super::has_bare_marker(shared)? {
+        return Err(OpenError::Bare {
+            path: shared.to_path_buf(),
+        });
+    }
     Ok(Repository::linked(path, shared, &name))
 }
 

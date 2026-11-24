@@ -59,7 +59,9 @@ impl Classify for OpenError {
             // The file is there but not in canonical form.
             Self::MalformedFormat { .. }
             | Self::MalformedPointer { .. }
-            | Self::MalformedBareMarker { .. } => FailureKind::Damaged,
+            | Self::MalformedBareMarker { .. }
+            // A marker beside a version that knows no bare repository: no writer made that.
+            | Self::BareFormat { .. } => FailureKind::Damaged,
             // A missing `format`, one that is not a regular file or not shown to be ours, another
             // version, and a `.stemma` that is not a directory are not a form the code wrote, but
             // the caller cannot tell them from a wrong directory or a newer program, so they stay

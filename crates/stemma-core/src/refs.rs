@@ -2778,8 +2778,7 @@ impl FsRefStore {
     pub(crate) fn adopt_owner(&self, _lock: &WriteLock, actor: &Actor) -> Result<(), RefError> {
         let (commit, owner) = match self.working_copy_and_owner() {
             Ok(read) => read,
-            // A bare repository has no working copy to own either.
-            Err(RefError::NoWorkingCopy { .. } | RefError::Bare { .. }) => return Ok(()),
+            Err(RefError::NoWorkingCopy { .. }) => return Ok(()),
             Err(error) => return Err(error),
         };
         if owner.is_some() {
@@ -2829,8 +2828,8 @@ impl FsRefStore {
 
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
     /// working-copy commit, every branch, and every tag. The store of a bare repository
-    /// ([`bare`](Self::bare)) has no HEAD and no working-copy commit, so it checks the branches
-    /// and the tags, and a missing HEAD is no error there. A write checks the commit already
+    /// (ADR-009) has no HEAD and no working-copy commit, so it checks the branches and the
+    /// tags, and a missing HEAD is no error there. A write checks the commit already
     /// (ADR-008), so a
     /// problem here comes from outside the module: an object that was removed or damaged, or a
     /// reference file that was edited by hand. HEAD that names a branch is not checked itself; the
@@ -3333,7 +3332,11 @@ impl FsRefStore {
     /// `worktrees/`. The state directory is not checked here; reading a pointer of it does.
     fn store_of(&self, name: &str) -> FsRefStore {
         if name == MAIN_WORKTREE {
-            Self::new(self.root.clone())
+            // The store of a bare repository stays one: it has no `HEAD` to read here either.
+            Self {
+                bare: self.bare,
+                ..Self::new(self.root.clone())
+            }
         } else {
             Self::for_worktree(self.root.clone(), self.root.join(WORKTREES_DIR).join(name))
         }

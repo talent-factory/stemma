@@ -165,6 +165,18 @@ const FORMAT_VERSION: u32 = 15;
 /// in its files and rises with its next entry or purge, as before.
 const READ_VERSIONS: [u32; 13] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15];
 
+/// The name that the temporary directory of `init_bare` starts with. It differs from
+/// [`INIT_STAGING_PREFIX`], the one of `init`: a writer that takes the lock of the references
+/// removes the directories of that name next to its `.stemma` as stale (ADR-009), and a bare
+/// repository may be made in a directory that holds a `.stemma`.
+const BARE_STAGING_PREFIX: &str = ".stemma-bare-";
+
+/// The first version of the format that knows a bare repository: `init_bare` writes no lower
+/// one, so `open_bare` reads no lower one either.
+const BARE_SINCE: u32 = 15;
+
+const _: () = assert!(BARE_SINCE <= FORMAT_VERSION);
+
 /// The name of the file that marks a bare repository (ADR-009).
 const BARE_MARKER: &str = "bare";
 
@@ -452,7 +464,11 @@ impl Repository {
     /// [`OpenError::MissingFormat`], [`OpenError::FormatNotRegular`],
     /// [`OpenError::MalformedFormat`], or [`OpenError::UnsupportedFormat`] if the file `format`
     /// is missing, is not a regular file (a directory, a FIFO, or a device, on Unix), is not in
-    /// canonical form, or is of another version, and [`OpenError::Io`] if the storage fails.
+    /// canonical form, or is of another version, [`OpenError::Bare`] if the metadata directory
+    /// holds the marker of a bare repository, which [`open_bare`](Self::open_bare) opens (for a
+    /// linked worktree: the directory that the worktrees share), [`OpenError::MalformedBareMarker`]
+    /// if something else than that marker is at its name, and [`OpenError::Io`] if the storage
+    /// fails.
     ///
     /// It checks no owner and follows a link at `.stemma` or at `format`;
     /// [`discover`](Self::discover) is the call that checks who owns the repository.
@@ -512,10 +528,17 @@ impl Repository {
     ///
     /// The call asks `authorizer` first, as [`init`](Self::init) does: the operation is `init`
     /// and the target is the directory. The directory is built under a temporary name next to
-    /// its final place, `.stemma-init-<pid>-<n>-<random>`, and moved into place with one rename,
+    /// its final place, `.stemma-bare-<pid>-<n>-<random>`, and moved into place with one rename,
     /// and everything that is created is flushed. A process that is killed in the middle leaves
     /// the temporary directory behind; no later command removes it, as it lies beside the
-    /// repository and not in a working copy, so the one who holds the directory removes it.
+    /// repository and not in a working copy, so the one who holds the directory removes it. The
+    /// name is not the one of [`init`](Self::init), so no writer of a repository in the same
+    /// directory takes it for stale while it is built.
+    ///
+    /// The check for an existing `path` and the rename are two steps, as for
+    /// [`init`](Self::init): on Unix an *empty* directory that appears at `path` in between is
+    /// replaced, because `rename` replaces an empty directory. Missing directories above `path`
+    /// that the call created stay after a failure.
     ///
     /// # Errors
     ///
@@ -552,7 +575,7 @@ impl Repository {
         };
         create_dirs_synced(parent)?;
         let staging = create_staging(parent, &mut || {
-            format!("{INIT_STAGING_PREFIX}{}", unique_temp_name())
+            format!("{BARE_STAGING_PREFIX}{}", unique_temp_name())
         })?;
         install_with(&staging, path, &allowed, fill_bare)?;
         flush_directory(parent).map_err(|source| InitError::NotDurable {
@@ -580,8 +603,9 @@ impl Repository {
     /// repository with a working copy is [`OpenError::MissingFormat`]),
     /// [`OpenError::NotBare`] if the directory has a `format` and no marker, as the `.stemma/`
     /// of a repository with a working copy does, [`OpenError::MalformedBareMarker`] if the
-    /// marker is not the file that `init_bare` writes, and [`OpenError::Io`] if the storage
-    /// fails.
+    /// marker is not the file that `init_bare` writes, [`OpenError::BareFormat`] if the marker
+    /// stands beside a `format` of a version before 15, which `init_bare` never writes, and
+    /// [`OpenError::Io`] if the storage fails.
     pub fn open_bare(path: impl AsRef<Path>) -> Result<Self, OpenError> {
         let path = path.as_ref();
         match fs::metadata(path) {
@@ -590,6 +614,12 @@ impl Repository {
                 return Err(OpenError::NotADirectory {
                     path: path.to_path_buf(),
                 })
+            }
+            // A part of the path above is a file, so nothing can be there.
+            Err(error) if error.kind() == io::ErrorKind::NotADirectory => {
+                return Err(OpenError::Missing {
+                    path: path.to_path_buf(),
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 // A link that leads nowhere is in the way, as for `open`.
@@ -608,6 +638,17 @@ impl Repository {
         if !has_bare_marker(path)? {
             return Err(OpenError::NotBare {
                 path: path.to_path_buf(),
+            });
+        }
+        // The reader accepts what the writer writes: no bare repository was made in a version
+        // before the marker existed, so such a directory was put together by hand.
+        let format = path.join("format");
+        let bytes = read_format(&format)?;
+        let version = parse_format(&bytes).and_then(|digits| digits.parse::<u32>().ok());
+        if version.is_none_or(|version| version < BARE_SINCE) {
+            return Err(OpenError::BareFormat {
+                path: format,
+                found: parse_format(&bytes).unwrap_or_default().to_owned(),
             });
         }
         Ok(Self::bare_at(path))
@@ -908,7 +949,10 @@ impl Repository {
     /// The operation log of this repository. It can be read; the operations that change the
     /// repository add the entries, through `append` and `append_purge`, which take the lock of the
     /// references, and `init` writes the first one. A bare repository has no log (ADR-009): no
-    /// operation of this type writes an entry there.
+    /// operation of this type writes an entry there, and reading through this value fails with
+    /// an error of the storage ([`OpLogError::Io`]) or finds no entry ([`OpLogError::Missing`]),
+    /// because the directory `oplog/` does not exist; it is not the typed refusal of
+    /// [`is_bare`](Self::is_bare), so a caller asks that first.
     pub fn oplog(&self) -> &FsOpLog {
         &self.oplog
     }
@@ -2753,7 +2797,8 @@ mod windows_owner {
     }
 }
 
-/// Reasons why [`Repository::open`] and [`Repository::discover`] fail.
+/// Reasons why [`Repository::open`], [`Repository::discover`], and [`Repository::open_bare`]
+/// fail.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpenError {
@@ -2902,6 +2947,15 @@ pub enum OpenError {
         /// The marker.
         path: PathBuf,
     },
+    /// The marker `bare` stands beside a `format` of a version that knows no bare repository
+    /// ([`Repository::open_bare`]). [`Repository::init_bare`] never writes that, so the
+    /// directory was put together by hand.
+    BareFormat {
+        /// The file `format`.
+        path: PathBuf,
+        /// The version that the file names, in decimal digits.
+        found: String,
+    },
     /// The storage failed. The cause is the field `source`, and its message ends the message of
     /// this error. Use [`OpenError::io_error`] to reach it.
     Io {
@@ -2949,6 +3003,7 @@ impl OpenError {
             | Self::UnsupportedFormat { .. }
             | Self::Bare { .. }
             | Self::NotBare { .. }
+            | Self::BareFormat { .. }
             | Self::MalformedBareMarker { .. } => None,
         }
     }
@@ -3007,6 +3062,12 @@ impl fmt::Display for OpenError {
             Self::Bare { path } => write!(
                 f,
                 "`{}` is a bare repository: it has no working copy, and this command needs one",
+                path.display()
+            ),
+            Self::BareFormat { path, found } => write!(
+                f,
+                "the format file `{}` names version {found}, but a bare repository has version \
+                 {BARE_SINCE} or a later one",
                 path.display()
             ),
             Self::NotBare { path } => write!(
@@ -3125,6 +3186,7 @@ impl Error for OpenError {
             | Self::UnsupportedFormat { .. }
             | Self::Bare { .. }
             | Self::NotBare { .. }
+            | Self::BareFormat { .. }
             | Self::MalformedBareMarker { .. } => None,
         }
     }

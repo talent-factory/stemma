@@ -1429,7 +1429,9 @@ pub enum Mode {
 
 impl Mode {
     /// The mode of a repository: the register of the commit that HEAD names, or, before the first
-    /// commit, the register file of the working copy.
+    /// commit, the register file of the working copy. A bare repository has neither (ADR-009):
+    /// the call fails with [`ModeError::Head`], and a caller reads the register of a commit with
+    /// [`Register::at_commit`].
     ///
     /// # Errors
     ///
@@ -1523,9 +1525,17 @@ pub fn is_enforcing(metadata_dir: &Path) -> io::Result<bool> {
 /// # Errors
 ///
 /// An error of the file system. An existing register file is an error
-/// ([`io::ErrorKind::AlreadyExists`]) and stays as it is. If the register file cannot be created,
+/// ([`io::ErrorKind::AlreadyExists`]) and stays as it is. A bare repository has no working copy
+/// for the register file: the call is refused before it writes, with
+/// [`io::ErrorKind::Unsupported`] and [`RefError::Bare`](crate::refs::RefError::Bare) as the
+/// inner error. If the register file cannot be created,
 /// the marker that this call set is removed again.
 pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Result<()> {
+    // The register file is a file of the working copy. A bare repository has none (ADR-009), and
+    // its directory is the metadata directory, so the file would land among the stores.
+    repository
+        .require_working_copy("enter the enforcing mode")
+        .map_err(|error| io::Error::new(io::ErrorKind::Unsupported, error))?;
     // The marker comes first and is flushed: a failure or a crash between the two steps leaves a
     // repository that is enforcing without a register (an error), never an open one that has a
     // register file.

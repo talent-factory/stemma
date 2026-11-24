@@ -106,10 +106,17 @@ fn register_text() -> String {
     )
 }
 
+/// The operations that the reference store of a bare repository names when it refuses a read or
+/// a write of `HEAD` or of the working-copy commit itself.
+const STORE_OPERATIONS: [&str; 3] = ["read HEAD", "set HEAD", "read the working-copy commit"];
+
 /// Checks that `$result` is the error `$pattern`, which binds `$error` to a [`RefError::Bare`]
 /// that names `$lacks`, and that the failure is not classified as a lock or as damage.
 macro_rules! assert_refused {
-    ($lacks:expr, $result:expr, $error:ident in $pattern:pat) => {{
+    ($lacks:expr, $result:expr, $error:ident in $pattern:pat) => {
+        assert_refused!(false, $lacks, $result, $error in $pattern)
+    };
+    ($from_store:expr, $lacks:expr, $result:expr, $error:ident in $pattern:pat) => {{
         match $result.map(|_| ()) {
             Err($pattern) => {
                 assert_eq!($error.kind(), FailureKind::Other, "{}", $error);
@@ -121,7 +128,13 @@ macro_rules! assert_refused {
                     } => {
                         assert_eq!(lacks, $lacks, "{operation}");
                         assert!(path.ends_with("hub"), "{}", path.display());
-                        assert!(!operation.is_empty());
+                        // The check of `Repository` refused, not the reference store behind it,
+                        // which names the file that it was asked for.
+                        assert_eq!(
+                            STORE_OPERATIONS.contains(&operation),
+                            $from_store,
+                            "{operation}"
+                        );
                     }
                     other => panic!("not a refusal of a bare repository: {other:?}"),
                 }
@@ -191,6 +204,8 @@ fn init_bare_refuses_a_path_that_exists_and_changes_nothing() {
             "{error}"
         );
     }
+    // Nothing is left of a refused call, its temporary directory included.
+    assert_eq!(listing(dir.path()), before);
     // A second bare repository in the place of the first one is refused as well.
     let first = bare(&dir);
     let after_first = listing(dir.path());
@@ -268,8 +283,21 @@ fn open_bare_names_a_missing_directory_a_file_and_an_unsupported_format() {
         matches!(&error, OpenError::UnsupportedFormat { found, .. } if found == "99"),
         "{error}"
     );
-    // A program that knows only the versions before the bare repository refuses it by its
-    // version: `init_bare` never writes one of them.
+    // The reader has the rule of the writer: `init_bare` writes no version before the marker
+    // existed, so the marker beside such a version, written by hand, is damage.
+    for version in ["2", "13"] {
+        fs::write(
+            repository.path().join("format"),
+            format!("stemma-repository {version}\n"),
+        )
+        .unwrap();
+        let error = Repository::open_bare(repository.path()).unwrap_err();
+        assert!(
+            matches!(&error, OpenError::BareFormat { found, .. } if found == version),
+            "{error}"
+        );
+        assert_eq!(error.kind(), FailureKind::Damaged);
+    }
     fs::remove_file(repository.path().join("format")).unwrap();
     let error = Repository::open_bare(repository.path()).unwrap_err();
     assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
@@ -629,21 +657,24 @@ fn the_references_have_no_head_and_no_working_copy_commit_to_read() {
     let repository = bare(&dir);
     let lacks = BareLacks::WorkingCopy;
 
-    assert_refused!(lacks, repository.refs().head(), error in error);
-    assert_refused!(lacks, repository.refs().resolve_head(), error in error);
-    assert_refused!(lacks, repository.refs().working_copy(), error in error);
-    assert_refused!(lacks, repository.refs().working_copy_owner(), error in error);
+    assert_refused!(true, lacks, repository.refs().head(), error in error);
+    assert_refused!(true, lacks, repository.refs().resolve_head(), error in error);
+    assert_refused!(true, lacks, repository.refs().working_copy(), error in error);
+    assert_refused!(true, lacks, repository.refs().working_copy_owner(), error in error);
     // The store refuses the writes as well, so no code of the crate that is not behind a check
     // of `Repository` makes one of the two files.
     let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("switch"), "HEAD").unwrap();
     let head = Head::Branch(name("main"));
     let (refs, objects) = (repository.refs_store(), repository.objects());
-    assert_refused!(lacks, refs.set_head(&head, objects, &allowed), error in error);
+    assert_refused!(true, lacks, refs.set_head(&head, objects, &allowed), error in error);
     assert_refused!(
+        true,
         lacks,
         refs.replace_head(&head, &head, objects, &allowed),
         error in error
     );
+    // The store that reads the pointers of all worktrees stays the store of a bare repository.
+    assert_refused!(true, lacks, refs.all_pointers(), error in error);
     assert!(!repository.path().join("HEAD").exists());
     assert!(!repository.path().join("working-copy").exists());
     // The mode of a repository is read from the commit that HEAD names, so it has none here; a
@@ -878,4 +909,203 @@ fn the_tree_merge_runs_on_the_store_and_moves_no_reference() {
     assert_eq!(repository.refs().branches().unwrap(), before);
     assert!(!repository.path().join("refs.lock").exists());
     assert!(!repository.path().join("oplog").exists());
+}
+
+/// Records what it is asked and allows it.
+#[derive(Default)]
+struct Recording(std::sync::Mutex<Vec<(String, String)>>);
+
+impl Authorizer for Recording {
+    fn authorize(&self, _actor: &Actor, operation: &OperationName, target: &str) -> Decision {
+        self.0
+            .lock()
+            .unwrap()
+            .push((operation.to_string(), target.to_owned()));
+        Decision::Allow
+    }
+}
+
+#[test]
+fn init_bare_asks_for_init_with_the_directory_as_the_target() {
+    let dir = TempDir::new();
+    let root = dir.path().join("hub");
+    let asked = Recording::default();
+
+    Repository::init_bare(&root, &daniel(), &asked).unwrap();
+
+    assert_eq!(
+        *asked.0.lock().unwrap(),
+        [("init".to_owned(), root.display().to_string())]
+    );
+}
+
+#[test]
+fn a_refused_operation_does_not_ask_the_authorizer() {
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    let commit = commit_of(&repository, &[("a.txt", "one\n")], vec![]);
+    let asked = Recording::default();
+
+    assert_refused!(
+        BareLacks::WorkingCopy,
+        repository.snapshot(&daniel(), &asked),
+        error in SnapshotError::Refs(error)
+    );
+    assert_refused!(
+        BareLacks::OperationLog,
+        repository.update_branch(&operation("branch"), &name("main"), None, commit, &daniel(), &asked),
+        error in UpdateError::Refs(error)
+    );
+
+    assert!(asked.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_temporary_directory_of_init_bare_is_none_that_a_writer_removes_as_stale() {
+    // A writer of a repository removes the directories of `init` next to its `.stemma`
+    // (ADR-009). A bare repository may be made in such a directory, so its name differs.
+    let made = format!("{BARE_STAGING_PREFIX}{}", unique_temp_name());
+    assert!(!crate::store::is_init_staging_name(&made), "{made}");
+
+    let dir = TempDir::new();
+    let work = Repository::init(dir.path(), &InitOptions::default(), &daniel(), &AllowAll).unwrap();
+    let staging = dir.path().join(&made);
+    fs::create_dir(&staging).unwrap();
+    // A writer takes the lock and cleans up.
+    work.snapshot(&daniel(), &AllowAll).unwrap();
+    fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+    work.track(&["a.txt".to_owned()], &daniel(), &AllowAll)
+        .unwrap();
+    assert!(staging.is_dir());
+}
+
+#[test]
+fn the_step_to_the_enforcing_mode_is_refused_and_writes_nothing() {
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    let before = listing(repository.path());
+    let register = Register::parse(register_text().as_bytes()).unwrap();
+
+    let error = register::enter_enforcing(&repository, &register).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    let inner = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<RefError>());
+    assert!(
+        matches!(
+            inner,
+            Some(RefError::Bare {
+                lacks: BareLacks::WorkingCopy,
+                ..
+            })
+        ),
+        "{error}"
+    );
+    assert_eq!(listing(repository.path()), before);
+    assert!(!register::is_enforcing(repository.path()).unwrap());
+}
+
+#[test]
+fn the_checks_run_while_a_writer_holds_the_lock_of_the_references() {
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    let base = commit_of(&repository, &[("a.txt", "one\n")], vec![]);
+    let ours = commit_of(&repository, &[("a.txt", "ours\n")], vec![base]);
+    let theirs = commit_of(
+        &repository,
+        &[("a.txt", "one\n"), ("b.txt", "two\n")],
+        vec![base],
+    );
+    set_branch(&repository, "main", &base);
+    let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("push"), "main").unwrap();
+    let lock = repository.refs_store().lock_writer(&allowed).unwrap();
+    assert!(repository.refs().is_locked().unwrap());
+
+    // None of them waits for the lock or fails on it.
+    let stored = commit_of(&repository, &[("c.txt", "three\n")], vec![base]);
+    assert!(repository.objects().get_commit(&stored).unwrap().is_some());
+    assert!(merge_commits(repository.objects(), ours, theirs)
+        .unwrap()
+        .is_resolved());
+    let policy = repository.policy_of(&base, &Mode::Open).unwrap();
+    let tree = tree_of(&repository, &[("a.txt", "ours\n")]);
+    assert_eq!(
+        repository.level_of_change(&policy, &base, tree).unwrap(),
+        RiskLevel::Two
+    );
+    assert_eq!(
+        Register::at_commit(repository.objects(), &base).unwrap(),
+        None
+    );
+    assert!(repository.verify_refs().unwrap().is_empty());
+    assert_eq!(
+        repository.refs().branches().unwrap(),
+        [(name("main"), base)]
+    );
+
+    drop(lock);
+    assert!(!repository.refs().is_locked().unwrap());
+}
+
+#[test]
+fn a_linked_worktree_whose_shared_directory_has_the_marker_is_refused() {
+    let dir = TempDir::new();
+    let main = dir.path().join("main");
+    let work = Repository::init(&main, &InitOptions::default(), &daniel(), &AllowAll).unwrap();
+    fs::write(main.join("a.txt"), "one\n").unwrap();
+    work.track(&["a.txt".to_owned()], &daniel(), &AllowAll)
+        .unwrap();
+    let _ = work.commit("first", &daniel(), &AllowAll).unwrap();
+    let linked = dir.path().join("linked");
+    let _ = work
+        .add_worktree(
+            &linked,
+            &WorktreeBranch::Create(name("feature")),
+            None,
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap();
+    Repository::open(&linked).unwrap();
+    // A state that no call makes: the marker in the directory that the worktrees share.
+    fs::write(main.join(METADATA_DIR).join("bare"), "stemma-bare\n").unwrap();
+
+    for path in [&linked, &main] {
+        let error = Repository::open(path).unwrap_err();
+        assert!(matches!(error, OpenError::Bare { .. }), "{error}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
+    use std::os::unix::fs::symlink;
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    // A link to a file with the content of the marker is not followed: it is damage.
+    let marker = repository.path().join("bare");
+    let elsewhere = dir.path().join("marker");
+    fs::rename(&marker, &elsewhere).unwrap();
+    symlink(&elsewhere, &marker).unwrap();
+    let error = Repository::open_bare(repository.path()).unwrap_err();
+    assert!(
+        matches!(error, OpenError::MalformedBareMarker { .. }),
+        "{error}"
+    );
+    // A link in the place of a new bare repository is in the way, whether it leads somewhere or
+    // not, and `open_bare` names a link that leads nowhere.
+    let dangling = dir.path().join("dangling");
+    symlink(dir.path().join("nowhere"), &dangling).unwrap();
+    let to_directory = dir.path().join("to-directory");
+    symlink(dir.path(), &to_directory).unwrap();
+    for path in [&dangling, &to_directory] {
+        let error = Repository::init_bare(path, &daniel(), &AllowAll).unwrap_err();
+        assert!(matches!(error, InitError::AlreadyExists { .. }), "{error}");
+    }
+    let error = Repository::open_bare(&dangling).unwrap_err();
+    assert!(matches!(error, OpenError::NotADirectory { .. }), "{error}");
+    // A path through a file names nothing.
+    let error = Repository::open_bare(elsewhere.join("hub")).unwrap_err();
+    assert!(matches!(error, OpenError::Missing { .. }), "{error}");
 }
