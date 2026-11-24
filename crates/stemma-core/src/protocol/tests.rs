@@ -522,6 +522,7 @@ fn a_malformed_first_line_is_refused_by_every_reader() {
         ("\n", &first_line),
         ("stemma-protocol\n", &first_line),
         ("stemma-protocol \n", &first_line),
+        ("stemma-protocol1\n", &first_line),
         ("stemma-protocol 0\n", &first_line),
         ("stemma-protocol 01\n", &first_line),
         ("stemma-protocol +1\n", &first_line),
@@ -1547,7 +1548,7 @@ fn a_stream_reader_that_failed_stays_failed() {
     assert!(matches!(reader.next_object(), Ok(None)));
     assert_eq!(
         StreamError::Failed.to_string(),
-        "the object stream was refused by an earlier read"
+        "an earlier read of the object stream failed, so the stream is lost"
     );
     crate::fuzz::check_rejection(&StreamError::Failed);
 }
@@ -1722,4 +1723,78 @@ fn the_edges_of_ranges_and_of_ids_are_exact() {
         RefList::parse(text.as_bytes()).unwrap_err(),
         ParseError::InvalidKey { line: 5, .. }
     ));
+}
+
+/// The message of a refusal holds no control character that the other side put into a key.
+#[test]
+fn the_text_of_a_refused_key_is_escaped() {
+    // The blob of this key names the algorithm `ESC [31mevil`.
+    let text = refs_text().replacen(
+        KEYS[0],
+        "ssh-ed25519 AAAACRtbMzFtZXZpbAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+        1,
+    );
+    let error = RefList::parse(text.as_bytes()).unwrap_err();
+    assert!(matches!(error, ParseError::InvalidKey { line: 3, .. }));
+    let message = error.to_string();
+    assert!(message.contains("\\u{1b}[31mevil"), "{message:?}");
+    assert!(!message.chars().any(char::is_control), "{message:?}");
+}
+
+/// A carrier that reports an end and has more later is asked again: the end of a stream is no
+/// state of the reader.
+#[test]
+fn a_call_after_the_end_of_a_stream_asks_the_carrier_again() {
+    struct Parts(Vec<&'static [u8]>);
+    impl io::Read for Parts {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let part = if self.0.is_empty() {
+                &[][..]
+            } else {
+                self.0.remove(0)
+            };
+            buffer[..part.len()].copy_from_slice(part);
+            Ok(part.len())
+        }
+    }
+    let carrier = BufReader::new(Parts(vec![b"stemma-protocol 1\n", b"", b"blob 1\0a"]));
+    let mut reader = ObjectStreamReader::new(carrier, 8).unwrap();
+    assert!(matches!(reader.next_object(), Ok(None)));
+    assert_eq!(reader.next_object().unwrap().unwrap().body, b"a");
+    assert!(matches!(reader.next_object(), Ok(None)));
+}
+
+/// The bound is the memory bound of the receiver: nothing of a body above it is taken from the
+/// carrier.
+#[test]
+fn a_body_above_the_bound_is_not_read_from_the_carrier() {
+    let header = b"stemma-protocol 1\nblob 9\0";
+    let mut carrier = Cursor::new([header.as_slice(), b"123456789"].concat());
+    let mut reader = ObjectStreamReader::new(&mut carrier, 8).unwrap();
+    assert!(matches!(
+        reader.next_object(),
+        Err(StreamError::TooLarge { object: 1, .. })
+    ));
+    assert_eq!(carrier.position(), header.len() as u64);
+}
+
+/// A carrier that fails once and works again does not get the reader back into the stream: the
+/// bytes of the read that failed are gone.
+#[test]
+fn a_reader_stays_failed_after_a_failure_of_the_carrier() {
+    struct FailsOnce(bool, Cursor<&'static [u8]>);
+    impl io::Read for FailsOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if std::mem::take(&mut self.0) {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "not yet"));
+            }
+            self.1.read(buffer)
+        }
+    }
+    let rest = FailsOnce(true, Cursor::new(b"bcblob 1\0d"));
+    let carrier =
+        Cursor::new(b"stemma-protocol 1\nblob 3\0a".as_slice()).chain(BufReader::new(rest));
+    let mut reader = ObjectStreamReader::new(carrier, 8).unwrap();
+    assert!(reader.next_object().unwrap_err().io_error().is_some());
+    assert!(matches!(reader.next_object(), Err(StreamError::Failed)));
 }

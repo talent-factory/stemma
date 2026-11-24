@@ -162,7 +162,8 @@ checked-in example messages.
 - Every small message is line-oriented text as `format`, `HEAD` and the entries of the log are:
   the first line, then lines `<keyword> <value>` in a fixed order, read by a reader that accepts
   only what the writer writes. The object stream stays binary and begins with the same first line.
-- There are no capability lists and no optional fields. Every extension is a new number.
+- There are no capability lists and no optional fields. From the first release that carries the
+  protocol on, every change of a message is a new number (see "The first number is 1").
 - Not covered, because they belong to the transport: TLS, the carriage of the token, the content
   encoding, and URL paths and status codes.
 - The number is independent of `stemma-repository`, which does not travel, and of the object
@@ -196,19 +197,24 @@ message holds a secret. The trait `Transport` gets a step for the sign-in.
 ### The first number is 1
 
 The first protocol number is 1 (`stemma_core::protocol::VERSION`), set by STEMMA-283. It is the
-protocol of phase 5: the slices of the phase add their messages to it, and from the first release
-that carries the protocol on, every change of a message is a new number.
+protocol of phase 5: the slices of the phase add their messages and lines to it, and from the
+first release that carries the protocol on, every change of a message is a new number.
 
 A reader judges the first line before anything else of a message, so a message of another number
-is refused as such whatever follows.
+is refused as such whatever follows. The one exception is the reader of the error: a second line
+`error unsupported-version` is read under every number, and strictly (see "Error" below).
 
 A small message has no line that names its type; the request says which message is expected, and
 each reader refuses the messages of the others. No message carries a count or an end mark: a
-small message that is cut after a whole line, and a stream that is cut between two frames, read
-as shorter messages. The carrier must report a body that ends early, as HTTP does by the length
-of the body, and an error arrives in place of the message asked for, told apart by the status. A line ends with a line feed, a field is
-separated by one space, and a number is decimal from 1 without a sign or a leading zero. The
-first four messages:
+list of references that is cut after a whole line from the `key` line on, a fetch request that
+is cut after a whole line from its first `want` on, and a stream that is cut between two frames
+read as shorter messages. A cut before a line that must be there is refused as a missing line,
+and so is every cut of an error message; a cut inside a line or a frame is refused as cut off.
+The carrier must report a body that ends early, as HTTP does by the length of the body, and an
+error arrives in place of the message asked for, told apart by the status.
+
+A line ends with a line feed, a field is separated by one space, and a number of a small message
+is decimal from 1 without a sign or a leading zero. The first four messages:
 
 ```text
 stemma-protocol 1                                   the list of references

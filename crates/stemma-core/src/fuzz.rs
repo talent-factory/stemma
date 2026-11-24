@@ -152,13 +152,14 @@ const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 /// The messages of the protocol (ADR-023): the list of references, the fetch request, the error,
 /// and the object stream (`stemma_core::protocol`). The input is given to each of the four
 /// readers, because a message does not name its type and each reader must refuse the messages of
-/// the others. A reader that accepts the input writes it back unchanged, and the value it read is
-/// one that the constructors build. A refusal of a small message is answered with an error
-/// message that is read back.
+/// the others. A reader that accepts the input writes it back unchanged, and for a small message
+/// the value it read is one that the constructors build. A refusal is answered with an error
+/// message that is read back, where there is an answer, and a reader of a stream that refused
+/// stays failed.
 pub fn protocol(input: &[u8]) {
     use crate::protocol::{
         ErrorMessage, FetchRequest, FormerKey, ObjectStreamReader, ObjectStreamWriter, ParseError,
-        Reason, RefList, Spoken,
+        Reason, RefList, Spoken, StreamError,
     };
     // A refusal is answered with a message that the reader of the error accepts.
     let check_refusal = |error: &ParseError| {
@@ -233,19 +234,37 @@ pub fn protocol(input: &[u8]) {
     }
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
-        while let Some(object) = reader.next_object()? {
-            assert!(object.body.len() as u64 <= PROTOCOL_MAX_OBJECT_LEN);
-            writer
-                .write(object.kind, &object.body)
-                .expect("a vector takes every byte");
+        loop {
+            match reader.next_object() {
+                Ok(Some(object)) => {
+                    assert!(object.body.len() as u64 <= PROTOCOL_MAX_OBJECT_LEN);
+                    writer
+                        .write(object.kind, &object.body)
+                        .expect("a vector takes every byte");
+                }
+                Ok(None) => return Ok(writer.finish()),
+                Err(error) => {
+                    assert!(
+                        matches!(reader.next_object(), Err(StreamError::Failed)),
+                        "the reader went on after a refusal"
+                    );
+                    return Err(error);
+                }
+            }
         }
-        Ok(writer.finish())
     });
     match stream {
         Ok(written) => assert_eq!(written, input, "a second spelling was accepted"),
         Err(error) => {
             assert!(error.io_error().is_none(), "a slice does not fail");
             check_rejection(&error);
+            if let Some(answer) = error.answer() {
+                assert_eq!(
+                    ErrorMessage::parse(&answer.encode()).as_ref(),
+                    Ok(&answer),
+                    "the answer to a refusal is not read"
+                );
+            }
         }
     }
 }

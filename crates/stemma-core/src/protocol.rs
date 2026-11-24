@@ -12,8 +12,8 @@
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
 //! fetch request ([`FetchRequest`]), and the error ([`ErrorMessage`]). The object stream is
 //! binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
-//! There are no capabilities and no optional fields: every extension is a new number, from the
-//! first release that carries the protocol on (see [`VERSION`]).
+//! There are no capabilities and no optional fields: from the first release that carries the
+//! protocol on, every change of a message is a new number (see [`VERSION`]).
 //!
 //! The readers hold the rule of ADR-005. A reader accepts only what its writer writes, so a
 //! message has exactly one encoding and `parse(bytes).encode() == bytes` for every accepted
@@ -25,10 +25,13 @@
 //! stream takes the largest object it may hold. The bounds for the size of a request and of an
 //! object are set by the receiver (ADR-023); this module names no value.
 //!
-//! No message carries a count or an end mark. A small message that is cut after a whole line, and
-//! a stream that is cut between two frames, read as shorter messages; only a cut inside a line or
-//! a frame is seen here. The carrier must therefore report a body that ends early, as HTTP does
-//! by the length of the body, and the caller must not hand a body to a reader after such a report.
+//! No message carries a count or an end mark. A list of references that is cut after a whole
+//! line from the `key` line on, a fetch request that is cut after a whole line from its first
+//! `want` on, and a stream that is cut between two frames read as shorter messages. A cut before
+//! a line that must be there is refused as a missing line, and so is every cut of an error
+//! message; a cut inside a line or a frame is refused as cut off. The carrier must therefore
+//! report a body that ends early, as HTTP does by the length of the body, and the caller must not
+//! hand a body to a reader after such a report.
 //! The caller also chooses the reader: an error arrives in place of the message that was asked
 //! for, and the transport says which of the two it is (the status code, ADR-023).
 //!
@@ -655,7 +658,8 @@ impl FetchRequest {
     /// another protocol version, a request without a `want` line, a line that is unknown or out
     /// of order, a last line without a line feed, an object ID that is not in canonical form,
     /// and a commit that does not come after the one before it in the order of the IDs, which
-    /// includes a commit that is named twice. The first problem is reported, with its line.
+    /// includes a commit that is named twice. The version is judged first, then the UTF-8 of the
+    /// rest, then the lines in order; the first problem of a line is reported with its line.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let mut lines = Lines::open(bytes)?;
         let want = parse_commits(&mut lines, "want")?;
@@ -802,7 +806,9 @@ impl fmt::Display for ErrorMessageError {
         f.write_str(match self {
             Self::NoVersion => "an unsupported version is answered with at least one version",
             Self::VersionZero => "0 is no protocol version",
-            Self::Reason => "a reason is one line that is not empty, without control characters",
+            Self::Reason => {
+                "a reason is one line, not empty, without a control character or a line separator"
+            }
         })
     }
 }
@@ -860,8 +866,8 @@ impl ErrorMessage {
     /// # Errors
     ///
     /// Returns an error for input that is not UTF-8, a first line that is missing or malformed,
-    /// a line that is missing, unknown, or out of order, a last line without a line feed, and an
-    /// unknown kind of error.
+    /// a line that is missing, repeated, unknown, or out of order, a last line without a line
+    /// feed, and an unknown kind of error.
     ///
     /// `unsupported-version` is read under every number. It also refuses a `spoken` line without
     /// a version, a version that is not a canonical number, a version that does not come after
@@ -870,7 +876,9 @@ impl ErrorMessage {
     ///
     /// Under another protocol version than [`VERSION`], everything that is not a line
     /// `error unsupported-version` after the first line is [`ParseError::UnsupportedVersion`]:
-    /// another kind, another line, no line, a line that is cut off, and bytes that are not UTF-8.
+    /// another kind, another line, no line, and a line that is cut off. So are bytes that are
+    /// not UTF-8 anywhere after the first line, also behind such a line, because nothing of a
+    /// message that is no text is read.
     ///
     /// `malformed` also refuses a reason that is empty or holds a control character or a line or
     /// paragraph separator.
@@ -974,8 +982,8 @@ pub enum Malformed {
     /// The range of a former key ends before it begins, or does not lie after the range of the
     /// line before.
     Range,
-    /// The line does not come after the one before it in the order of the message, or repeats
-    /// it.
+    /// A line does not come after the one before it in the order of the message, or repeats it;
+    /// in a `spoken` line, a version does not come after the version before it.
     Order,
     /// A key is not in its canonical form: `ssh-ed25519`, a space, and the Base64 text, without
     /// a comment.
@@ -1004,7 +1012,9 @@ impl fmt::Display for Malformed {
             Self::Range => {
                 f.write_str("the range is empty or does not lie after the range of the line before")
             }
-            Self::Order => f.write_str("the line does not come after the line before it"),
+            Self::Order => {
+                f.write_str("the line or the version does not come after the one before it")
+            }
             Self::KeyForm => {
                 f.write_str("the key is not in the form `ssh-ed25519 <base64>` without a comment")
             }
@@ -1012,7 +1022,9 @@ impl fmt::Display for Malformed {
             Self::NotHighestVersion => {
                 f.write_str("the first line does not carry the highest version spoken")
             }
-            Self::Reason => f.write_str("the reason is empty or holds a control character"),
+            Self::Reason => {
+                f.write_str("the reason is empty or holds a control character or a line separator")
+            }
         }
     }
 }
@@ -1034,7 +1046,9 @@ pub enum ParseError {
         /// The version that the message names.
         found: u32,
     },
-    /// The shape of the lines is wrong; a value that is refused has a variant of its own.
+    /// The shape of the lines or a plain value (a number, a range, the form of a key, a reason)
+    /// is wrong; a value with an error type of its own (a repository ID, a key, a name, an
+    /// object ID, the hash of a record entry) has a variant of its own.
     Malformed {
         /// Number of the line.
         line: usize,
@@ -1226,8 +1240,17 @@ fn read_version(bytes: &[u8]) -> Result<(u32, &[u8]), ParseError> {
 
 /// Reads a key in its canonical form, which is the text that the writer writes for it.
 fn parse_key(line: usize, text: &str) -> Result<PublicKey, ParseError> {
-    let key =
-        PublicKey::from_openssh(text).map_err(|source| ParseError::InvalidKey { line, source })?;
+    let key = PublicKey::from_openssh(text).map_err(|source| {
+        // The cause quotes parts of the text, which comes from the other side: escape it, so
+        // that the message of the error holds no control character of a hub.
+        let source = match source {
+            KeyError::Malformed { reason } => KeyError::Malformed {
+                reason: reason.escape_debug().to_string(),
+            },
+            other => other,
+        };
+        ParseError::InvalidKey { line, source }
+    })?;
     if key.to_openssh() != text {
         return Err(malformed(line, Malformed::KeyForm));
     }
@@ -1290,7 +1313,8 @@ impl<W: Write> ObjectStreamWriter<W> {
     ///
     /// # Errors
     ///
-    /// Returns the error of the writer. The stream is then cut off inside a frame.
+    /// Returns the error of the writer. The stream may then be cut off inside a frame, and the
+    /// writer must not be used again.
     pub fn write(&mut self, kind: Kind, body: &[u8]) -> io::Result<()> {
         self.writer.write_all(kind.header(body.len()).as_bytes())?;
         self.writer.write_all(body)
@@ -1315,7 +1339,8 @@ impl<W: Write> ObjectStreamWriter<W> {
 /// lines as a damaged frame.
 ///
 /// After an error the stream is lost: the reader does not know where the next frame begins, so
-/// every later call returns [`StreamError::Failed`] and reads nothing.
+/// every later call returns [`StreamError::Failed`] and reads nothing. That holds for an error of
+/// the carrier too, so a carrier that does not block cannot be asked again.
 #[derive(Debug)]
 pub struct ObjectStreamReader<R: BufRead> {
     reader: R,
@@ -1356,17 +1381,18 @@ impl<R: BufRead> ObjectStreamReader<R> {
         })
     }
 
-    /// Reads the next object, or returns `None` at the end of the stream.
+    /// Reads the next object, or returns `None` at the end of the stream. A call after the end
+    /// asks the carrier again.
     ///
     /// # Errors
     ///
     /// [`StreamError::CutOff`] if the stream ends inside a frame, [`StreamError::Header`] if a
-    /// frame does not begin with `<kind> <length>` and a NUL byte within 64 bytes, the header is
-    /// not UTF-8, or the length is not `0` or a decimal integer without a sign or a leading zero
-    /// that fits 64 bits, [`StreamError::UnknownKind`] for a kind that this version does not
-    /// know, [`StreamError::TooLarge`] for a body that is longer than the bound, before any of it
-    /// is read, [`StreamError::Io`] if the reader fails, and [`StreamError::Failed`] for every
-    /// call after one of these.
+    /// frame does not begin with a header `<kind> <length>` of at most 64 bytes and a NUL byte,
+    /// the header is not UTF-8, or the length is not `0` or a decimal integer without a sign or a
+    /// leading zero that fits 64 bits, [`StreamError::UnknownKind`] for a kind that this version
+    /// does not know, [`StreamError::TooLarge`] for a body that is longer than the bound, before
+    /// any of it is read, [`StreamError::Io`] if the reader fails, and [`StreamError::Failed`]
+    /// for every call after one of these.
     pub fn next_object(&mut self) -> Result<Option<StreamObject>, StreamError> {
         if self.failed {
             return Err(StreamError::Failed);
@@ -1474,9 +1500,9 @@ pub enum StreamError {
         /// Number of the object.
         object: u64,
     },
-    /// A frame does not begin with `<kind> <length>` and a NUL byte within 64 bytes, the header
-    /// is not UTF-8, or the length is not `0` or a decimal integer without a sign or a leading
-    /// zero that fits 64 bits.
+    /// A frame does not begin with a header `<kind> <length>` of at most 64 bytes and a NUL byte,
+    /// the header is not UTF-8, or the length is not `0` or a decimal integer without a sign or a
+    /// leading zero that fits 64 bits.
     Header {
         /// Number of the object.
         object: u64,
@@ -1561,7 +1587,9 @@ impl fmt::Display for StreamError {
                 f,
                 "object {object}: {length} bytes are more than the limit of {limit} bytes"
             ),
-            Self::Failed => f.write_str("the object stream was refused by an earlier read"),
+            Self::Failed => {
+                f.write_str("an earlier read of the object stream failed, so the stream is lost")
+            }
         }
     }
 }
