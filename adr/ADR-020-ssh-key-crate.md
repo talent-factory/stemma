@@ -3,7 +3,9 @@
 **Status:** Accepted by the human maintainer on 2026-11-14 (STEMMA-234), including the
 `BSD-3-Clause` exceptions. The dependency is a level 3 change (ADR-004: the level 3 row names
 signatures and keys, and rule 7 names cryptography crates). The scheme itself, SSHSIG with
-Ed25519, is decided in STEMMA-224 and recorded in ADR-003.
+Ed25519, is decided in STEMMA-224 and recorded in ADR-003. A second key type, the Ed25519 key on a
+hardware token, was decided for phase 5 on 2026-11-24 (STEMMA-275, see "A key on a hardware
+token"); it is not implemented yet.
 
 ## Context
 
@@ -65,6 +67,34 @@ Candidates, measured on 2026-11-13 in a scratch crate against `deny.toml` (toolc
 - **The version is a caret range, the lockfile is the pin.** A change of the minor version
   (0.6 to 0.7) needs a new decision here, because it changes the verification code.
 
+### A key on a hardware token
+
+Decided for phase 5 (STEMMA-275); not implemented yet. The change is level 3, as is the change of
+the register format that names the key type.
+
+- Beside Ed25519 the register accepts the key type `sk-ssh-ed25519@openssh.com`. "Ed25519 only"
+  above becomes "Ed25519 and `sk-ssh-ed25519@openssh.com` only".
+- The verifier in the core demands the flag "user present" on every signature of such a key. It
+  knows no exception by type of proof: the signed challenge of a hub and the anchor need the flag
+  as well (ADR-024, ADR-026). A key that needs no touch (`no-touch-required`) is refused. A PIN
+  (user verification) is not demanded.
+- Signing stays `ssh-keygen -Y sign` behind the trait `Signer`. A hub checks with the same
+  function of the core and builds nothing of its own.
+- The key type is voluntary. No rule asks for it, and the policy format gets no new field; the
+  register shows every reader which key an entry holds (ADR-003).
+- A token is touched once per signature. A push of a human with a token key costs three touches
+  (the challenge, the ref update, the anchor), and a fetch of a private repository costs one. Who
+  pushes often does it as an agent with a file key; the human with the token approves and makes
+  the acts of level 3.
+
+Read from the source of `ssh-key` 0.6.7 and not run: the crate verifies signatures of this key
+type and carries the flags and the counter in the signed data. Not verified: that
+`ssh-keygen -Y sign` signs with a hardware token in the way the `Signer` calls it.
+
+Rejected: a second key for transport only (a new attribute in the register format and a
+distinction in the authorizer, and a stolen transport key reads private repositories and sends
+anchors), and an exception for single types of proof.
+
 ## Open Points
 
 - [x] Acceptance of this ADR by the human maintainer, on 2026-11-14.
@@ -74,6 +104,9 @@ Candidates, measured on 2026-11-13 in a scratch crate against `deny.toml` (toolc
       up, and the Windows tree was not built. Both belong to the level 3 review of the change
       that adds the dependency.
 - [ ] Migration to `ssh-key` 0.7 when it is released.
+- [ ] The key type `sk-ssh-ed25519@openssh.com`: run the verification with `ssh-key` and try
+      `ssh-keygen -Y sign` with a hardware token, before the slice builds the check. How
+      `register add-key` and `enforce --owner-key` take such a key belongs to the command surface.
 
 ## Consequences
 

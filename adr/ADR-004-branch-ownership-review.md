@@ -1,7 +1,9 @@
 # ADR-004: Branch Ownership, Review, and Risk Levels
 
 **Status:** Accepted for phase 4 (STEMMA-233). The decisions are made in STEMMA-222 to STEMMA-232.
-What concerns the hub goes to the private project stemma-hub (hand-over in ADR-003).
+What concerns the hub goes to the private project stemma-hub (hand-over in ADR-003). The
+decisions of phase 5 that touch the rules below (STEMMA-273, STEMMA-275, STEMMA-276) are marked
+with their ADR; they were carried in by STEMMA-280 and are not implemented yet.
 
 ## Decision
 
@@ -11,12 +13,17 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
    the code fixes). The first writing operation acquires it implicitly if the register lists more
    than one actor. There is none in open mode and none on protected branches. After the expiry
    anyone whose role may write to the branch takes it with its next writing operation
-   (STEMMA-225).
+   (STEMMA-225). On a hub the write owner of a branch is derived from the record of ref updates:
+   the actor of the last entry of that name, with the lease running from the time of the hub
+   (ADR-025). The local lease stays for actors that share a clone.
 2. Owner override is available only to a human with the owner role. It is signed, carries a
    reason, and leaves an entry in the operation log. The entry names no commit, so the purge never
    touches it (STEMMA-225). The override changes who writes, never what the merge gate asks.
 3. Protected branches such as `main` change only through pull requests. A pull request is a
-   sequence of entries in the operation log (STEMMA-226, STEMMA-238).
+   sequence of entries in the operation log (STEMMA-226, STEMMA-238). From phase 5 on its
+   evidence is signed statements (the opening, an approval, a check result, a closing), which a
+   clone and a hub fold with one function; the entries of the log record the act and name the hash
+   of the statement they made (ADR-025).
 4. Agents may review and approve. No self-approval. Approvals are bound to the head
    commit they name, and signed where the repository has a register (ADR-011); any new commit
    voids them (STEMMA-227). An approval is the entry
@@ -32,13 +39,17 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 7. New direct runtime dependencies are level 2. Automated patch updates are level 1 with
    `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
 8. The policy file and the register files are level 3 and cannot be lowered, not even by the
-   policy itself. Policies per namespace, with the same floor, are built in stemma-hub.
+   policy itself. The same holds for the file of a namespace policy (working name
+   `.stemma-namespace-policy`), which the core takes into the list that is always level 3. A
+   namespace policy is content of a namespace repository and is combined with the policy of a
+   repository by the maximum, so it can only raise (ADR-027).
 9. Owner override in courses only with an audit entry that cannot be purged, is chained and
-   signed, and is visible to everyone who reads the log. This is met locally (rule 2); the
-   visibility per namespace and course is built in stemma-hub.
+   signed, and is visible to everyone who reads the log. This is met locally (rule 2). On a hub
+   the override is a signed statement that the readers of the repository see and that nobody can
+   delete or hide, with a derived list per namespace (ADR-025, ADR-027).
 10. Relaxing or deleting existing assertions automatically escalates to level 2. The rule is a
     pure function over the old and the new blob (STEMMA-232, STEMMA-248); the gate of stemma-hub
-    enforces it. It reads `.rs` files with `syn` and the `[lints]` tables of `Cargo.toml`, and
+    enforces it by recomputing the level from the policy of the base commit (ADR-025). It reads `.rs` files with `syn` and the `[lints]` tables of `Cargo.toml`, and
     knows seven signals: fewer `assert*!` calls in a function, `assert*!` turned into
     `debug_assert*!`, a `#[test]` function that disappears (the same body under a new name is a
     rename), `#[ignore]` or `#[should_panic]` added or its `expected` dropped, `#[cfg(...)]` added
@@ -53,6 +64,14 @@ What concerns the hub goes to the private project stemma-hub (hand-over in ADR-0
 approval are descriptive only (STEMMA-222), so a stronger independence cannot be verified; the human
 at levels 2 and 3 stays the anchor. For the writer of a `check` at levels 2 and 3, ADR-019 sets a
 stricter rule that also excludes the sponsor of the opener and of the authors.
+
+The consequence for levels 0 and 1 (STEMMA-275): the keys of several agents under one operating
+system user fall together. A process that holds two such keys opens with one and approves with
+the other, and a hub sees two valid signatures, so such a process can bring a change of level 0
+or 1 to `main` on its own. It stays visible in the record and the statements. The rule does not
+change; levels 0 and 1 rest on keys that are kept apart (an operating system user of their own, a
+secret of the CI), and the human at levels 2 and 3 can hold a key on a hardware token (ADR-003,
+ADR-020).
 
 ## Risk Levels
 
@@ -99,8 +118,9 @@ it.
 - [x] Level of runtime operations that remove history (purge, ADR-014): proposed level 3, a human
       owner only. The table classifies changes by the paths they touch, not operations at run time.
       Decided for the purge in ADR-014: only a human may purge.
-- [x] Corporate customers might demand stricter floors. Out of scope for phase 4; handed over to
-      stemma-hub (ADR-003). Relevant only once there are concrete customers.
+- [x] Corporate customers might demand stricter floors. Out of scope for phase 4 and for phase 5;
+      handed over to stemma-hub (ADR-003). Relevant only once there are concrete customers.
+      ADR-027 records what the model keeps open for a further layer of policies.
 - [x] Define concrete path lists per level. Decided in STEMMA-160 (table above). The
       machine-readable policy file that enforces it follows in phase 4.
 - [x] Agent identities: a dedicated role, or a role with a human sponsor. Decided in STEMMA-222:

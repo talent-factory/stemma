@@ -6,8 +6,11 @@
 entries (STEMMA-39) on 2026-10-23. All are implemented; for the retention that means that
 phase 1 keeps every entry, and its rules for later are not built. The open items at the end are
 questions for later (retention together with the garbage collection, who may read the log, the
-width of the number, an anchor that the actor cannot change) and none of them changes a
-decision. The flush of directories on Windows was decided on 2026-10-24 (STEMMA-84).
+width of the number) and none of them changes a
+decision. The flush of directories on Windows was decided on 2026-10-24 (STEMMA-84). The anchor
+that the actor cannot change, the statement about what a hub sees, and the entries that name a
+signed statement were decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, STEMMA-274,
+STEMMA-56; see "The log and a hub"); they are not implemented yet.
 
 ## Context
 
@@ -288,7 +291,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   - **What it does not prove.** The chain shows that the entries agree with one another, not
     who wrote them: whoever can write `.stemma` can compute every later hash and the tip again,
     and is noticed only by an anchor kept outside the repository. A hub that confirms the tip
-    is an anchor that the actor cannot change; it belongs to stemma-hub (ADR-003). Signatures of
+    is an anchor that the actor cannot change (ADR-026). Signatures of
     the actors do not stop cutting the tail.
 - **A tip file names the last entry** *(confirmed; STEMMA-30)*. `.stemma/oplog-tip`
   holds the number of the last entry in the strict form `stemma-oplog-tip 1\nnumber <n>\n`, or,
@@ -619,6 +622,38 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     stub keeps, so `op verify` checks it for the stub of any other entry (STEMMA-256; before, a
     stub of any entry passed). The stub says which of the two it is: encoding 4 above.
 
+- **The log and a hub** *(decided for phase 5 in STEMMA-56, STEMMA-273 and STEMMA-274; not
+  implemented yet)*.
+  - **A hub never sees an entry of the log.** The log can hold a secret until it is purged
+    (ADR-014), and a purge would not reach a copy. What reaches a hub is the anchor of the tip
+    alone: the number and the hash of the last entry, signed by the actor, which the hub confirms
+    with its own key (ADR-026). `op verify` checks the log against the anchors that the hub holds.
+  - **A log has an ID.** A random ID in `.stemma` names the log (ADR-009), because one actor can
+    have two clones with the same key and several actors write into one log. The hub keeps
+    anchors per repository and log ID.
+  - **The evidence of a pull request is signed statements; the log records the act.** The
+    opening, an approval, a check result and a closing are signed statements that a clone and a
+    hub fold with one function (ADR-025). The entries `pr-open`, `pr-approve` and `check` name
+    the hash of the statement they made, and the fold of the gate reads from the statements. One
+    form holds everywhere, also without a remote. This is a new version of the entries and of
+    the repository format (ADR-009). A pull request is named by the hash of its opening, not by
+    the number of its `pr-open` entry, so the name holds in every clone.
+  - **`fetch` and `push` are operations with one entry each.** A `fetch` entry names the remote
+    references it moves and removes, with their old and new state, and the statements received. A
+    `push` entry is written after the receipt and names the remote references it moved and the
+    number and hash of the receipt (ADR-008). `pr-merge` is written after the receipt as well,
+    in a repository whose `main` follows a remote. Pinning the key of a hub again writes an
+    entry (ADR-026).
+  - **The bound of a retired or revoked key** is a number of the local log and counts only in the
+    log that wrote it; the register names the ID of that log from now on. In every other log the
+    bound is the `fetch` entry that brought the register commit, and across clones the order is
+    the order of the hub (ADR-026).
+  - **An upload on a hub writes outside the lock**, into a subdirectory of its own in `tmp/`,
+    which the cleanup above leaves, because it removes files and not directories (ADR-007).
+  - **A purge leaves a confirmed anchor valid**, because a stub keeps the hash of the entry it
+    replaces. The purge sends nothing; its entry is anchored with the next push or by the
+    command (ADR-026).
+
 ## Consequences
 
 - Every operation that changes a pointer goes through a function of `Repository`
@@ -631,7 +666,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   alive.
 - The log keeps commits that a rewrite or a purge would otherwise drop. A secret in a tracked file
   is therefore in the log until it is purged (ADR-014, STEMMA-26), which is why the log is local.
-- A hub never sees the log. What a hub keeps is its own record of ref updates (ADR-003).
+- A hub never sees an entry of the log. It confirms the number and the hash of the tip
+  (ADR-026). What a hub keeps is its own record of ref updates and the signed statements about a
+  repository (ADR-025).
 - `Repository::init` creates `oplog/` and writes entry 1, so the order "entry, then move" holds
   from the first pointer on. Entry 1 moves HEAD and the working-copy commit (ADR-010).
 
@@ -684,8 +721,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
       today).
 - [x] The hash chain (STEMMA-41): entry encoding 3, the hash over an envelope that a stub keeps,
       the tip with the hash, format 4, and `stemma op verify` with `--anchor`.
-- [ ] An anchor that the actor cannot change: a hub that confirms the tip (stemma-hub, ADR-003).
-      Until then the anchor is a copy that a person keeps.
+- [x] An anchor that the actor cannot change: a hub that confirms the tip. Decided in STEMMA-274
+      (ADR-026, see "The log and a hub"); not implemented yet. Until it is, the anchor is a copy
+      that a person keeps. Entries from before the chain (versions 1 and 2) stay uncovered.
 - [x] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
       it are ever removed. Not needed: a retention replaces entries by stubs, which keep the
       hash, and removes none.

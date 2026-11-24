@@ -191,7 +191,15 @@ Facts that bound the design:
 - **A synchronized repository stays open** *(confirmed)*. A secret that was pushed (phase 5) is
   also on the hub, and a purge here does not reach it. The rule for users is that a pushed secret
   counts as compromised and has to be replaced, whatever a purge does. The hub needs a removal of
-  its own, which belongs to phase 5.
+  its own, which belongs to phase 5. Its acceptance rule is decided (STEMMA-273, ADR-025; not
+  implemented yet): `main` on a hub rewinds only for a purge, when a human owner by the register
+  of the old tip presents a signed purge statement (the old tip, the new tip, a reason) with the
+  ref update, and the new history carries a register that holds this owner. The hub applies no
+  gate, the record entry is visible to all readers, and statements about removed commits no
+  longer count. A tag that holds the old history is deleted by the rule of `untag`. The old
+  objects leave the hub with the removal of unreachable objects, whose roots are the references
+  alone (ADR-007). The purge itself stays a local operation without a network, and an anchor that
+  a hub confirmed stays valid (ADR-026).
 - **An open pull request stops a purge** *(confirmed; STEMMA-238)*. The entries `pr-open` and
   `pr-merge` name commits, so the plan lists them like any entry that names a rewritten commit,
   and `pr-close` names none. A pull request is the sequence of its entries (ADR-004, ADR-011), so
@@ -447,10 +455,15 @@ purge that cannot finish (a missing object, an unreadable log) is left for a per
 - [ ] The rewrite of commits that are signed (ADR-003): a signature does not survive a rewrite.
 - [ ] The reachability check of the last step has to know every kind of reference that holds
       objects, including those that come later (remote references). Tags are known (STEMMA-54).
+      Remote references are decided as roots of the reachability and as part of the sealed
+      `RefStore` (ADR-008); how a purge treats them in a clone is open.
 - [x] A purge that deals with a tag on a commit that it would rewrite, instead of refusing:
       the human who runs the purge may let it move the tag to the new commit (`--move-tags`),
       and the `purge` entry counts the tags that moved (STEMMA-185).
-- [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5).
+- [ ] The removal on a hub and the rule for a repository that was synchronized (phase 5). The
+      acceptance rule and the mechanism are decided (see the decision above). Open stay how
+      clones follow a `main` that was purged on the hub, that every clone keeps the old objects,
+      and what becomes of the statements of a clone about removed commits.
 - [ ] A secret blob whose file is damaged cannot be purged: the plan does not know that it is a
       blob. Deleting it needs no knowledge of its content, so a later version may allow it.
 

@@ -2,7 +2,8 @@
 
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
 2026-10-23 (STEMMA-17). The open items at the end are questions for later phases; none of them
-changes a decision above.
+changes a decision above. The decisions of phase 5 on merges on the hub (STEMMA-278) and on the
+lock on the hub (STEMMA-272, STEMMA-273) were added on 2026-11-24.
 
 ## Context
 
@@ -57,10 +58,14 @@ holds for Anthropic's agents and jobs, not for these users.
 ### The first hub stores and enforces; it does not merge *(confirmed)*
 
 The first hub of Phase 5 stores objects and references and enforces permissions (ADR-003) and
-the write ownership of branches (ADR-004). Commits and merges stay local. Commits and merges on
-the server, for agents that work without a clone as in Scion, are a deferred option for a later
-slice of Phase 5 or for Phase 6. If they come, the hub runs the same operations of the core as
-the CLI; there is no second implementation of a merge.
+the write ownership of branches (ADR-004). Commits and merges stay local: a clone builds the
+merge commit, and the hub checks it again with the accepting operation of the core (ADR-025).
+Commits and merges on the server, for agents that work without a clone as in Scion, are not
+built in Phase 5; they come in Phase 6, together with API parity (STEMMA-278). If they come, the
+hub runs the same operations of the core as the CLI; there is no second implementation of a
+merge. "The same operations of the core" means the pure functions of the tree merge and of the
+verdict of the gate. The hub creates no commit: it computes and delivers, and the actor composes
+the commit and signs (see the open items).
 
 ### Short-lived branches with a lease *(confirmed)*
 
@@ -88,7 +93,10 @@ objects, because objects are content-addressed (ADR-007), but a second writer fa
 `Locked` while the first one runs. At the target scale, with one writer per clone, this is
 acceptable. Commits without a global lock, with the move of a reference as the only serialized
 step, as in Scion, are a goal for the hub, where many actors write to one repository
-(STEMMA-19).
+(STEMMA-19). Phase 5 reaches the goal for the hub without rebuilding the lock (STEMMA-272,
+STEMMA-273): the upload of objects runs without the lock, and `refs.lock` covers the ref update
+only, that is the connectivity check, the accepting operation, the record entry and the
+compare-and-swap (ADR-025). No finer lock and no ref update without a lock is built.
 
 ### Rejected for now *(confirmed)*
 
@@ -118,6 +126,25 @@ Stemma takes no code and no protocol from Scion.
 - Which measurements would trigger a review of the target scale, for example the size of the
   history or the merges per day that a hub has to serve. STEMMA-37 measured the cost of a
   snapshot and gives a first point of reference.
-- Whether a later hub performs merges for agents without a clone (a later slice of Phase 5, or
-  Phase 6).
-- Concurrent commits and merges without a global lock on the hub (STEMMA-19).
+- Whether a later hub performs merges for agents without a clone. Decided for Phase 5
+  (STEMMA-278): not in Phase 5; Phase 6, in the form that the hub computes and the actor signs.
+  The direction, which Phase 6 confirms when it builds: on request the hub computes the merge
+  tree of the head `H` onto the tip `T` with the pure function of the core and answers with the
+  ID of the tree and a preview of the verdict of the gate; the agent composes the commit itself,
+  uploads it and signs an ordinary ref update. The actor is the register entry whose key signs
+  the ref update. Such an actor has no operation log and so no anchor (ADR-026); the record of
+  the hub is the only trace of its acts, and it trusts the preview. Reading without a clone
+  stays bound to a reference (ADR-023). The first hub keeps six properties open for this
+  (ADR-025) and reserves one name for later endpoints (ADR-027). Rejected, with a trigger: a
+  signed merge order with a queue on the hub, from which the hub creates the commit. Its trigger
+  is a measured number of repetitions of a merge because of `Stale` at which merges regularly
+  fail at the bound of the loop; it would then need an ADR of its own, because it changes the
+  sentence that the hub never creates a commit.
+- Concurrent commits and merges without a global lock on the hub (STEMMA-19). Stays open: the
+  gate of the hub does not need it (ADR-025). The trigger is a measured waiting time for
+  `refs.lock`; the pure computations of the accepting operation are moved before the lock
+  first.
+- A measurement on Stemma stores, once `fetch` exists (STEMMA-270): the number of objects, the
+  size of the stream, the duration of a clone and of a fetch, the holding time of `refs.lock` on
+  the hub, and the count of repetitions of a merge because of `Stale`. Its numbers give the
+  thresholds for a pack format (ADR-023) and for the two triggers above.

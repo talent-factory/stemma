@@ -107,7 +107,8 @@ them.
   local and is not exchanged with the history (see the next decision), so the commit carries its
   own date. A rewrite, such as a rebase, a cherry-pick, or an amend, creates a new commit that
   keeps the author and the time of the original change. Who rewrote it, and when, is recorded in
-  the local operation log and, for other readers, in the record of ref updates of a hub (ADR-003, handed to stemma-hub).
+  the local operation log and, for other readers, in the record of ref updates of a hub
+  (ADR-025).
 - **Change ID** *(confirmed)*. A commit carries one change ID as the header `change <id>`, between
   the parents and the author. It names the change that the commit is a state of and stays the same
   through every rewrite (ADR-010), so a review or a rebase can follow it. It is random, not derived
@@ -305,11 +306,11 @@ them.
 - [x] Add a committer and a second timestamp, if rebasing and cherry-picking need to keep the
       original author time apart from the time of the rewrite. Decided not to add them: the
       operation log is local (see the decision above), a rewrite keeps the author and the time, and
-      who rewrote it is answered by the local log and the ref updates of a hub. Revisit if
-      repositories are exchanged peer to peer without a hub (ADR-003, open). Then `committer` and a
-      second time are added as one change under a new kind name (`commit3`, as `commit2` is the
-      commit with a list of trees, see "Commit with a list of trees"), because the committer
-      is a second actor.
+      who rewrote it is answered by the local log and the ref updates of a hub. The reservation
+      of a kind `commit3` with a `committer` and a second time, for an exchange between clones
+      without a hub, is closed (STEMMA-277): who moved a reference is never a property of the
+      commit. It stands in the record of a hub (ADR-025) or in the local log, or it is not
+      proven; an unsigned field `committer` would prove as little as the timestamp does.
 - [x] Decide whether the operation log is exchanged with the history. Decided: it is not (see the
       decision above).
 - [x] The store has to record the object kind, because the version is part of the kind name.

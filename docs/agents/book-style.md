@@ -172,7 +172,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Write-Ahead-Regel | Write-Ahead-Log (for the Operation Log) | The entry is flushed before its pointer moves (ADR-011) |
 | Ausgang | | Whether the moves of an entry took effect (ADR-011) |
 | Hash-Kette | Hashkette | The link from each entry to the hash of the one before (ADR-011) |
-| Anker | | Number and hash of an entry, kept outside the repository (ADR-011) |
+| Anker | | Number and hash of an entry of a chain, kept by someone who does not write that chain; a hub confirms the anchor of an operation log, and a receipt is an anchor of the record of the hub (ADR-011, ADR-026) |
 | Aufbewahrung | | How many snapshot entries the log keeps (ADR-011) |
 | Restore | Wiederherstellung | `op restore` and its entry (ADR-013) |
 | Purge | Bereinigung | Removing a blob from history and log (ADR-014) |
@@ -208,6 +208,34 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Akteur | Benutzer, Nutzer | The one who runs a command; \quotation{Benutzer} only for the user of the operating system |
 | Seite (eines Merges) | Zweig | One of the two commits that a merge joins |
 | Git | git (lower case, except in a command) | The version control system |
+| Klon | Kopie, Checkout (for a clone) | A repository with a working copy and the full object store that knows a remote |
+| Hub | Server (for the role), Origin | The server that stores repositories and enforces their rules in addition to the local enforcement; known by its address and its key |
+| das Remote | die Remote, Gegenstelle | A repository on a hub as a clone knows it: name, address, repository ID, pinned key (ADR-022) |
+| Remote-Referenz | Remote-Branch, Tracking-Branch | The state of a branch or tag on the hub as the clone last saw it (ADR-008) |
+| Bare-Repository | nacktes Repository | A repository without a working copy, as a hub holds it (ADR-009) |
+| Protokollversion | | The number `stemma-protocol <n>` at the start of every message (ADR-023) |
+| Objektstrom | Paket, Pack | The body of a fetch or an upload: whole objects, ancestors first, without deltas (ADR-023) |
+| Upload | Hochladen (as a noun) | The first step of a push: the object stream goes to the hub, which stores it unnamed |
+| Konto | Benutzerkonto, Login | A name on a hub with public keys and no secret of its own (ADR-024) |
+| Anmeldung | Login, Sign-in | The signed challenge that yields a token, once per command (ADR-024) |
+| Challenge | Herausforderung | The nonce of the hub that the key of the sender signs (ADR-024) |
+| Token | Sitzung; Beweis (a token is none) | The short-lived credential of the hub that says which key speaks (ADR-024) |
+| Hardware-Schlüssel | Token-Schlüssel, Sicherheitsschlüssel | A key of the type `sk-ssh-ed25519@openssh.com` on a hardware token (ADR-020) |
+| Ref-Update | Push (for the signed request) | The signed request to move one or several references on a hub (ADR-025) |
+| Aufzeichnung der Ref-Updates, Aufzeichnung | Protokoll (that is the transfer protocol), Journal, Reflog | The hash chain of accepted ref updates that the hub writes and signs (ADR-025) |
+| Quittung | Bestätigung (that is the answer to an anchor) | The record entry that the hub returns for an accepted ref update (ADR-025) |
+| signierte Erklärung, Erklärung | Statement, Aussage (for the proof type) | A signed proof that binds a repository and not the log of a clone: opening, approval, check result, closing, owner override, purge (ADR-025) |
+| Zeilen des Hubs | | What the hub adds to a record entry or a statement: number, time, register and policy commits, signed (ADR-025) |
+| Ordnung des Hubs | Reihenfolge des Servers | The order that the numbers in the lines of the hub fix across clones (ADR-026) |
+| annehmende Operation | Annahme-Operation | The operation of the core that judges a ref update or a statement on a bare repository (ADR-025) |
+| Schlüssel des Hubs | Server-Schlüssel | The one Ed25519 key of a hub instance, pinned in the remote (ADR-026) |
+| Bestätigung (eines Ankers) | Quittung (that is the receipt of a ref update) | The signed answer of the hub to an anchor (ADR-026) |
+| Log-ID | | The random ID of the operation log of one `.stemma` (ADR-026) |
+| Namespace-Repository | | The repository of a namespace that holds its register and the namespace policy (ADR-027) |
+| Namespace-Policy | | The policy file of a namespace; combined with the policy of a repository by the maximum (ADR-027) |
+| Gewährung | Berechtigung, Rolle (for a grant) | The right `create` or `read` of an account in a namespace (ADR-027) |
+| einfrieren, das Einfrieren | sperren (for a repository) | The hub refuses every ref update and statement to a repository; reading goes on (ADR-027) |
+| Betreiber | Administrator | Whoever runs a hub |
 
 ## Tables
 

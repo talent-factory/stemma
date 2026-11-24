@@ -2,27 +2,748 @@
 
 \section{Ziel}
 
-Repositories werden zwischen Klonen und einem Server synchronisiert.
-Der Server setzt Berechtigungen durch.
-Dieser Hub gehört zum getrennten Projekt stemma-hub (ADR-003); dieses Kapitel beschreibt ihn nur
-als Ausblick.
+Repositories werden zwischen Klonen und einem Hub synchronisiert.
+Der Hub setzt die Berechtigungen durch, zusätzlich zur lokalen Durchsetzung aus
+\in{Kapitel}[chap:phase4].
+Was er dabei hinzufügt, ist eine Ordnung, die jemand schreibt, der nicht selbst der Akteur ist.
 
 \section{Umfang}
 
 \startitemize
-\item Protokoll zur Übertragung einzelner Objekte über HTTP, adressiert über ihren Hash.
-\item Remote-Referenzen und Push mit Prüfung der Schreibhoheit auf dem Server.
-\item Server mit Speicherung der Objekte und Referenzen.
-\item Namespaces für Organisationen, Kurse und Projekte.
-\item Durchsetzung der Policies nach ADR-003 zusätzlich zur lokalen Durchsetzung.
+\item Remotes, \type{clone}, \type{fetch} und \type{push} im Kern, hinter einer Schnittstelle für
+den Transport (ADR-022).
+\item Ein Übertragungsprotokoll über HTTP, das ganze Objekte als Strom überträgt (ADR-023).
+\item Anmeldung am Hub mit dem Schlüssel aus dem Akteursregister (ADR-024).
+\item Remote-Referenzen und das signierte Ref-Update mit seiner Aufzeichnung auf dem Hub
+(ADR-008, ADR-025).
+\item Durchsetzung von Schreibhoheit, Merge-Gate und Eskalation auf dem Hub, mit denselben
+Operationen des Kerns wie lokal (ADR-025).
+\item Der Anker des Operation Log auf dem Hub und der Schlüssel des Hubs (ADR-026).
+\item Namespaces für Organisationen, Kurse und Projekte, mit einer Namespace-Policy (ADR-027).
+\item Der Schlüssel auf einem Hardware-Token als zweiter Schlüsseltyp des Registers (ADR-020).
 \stopitemize
 
-\section{Offene Fragen}
+Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs festgehalten,
+umgesetzt ist noch nichts.
+Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
+gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
+Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
+Das Kapitel beschreibt deshalb das Protokoll und die Regeln, die ein Klon kennt und nachrechnet;
+wie der Hub seine Daten ablegt und betrieben wird, steht hier nicht.
+
+\section[sec:remote-split]{Klon, Remote und Hub}
+
+Phase 4 setzt die Regeln auf der Maschine des Akteurs durch, für die Prozesse, die durch den Kern
+gehen.
+Ein Hub ist ein zweiter Ort, der dieselben Beweise noch einmal prüft, bevor sich eine geteilte
+Referenz bewegt.
+Damit beide Orte zum selben Urteil kommen, gibt es die Prüfungen nur einmal, im Kern.
+
+Der Schnitt auf der Seite des Klons verläuft entlang der Ein- und Ausgabe.
+Zustand und Logik liegen im Kern: die Konfiguration der Remotes, die Remote-Referenzen, die
+Berechnung der fehlenden Objekte, die Prüfung empfangener Objekte und die Einträge von
+\type{fetch} und \type{push} im Operation Log.
+Der Kern spricht mit der Gegenseite über eine Schnittstelle (\type{Transport}), die nur Nachrichten
+überträgt und nichts über HTTP annimmt.
+Ein eigenes Crate (\type{stemma-remote}) enthält den HTTP-Client, der sie umsetzt; der Kern selbst
+bekommt keine Netzwerk-Abhängigkeit.
+
+Die Nachrichten, auf die sich Klon und Hub einigen müssen, sind Typen des Kerns
+(\type{stemma_core::protocol}), mit einem Schreiber und einem strengen Leser für beide Seiten.
+Jede Nachricht beginnt mit der Zeile \type{stemma-protocol <n>}.
+Diese Protokollversion ist unabhängig von der Version des Repository-Formats (ADR-009) und von
+der Version des Programms; eine Änderung braucht ein ADR und eine neue Nummer.
+Ein Hub kann mehrere Versionen bedienen, ein Klon spricht eine.
+
+Der Hub öffnet jedes Repository als Bare-Repository, also ohne Arbeitskopie, und ruft die
+Operationen des Kerns auf.
+Eine einzige Operation nimmt ein Ref-Update an und legt die Reihenfolge der Prüfungen fest
+(\in{Abschnitt}[sec:hub-enforcement]).
+Der Hub liefert ihr die Belege und wendet ihr Ergebnis an; er setzt keine Prüfung selbst
+zusammen und kann deshalb keine auslassen.
+
+\startinfobox
+{\bf Wie Klon und Hub gemeinsam getestet werden.}
+Die Tests dieses Repositorys verbinden zwei Repositories im Speicher über \type{Transport}; die
+Gegenseite ist dabei die annehmende Operation des Kerns, kein zweiter Server.
+Dazu kommen eingecheckte Beispielnachrichten, gegen die auch der Hub seine Leser prüft.
+Tests mit echtem HTTP liegen beim Hub.
+\stopinfobox
+
+\section[sec:transfer]{Das Übertragungsprotokoll}
+
+Ein Klon und ein Hub müssen herausfinden, welche Objekte der anderen Seite fehlen, und sie
+übertragen.
+Der Entwurf nutzt dafür eine Voraussetzung aus ADR-015: Jeder Klon hält den vollen
+Objektspeicher.
+Wer einen Commit hat, hat alles, was von ihm aus erreichbar ist.
+
+\subsection{Die Einheit der Übertragung}
+
+Eine Anfrage überträgt einen Objektstrom: ganze Objekte in der Kodierung des Speichers
+(\type{<Art> <Länge>}, ein NUL-Byte, der Inhalt; \in{Abschnitt}[sec:object-ids]), ohne Deltas.
+Der Empfänger legt sie über den bestehenden Schreibweg ab, es entsteht also kein zweites
+Speicherformat.
+Das Objekt bleibt die Einheit, die ihr Hash adressiert, aber es ist nicht die Einheit einer
+Anfrage.
+Ein Objekt je Anfrage würde für einen Klon dieses Repositorys etwa 4500 Anfragen kosten, bei
+einem Verlauf von einigen Gigabyte $10^5$ bis $10^6$.
+
+Der ganze Strom wird komprimiert, als Eigenschaft des Transports und mit zstd (ADR-029); der
+Speicher bleibt, wie ADR-007 ihn festlegt.
+Eine Messung am Git-Verlauf dieses Repositorys gab die Richtung: 4483 Objekte sind roh
+103,3 MB, mit zstd und einem Fenster über den ganzen Verlauf 2,4 MB, als Git-Pack mit Deltas
+7,4 MB.
+Das lange Fenster findet die Wiederholungen zwischen den Versionen einer Datei selbst; deshalb
+kommt das Format ohne Deltas aus.
+Die Zahlen stammen von einem einzigen Verlauf und sind kein Schwellenwert.
+
+\subsection{Fetch und Klon}
+
+\startitemize[n]
+\item Der Klon liest die Liste aller Referenzen des Hubs in einer Anfrage.
+\item Er sendet in einer zweiten Anfrage die Commits, die er will (\type{want}), und die Commits,
+die er hat (\type{have}): die Spitzen seiner Branches und seiner Remote-Referenzen.
+\item Der Hub läuft den Graphen ab und antwortet mit dem Strom aller Objekte, die von den
+\type{want}-Commits aus erreichbar sind und von den bekannten \type{have}-Commits aus nicht.
+\item Der Klon prüft, was er empfangen hat, und bewegt erst danach seine Remote-Referenzen.
+\stopitemize
+
+Ein Klon ist dieselbe Anfrage ohne \type{have}.
+Eine zweite Runde gibt es nicht.
+Ein \type{have}, das der Hub nicht kennt, übergeht er; er sendet dann zu viel, nie zu wenig, und
+ein doppeltes Objekt schadet nicht, weil sein Hash es adressiert.
+Fetch und Klon kosten damit zwei Anfragen, unabhängig von der Grösse des Verlaufs.
+Die Arbeit des Hubs wächst mit der Zahl der Objekte, die er sendet, und mit den Commits, die er
+bis zu einem bekannten \type{have} abläuft.
+
+Ein \type{want} ist an eine Referenz gebunden: Der Hub liefert nur, was von einer Referenz eines
+Repositorys aus erreichbar ist, das der Anfragende lesen darf.
+Kein Endpunkt liefert ein Objekt allein über seine ID, auch nicht in einem öffentlichen
+Repository.
+Sonst bekäme jeder, der eine ID kennt, auch die Objekte eines abgelehnten Push.
+
+\subsection{Push}
+
+\startitemize[n]
+\item Der Klon berechnet, was dem Hub fehlt: alles, was von der neuen Spitze aus erreichbar ist
+und von seinen Remote-Referenzen aus nicht.
+Er fragt den Hub nicht vorher.
+\item Er lädt diese Objekte als Strom hoch.
+Der Hub berechnet ihre Hashes, legt sie unbenannt ab und bestätigt, sobald sie dauerhaft
+gespeichert sind.
+\item Er sendet ein kleines, signiertes Ref-Update (\in{Abschnitt}[sec:ref-update]).
+Erst jetzt prüft der Hub, ob die Objekte zusammenhängen, ruft die annehmende Operation auf und
+bewegt die Referenz mit Compare-and-Swap.
+\stopitemize
+
+Der Upload ist idempotent: Er kann wiederholt und an Commit-Grenzen in mehrere Anfragen geteilt
+werden.
+Ein abgelehnter Push hinterlässt unbenannte Objekte auf dem Hub, die er nie ausliefert und später
+entfernt.
+Ist die Remote-Referenz des Klons veraltet, scheitert das Compare-and-Swap (\type{Stale}), und der
+Klon holt zuerst den neuen Stand.
+
+\subsection{Was der Empfänger prüft}
+
+Beide Seiten prüfen, der Klon beim Fetch und der Hub beim Push.
+Der Empfänger wiederholt den Lauf des Senders: von den neuen Spitzen abwärts bis zu Commits, die
+von seinen eigenen Referenzen aus erreichbar sind.
+Jedes Objekt auf diesem Weg muss vorhanden sein, die richtige Art haben und vom strengen Leser
+gelesen werden (\in{Abschnitt}[sec:strict-readers]).
+Der Rahmen eines Objekts im Strom trägt keine ID.
+Der Empfänger berechnet sie selbst; ein beschädigtes Objekt ist deshalb ein anderes Objekt, und
+der Lauf meldet das erwartete als fehlend.
+Ein Objekt, das der Lauf nicht erreicht, bleibt unbenannt im Speicher und ist kein Fehler.
+
+Die Invariante dahinter: Eine Referenz zeigt nur auf einen Commit, dessen ganzer Verlauf im
+Speicher liegt und lesbar ist.
+Sie hält, weil die Referenz sich erst nach dem Lauf bewegt, und sie ist die Voraussetzung dafür,
+dass eine einzige Runde mit \type{want} und \type{have} genügt.
+
+\subsection{Unterbrochene Übertragung}
+
+Die Reihenfolge des Stroms gehört zum Format: Vorfahren zuerst, und für jeden Commit seine neuen
+Blobs und Trees vor dem Commit selbst.
+Jeder Anfang des Stroms, der mit einem Commit endet, ist damit ein vollständiger Stand.
+Der Klon prüft Commit für Commit und hält in \type{.stemma} fest, welche Commits vollständig
+angekommen sind.
+Nach einem Abbruch sendet er dieselbe Anfrage mit diesen Commits als weitere \type{have}-Zeilen.
+Die Wiederaufnahme ist ein gewöhnlicher Fetch, und der Hub hält keinen Zustand.
+Eine Grenze bleibt: Ein einzelner Commit, der grösser ist, als eine Verbindung trägt, lässt sich
+nicht wiederaufnehmen.
+
+\subsection{Nachrichten und Anfragen}
+
+Die kleinen Nachrichten sind zeilenweiser Text in fester Reihenfolge, wie die Einträge des
+Operation Log; der Objektstrom ist binär und beginnt mit derselben ersten Zeile.
+Es gibt keine Listen von Fähigkeiten und keine optionalen Felder: Jede Erweiterung ist eine neue
+Protokollversion.
+Die Adresse eines Remote ist die Adresse des Repositorys,
+\type{<Hub>/<Namespace>/<Repository>}, und alle Endpunkte liegen darunter
+(\in{Tabelle}[tab:hub-requests]).
+
+\startplacetable[title={Die Anfragen eines Klons an ein Repository auf dem Hub},
+reference=tab:hub-requests]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.3\textwidth] {\bf Anfrage} \stopxcell
+\startxcell {\bf Bedeutung} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST challenge} \stopxcell
+\startxcell Der Hub antwortet mit einer Challenge. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST token} \stopxcell
+\startxcell Die signierte Antwort des Klons; der Hub antwortet mit einem Token. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{GET refs} \stopxcell
+\startxcell Die Liste der Referenzen, mit der ID des Repositorys und dem Schlüssel des Hubs.
+\stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST fetch} \stopxcell
+\startxcell \type{want} und \type{have}; die Antwort ist der Objektstrom. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST objects} \stopxcell
+\startxcell Der Upload eines Objektstroms. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST refs} \stopxcell
+\startxcell Das Ref-Update; die Antwort ist die Quittung. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{POST anchors} \stopxcell
+\startxcell Ein Anker des Operation Log; die Antwort ist die Bestätigung. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Weitere Anfragen lesen die Aufzeichnung, die signierten Erklärungen und die Anker und reichen
+Erklärungen ein; ADR-023 führt sie auf.
+Der Statuscode nennt nur die grobe Klasse eines Fehlers, der genaue Grund steht als Nachricht im
+Rumpf der Antwort.
+Der Klon folgt keiner Weiterleitung, damit ein Token nie an einen anderen Host geht.
+Ein Fetch oder Klon eines öffentlichen Repositorys kostet 2 Anfragen, der eines privaten 4, ein
+Push 5: die Anmeldung mit zwei Anfragen, der Upload, das Ref-Update und der Anker.
+
+\startinfobox
+{\bf Wann ein Pack-Format nötig wird.}
+ADR-023 nennt die Auslöser, ohne Zahlen: Die Kompression des Stroms trägt nicht mehr, weil der
+Verlauf grösser ist als das Fenster; der Hub wird zum Engpass eines Klons; ein einzelner Commit ist
+grösser, als eine Verbindung trägt; oder der Speicher selbst braucht Packs (ADR-007).
+Die Schwellen liefert eine Messung an echten Stemma-Speichern.
+In jedem Fall ändert sich keine Objekt-ID.
+\stopinfobox
+
+\section[sec:hub-auth]{Anmeldung am Hub}
+
+Der Hub muss wissen, welcher Schlüssel eine Anfrage sendet.
+Phase 4 kennt dafür nur den Beweis: eine Signatur mit dem Schlüssel, den das Register dem Akteur
+zuordnet (\in{Abschnitt}[sec:signatures]).
+Die Anmeldung am Hub verwendet denselben Schlüssel und führt kein zweites Geheimnis ein.
+
+\startitemize[n]
+\item Der Hub gibt eine Challenge aus, eine Zufallszahl.
+\item Der Schlüssel signiert sie, einmal je Befehl.
+Die Signatur ist ein eigener Typ von Beweis und bindet die Adresse des Hubs, wie der Klon sie
+aufruft, die Challenge und den Schlüssel.
+\item Der Hub antwortet mit einem Token für die folgenden Anfragen.
+\stopitemize
+
+Das Token ist kurzlebig und kein Beweis.
+Es gelangt in kein Repository, wird nicht auf die Platte geschrieben und sagt nur, welcher
+Schlüssel spricht.
+Was dieser Schlüssel darf, prüft der Hub bei jeder Anfrage gegen das Register an der Spitze von
+\type{main}; ein Widerruf wirkt deshalb sofort.
+Die Bindung an die Adresse verhindert, dass ein fremder Hub eine Challenge weiterreicht.
+TLS ist für jede Adresse Pflicht, die ein Netz überquert (ADR-028).
+
+Auf dem Hub hat ein Mensch ein Konto: einen Namen mit öffentlichen Schlüsseln, ohne eigenes
+Geheimnis.
+Das Konto und der Eintrag im Register sind über denselben Schlüssel verbunden, eine Tabelle, die
+nur der Hub kennt, gibt es nicht.
+Für alles, was ein Repository ändert, zählt allein das Register.
+Das Konto braucht es nur oberhalb des Repositorys: um eines anzulegen, für einen Namespace und um
+ohne Eintrag im Register zu lesen.
+Ein Agent hat kein Konto.
+Er handelt in jedem Repository, dessen Register ihn nennt, und nirgends sonst; auch ein Lauf in
+der CI ist ein Agent mit einem Eintrag im Register.
+
+Ob ein Repository öffentlich ist, gilt je Repository, und die Voreinstellung ist privat.
+Ein öffentliches Repository wird ohne Anmeldung gelesen, ein privates von den Akteuren seines
+Registers und von den Konten, denen der Namespace das Lesen gewährt.
+Auf eine Anfrage ohne Leserecht antwortet ein privates Repository wie eines, das es nicht gibt.
+Schreiben ist immer angemeldet.
+Der Hub nimmt nur Repositories mit Register an: Der offene Modus bleibt ein lokaler Zustand, und
+der erste Push muss ein Register bringen, das den Schlüssel der Anfrage als Owner führt.
+
+\startinfobox
+{\bf Eine Anmeldung ersetzt nie einen Beweis.}
+Der Hub prüft dieselben Beweise mit der Operation des Kerns noch einmal und nimmt nichts an, nur
+weil der Absender angemeldet ist.
+Er darf mehr ablehnen als das Register, aber nie mehr erlauben.
+Er schreibt keine Identität in ein Register und signiert nie für einen Akteur.
+\type{op verify} kommt mit und ohne Hub zum selben Ergebnis, und ein übernommener Hub kann weder
+eine Freigabe noch einen Eintrag des Operation Log fälschen.
+\stopinfobox
+
+\section[sec:ref-update]{Ref-Update und Aufzeichnung}
+
+Lokal sagt das Operation Log, wer einen Zeiger bewegt hat.
+Dieses Log verlässt den Klon nicht (ADR-011).
+Für eine geteilte Referenz braucht es deshalb einen eigenen Beleg, den alle Leser prüfen können:
+das signierte Ref-Update und die Aufzeichnung, in die der Hub es einträgt.
+
+\subsection{Das Ref-Update}
+
+Ein Ref-Update ist ein Beweis mit eigenem Typ, signiert mit dem Schlüssel aus dem Register.
+Der signierte Text nennt die Adresse des Hubs, die ID, die der Hub dem Repository zugewiesen hat,
+den öffentlichen Schlüssel und je Referenz:
+
+\startitemize[packed]
+\item den Namen, \type{heads/<Name>} oder \type{tags/<Name>};
+\item \type{previous}, den Hash des letzten Eintrags der Aufzeichnung zu diesem Namen, oder
+\type{-} für einen Namen, den der Hub nie gesehen hat;
+\item \type{old} und \type{new}, je ein Commit oder \type{-}, sodass Anlegen und Löschen
+dasselbe Ref-Update sind;
+\item den Beleg, auf dem die Bewegung beruht: den Hash der Eröffnung eines Pull Requests, einer
+Purge-Erklärung oder eines Owner-Override, sonst \type{-}.
+\stopitemize
+
+Der Text enthält keine Zeit und keinen Namen des Akteurs.
+Der Akteur folgt aus Schlüssel und Register, und die Zeit setzt der Hub.
+Ein Ref-Update kann mehrere Referenzen unter einer Signatur tragen; der Hub bewegt dann alle
+oder keine.
+
+\type{previous} tritt an die Stelle des erwarteten Commits im Compare-and-Swap.
+Der Grund ist ein Fall, den der blosse Commit nicht unterscheidet: Eine Referenz geht von A nach
+B und zurück nach A.
+Ein altes, signiertes Ref-Update, das A erwartet, würde wieder passen und ein zweites Mal zählen.
+Die Einträge zu einem Namen bilden aber eine Kette, und nach zwei Bewegungen ist der letzte
+Eintrag ein anderer.
+Ein Ref-Update zählt deshalb genau einmal, und die Kette eines Namens überlebt auch sein Löschen.
+
+\subsection{Die Aufzeichnung}
+
+Die Aufzeichnung der Ref-Updates ist eine Hash-Kette über alle angenommenen Ref-Updates eines
+Repositorys, die der Hub allein schreibt.
+Ein Eintrag hat zwei Teile und eine Signatur.
+
+\startitemize[n]
+\item Der signierte Text des Akteurs, Byte für Byte wie empfangen.
+\item Die Zeilen des Hubs: eine laufende Nummer, die Zeit des Hubs, der Commit von \type{main},
+dessen Register er verwendet hat, die Commits der Policies, je Referenz die Angabe, ob die
+Bewegung ein Fast-Forward war, die Identität des Akteurs aus dem Register und der Hash des
+vorherigen Eintrags.
+\item Die Signatur des Hubs über den Hash des Eintrags.
+\stopitemize
+
+Der Hash eines Eintrags deckt beide Teile, die Signatur des Hubs steht ausserhalb.
+Die Kette legt die Reihenfolge über alle Referenzen fest, wie die Hash-Kette des Operation Log
+die Reihenfolge der Einträge festlegt (\in{Abschnitt}[sec:oplog-tip]).
+Ein Eintrag entsteht genau dann, wenn sich Referenzen bewegen, und er wird vor der ersten
+Bewegung geschrieben (Write-Ahead-Regel).
+Abgelehnte Anfragen stehen nicht darin; ein Absender kann die Aufzeichnung also nicht füllen.
+
+Die Antwort auf ein angenommenes Ref-Update ist der ganze Eintrag, die Quittung.
+Der Klon prüft, dass sie seinen Text unverändert enthält und vom Hub signiert ist,
+und bewegt erst dann seine Remote-Referenzen.
+Jeder, der das Repository lesen darf, kann die Aufzeichnung über das Protokoll lesen und
+nachrechnen.
+Sie hält keinen Commit am Leben: Ein umgeschriebener Verlauf kann den Hub verlassen, und ein
+Eintrag bleibt auch ohne seine Commits lesbar, weil der Hub bei der Annahme festhält, was sich
+später nicht mehr berechnen lässt.
+
+\subsection{Remote-Referenzen}
+
+Im Klon ist eine Remote-Referenz eine Datei unter \type{refs/remotes/<Remote>/heads/} oder
+\type{refs/remotes/<Remote>/tags/} mit zwei Zeilen: dem Commit und dem Eintrag der Aufzeichnung.
+Nur \type{fetch} und \type{push} bewegen sie, mit je einem Eintrag im Operation Log.
+Ein Fetch entfernt eine Remote-Referenz, die der Hub nicht mehr führt, im selben Eintrag;
+\type{op restore} bringt sie zurück.
+Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteht nur durch
+\type{tag} mit eigenem Eintrag.
+Remote-Referenzen sind Wurzeln der Erreichbarkeit.
+
+Ein veraltetes Ref-Update beantwortet der Hub mit dem Stand jeder betroffenen Referenz.
+Der Klon meldet das und wiederholt nicht von selbst: Er müsste neu signieren, und zuerst
+entscheidet der Akteur, ob er seinen Branch neu aufspielt oder einen Merge macht.
+
+\section[sec:hub-enforcement]{Durchsetzung auf dem Hub}
+
+Die lokale Durchsetzung hält einen Prozess nicht auf, der am Kern vorbei schreibt.
+Der Hub schliesst diese Lücke für alles, was geteilt wird: Eine Referenz bewegt sich dort nur
+mit einem signierten Ref-Update, und \type{main} nur, wenn das Merge-Gate
+(\in{Abschnitt}[sec:merge-gate]) noch einmal gerechnet hat.
+
+\subsection{Belege als signierte Erklärungen}
+
+In Phase 4 liegen Pull Request, Freigaben und Prüfergebnisse im Operation Log.
+Ein Hub sieht keinen Eintrag dieses Logs, denn es kann ein Geheimnis enthalten, bis ein Purge es
+entfernt.
+Die Belege bekommen deshalb eine eigene, tragbare Form: die signierte Erklärung.
+Die Eröffnung eines Pull Requests, eine Freigabe, ein Prüfergebnis, das Schliessen, ein
+Owner-Override und der Purge von \type{main} sind je ein Typ von Beweis.
+Eine Erklärung bindet das Repository, den Pull Request und die Commits, aber keine Nummer, keine
+Kette und keine Zeit eines Klons.
+
+Der Hash der signierten Eröffnung ist der Name des Pull Requests.
+Niemand vergibt ihn, er gilt in jedem Klon und auch ohne Hub, und ein übernommener Hub kann eine
+Freigabe nicht einem anderen Pull Request zuordnen.
+Die Erklärungen sind der Beleg, das Log hält die Handlung fest: Die Einträge \type{pr-open},
+\type{pr-approve} und \type{check} nennen den Hash der Erklärung, die sie erzeugt haben.
+Ein Klon und der Hub halten je eine Menge von Erklärungen und falten sie mit derselben Funktion.
+Ein Fetch bringt die Erklärungen offener Pull Requests in den Klon, sodass das lokale Gate gleich
+zählt wie der Hub.
+Diese Form ersetzt die Einträge aus Phase 4 als Quelle des Gates und kostet eine neue Version des
+Formats.
+
+Der Hub prüft eine eingereichte Erklärung nach den Regeln des lokalen Schreibers: Signatur und
+aktiver Schlüssel, eine Eröffnung nur durch den Schreibinhaber, eine Freigabe nur für den
+aktuellen Kopf und nie die eigene.
+Er fügt seine signierten Zeilen an, mit Nummer und Zeit, und liefert die Erklärung allen Lesern
+des Repositorys aus.
+
+\subsection{Wie sich main bewegt}
+
+Der Klon baut den Merge-Commit, und der Hub rechnet ihn nach.
+
+\startitemize[n]
+\item Das Gate läuft im Klon wie bisher und baut den Merge-Commit $M$ auf dem Stand $T$ von
+\type{main} auf dem Hub.
+\item Der Klon lädt die Objekte hoch und sendet ein Ref-Update von $T$ nach $M$, das den Pull
+Request nennt.
+\item Der Hub prüft: $M$ hat den einzigen Elternteil $T$, und sein Tree ist der saubere Merge des
+Kopfs auf $T$.
+\item Er berechnet die Risikostufe aus der Policy von $T$, aus den Pfaden der Änderung und aus
+der Eskalation bei abgeschwächten Tests (\in{Abschnitt}[sec:policy-file]).
+\item Er faltet die Erklärungen und zählt Freigaben und Prüfergebnisse gegen das Register von
+$T$.
+\item Er prüft die Schranken des Gates: die Pause bei roter Spitze, die Reservierung und das
+Fenster ungeprüfter Commits.
+\item Er schreibt den Eintrag der Aufzeichnung, bewegt \type{main} und antwortet mit der Quittung.
+\item Erst nach der Quittung bewegt der Klon sein eigenes \type{main}.
+\stopitemize
+
+Das Ref-Update nennt keine Stufe, und nichts, was der Absender behauptet, geht in das Urteil ein.
+Ein $M$, das die Policy ändert, wird nach der alten Policy beurteilt.
+Der Hub führt keinen Merge aus und erzeugt keinen Commit (ADR-015); er führt auch keinen fremden
+Code aus.
+Ein Prüfergebnis ist die Erklärung eines Akteurs aus dem Register, und niemand beweist den Lauf.
+
+Eine Ablehnung hinterlässt nur unbenannte Objekte und nichts, was zurückzunehmen wäre.
+Hat sich \type{main} inzwischen bewegt, holt der Befehl den neuen Stand, rechnet neu und signiert
+neu, eine begrenzte Zahl von Malen.
+Ohne Verbindung bleiben Commits, Branches, das Eröffnen eines Pull Requests, Freigaben und
+Prüfungen möglich; nur die Bewegung des geteilten \type{main} wartet auf den Hub.
+
+Der Zustand \quotation{offen, obwohl \type{main} die Änderung enthält}, den das lokale Gate
+reparieren muss (\in{Abschnitt}[sec:merge-gate]), entsteht auf dem Hub nicht.
+Der Zustand \type{merged} ist dort keine Erklärung: Er folgt aus dem Eintrag der Aufzeichnung,
+der den Pull Request nennt, und Bewegung und Merge sind ein Schritt unter einer Sperre.
+
+\subsection{Branches, Tags und Purge}
+
+Der Schreibinhaber eines ungeschützten Branch ist auf dem Hub der Akteur des letzten Eintrags der
+Aufzeichnung zu diesem Namen.
+Die Lease läuft ab der Zeit des Hubs in diesem Eintrag, mit der Dauer aus der Policy.
+Der Hub braucht dafür keinen eigenen Zustand, und jeder Leser kann es nachrechnen.
+Der Schreibinhaber darf seinen Branch beliebig bewegen; die Aufzeichnung hält fest, wenn eine
+Bewegung kein Fast-Forward war.
+Ein Owner-Override ist eine signierte Erklärung mit Begründung, die alle Leser sehen.
+
+Ein Tag wird nach derselben Regel gesetzt und gelöscht wie lokal.
+\type{main} bewegt sich sonst nur von $T$ nach $M$, mit einer Ausnahme: Für einen Purge legt ein
+menschlicher Owner nach dem Register von $T$ eine signierte Purge-Erklärung vor, mit alter
+Spitze, neuer Spitze und Begründung.
+Der Eintrag ist für alle Leser sichtbar, und Erklärungen über entfernte Commits zählen nicht
+mehr.
+
+\subsection{Garantien und Grenzen}
+
+Auf dem Hub gilt: Jede Bewegung einer Referenz ist von einem Schlüssel signiert, der im Register
+an der Spitze von \type{main} aktiv war, und jeder Commit von \type{main} hat das Gate bestanden,
+das der Hub selbst gerechnet hat.
+Eine Ablehnung nennt dem Absender den vollen Grund: die Rolle, den Inhaber der Lease, die
+berechnete Stufe, die gezählten und fehlenden Freigaben und Prüfergebnisse oder die Schranke.
+Sie verrät nichts, denn wer sie bekommt, darf lesen und könnte alles selbst berechnen.
+Ablehnungen stehen in keinem geteilten Format.
+Sichtbar ist, worauf das Urteil beruht: die Erklärungen, die Aufzeichnung und das Repository.
+
+\startinfobox
+{\bf Eine Operation, zwei Eingänge.}
+Der Kern nimmt ein Ref-Update (\type{accept_ref_update}) oder eine Erklärung
+(\type{accept_statement}) an und nimmt die Sperre der Referenzen selbst, wie das Gate.
+Vor der Sperre laufen nur reine Berechnungen über unveränderliche Objekte: Form und Signatur, der
+Tree-Merge, die Stufe.
+Unter der Sperre steht, was von veränderlichem Zustand abhängt: \type{previous}, der Zusammenhang
+der Objekte, Register, Erklärungen, Schranken, der Eintrag und die Bewegung.
+Der Upload läuft ohne Sperre.
+\stopinfobox
+
+\section[sec:hub-anchor]{Anker und der Schlüssel des Hubs}
+
+Signaturen verhindern nicht, dass jemand das Ende seines Operation Log abschneidet.
+Das findet nur ein Anker: Nummer und Hash eines Eintrags, aufbewahrt von jemandem, der die Kette
+nicht selbst schreibt (\in{Abschnitt}[sec:oplog-tip]).
+Bisher war das eine Kopie, die ein Mensch aufbewahrt.
+Mit dem Hub gibt es den Anker in beide Richtungen.
+
+Der Hub hat einen eigenen Ed25519-Schlüssel je Instanz.
+Er signiert damit nur seine eigenen Aussagen: jeden Eintrag der Aufzeichnung, seine Zeilen an
+einer Erklärung und die Bestätigung eines Ankers.
+Für einen Akteur spricht dieser Schlüssel nie.
+Ein Klon hält den Schlüssel beim ersten Kontakt in der Konfiguration des Remote fest und zeigt den
+Fingerabdruck; ein anderer Schlüssel ist später ein Fehler, den ein Mensch auflöst.
+Quittung und Bestätigung sind damit Beweise, die ein Klon prüft, ohne dem Transport zu vertrauen.
+Zwei signierte Einträge mit derselben Nummer und verschiedenen Hashes beweisen einen Hub, der
+seine Aufzeichnung umschreibt.
 
 \startitemize
-\item Übertragungsformat: Einzelobjekte oder Pakete mit Deltas?
-\item Authentifizierung für Menschen und Agenten.
-\item Peer-to-Peer-Sync nach dem Hub oder bewusst ausgeschlossen (ADR-003, stemma-hub)?
-\item Führt der Hub Merges für Agenten ohne Klon aus, wie Scion?
-Nach ADR-015 bleiben Commits und Merges beim ersten Hub lokal.
+\item Die Quittung ist ein Anker der Aufzeichnung, den der Klon hält und der Hub nicht ändern
+kann.
+\item Vom Operation Log bestätigt der Hub allein den Anker der Spitze.
+Der Klon sendet Nummer und Hash seines letzten Eintrags, signiert vom Akteur; der Hub bewahrt
+den Anker auf und antwortet mit einer signierten Bestätigung, die seine Zeit und die Nummer des
+letzten Eintrags der Aufzeichnung nennt.
 \stopitemize
+
+Der Hub sieht dabei keinen Eintrag und kein Geheimnis.
+Die Aussage aus ADR-011 lautet genauer: Ein Hub sieht nie einen Eintrag des Logs, er bestätigt
+Nummer und Hash der Spitze.
+Ein Push sendet den Anker nach der Quittung, als eigene Anfrage.
+Der Anker deckt so den Eintrag \type{push}, der die Quittung nennt, und Log und Aufzeichnung
+binden einander.
+Ein Log gehört zu einem \type{.stemma} und trägt eine zufällige Log-ID, denn ein Akteur kann zwei
+Klone mit demselben Schlüssel haben, und mehrere Akteure schreiben in ein Log.
+
+Einen widersprechenden Anker, dieselbe Nummer mit anderem Hash oder eine kleinere Nummer, hält
+der Hub als solchen fest, mit der Signatur des Akteurs als Beleg.
+Er bestätigt ihn nicht und blockiert nichts.
+Alle Leser des Repositorys sehen ihn; was daraus folgt, entscheiden Menschen.
+Ein wiederhergestelltes Backup hält so keinen Akteur auf, dessen Beweise gültig sind.
+
+\subsection{Die Ordnung über Klone hinweg}
+
+Das Register schreibt die Grenze eines ausgemusterten oder widerrufenen Schlüssels als Nummer des
+lokalen Logs (\in{Abschnitt}[sec:register]).
+Jeder Klon hat eigene Nummern, die Grenze gilt also nur in dem Log, das sie geschrieben hat.
+Über Klone hinweg gilt die Ordnung des Hubs.
+Ein Widerruf wirkt ab dem Eintrag der Aufzeichnung, der \type{main} auf den Commit mit dem
+Widerruf bewegt.
+Eine Erklärung liegt davor, wenn ihre Zeilen des Hubs eine kleinere Nummer nennen.
+Ein Eintrag im Log eines anderen Klons liegt nur dann davor, wenn ein Anker ihn deckt, dessen
+Bestätigung eine kleinere Nummer nennt.
+Der Hub entscheidet das mit Nummern unter einer Sperre und nie mit seiner Uhr.
+
+Eine Kopie der Policy hält der Hub nicht.
+Er liest sie aus dem Basis-Commit, wie der Kern es lokal tut; es gibt also nichts, was er
+signieren müsste.
+
+\section[sec:namespaces]{Namespaces}
+
+Ein Kurs braucht Regeln, die für alle Repositories der Studierenden gelten, und eine Lehrperson,
+die in jedem davon eingreifen darf.
+Dafür gibt es den Namespace: eine flache Gruppe von Repositories mit einer ID, einem Namen und
+genau einer Namespace-Policy.
+Eine Organisation, ein Kurs und ein Projekt sind dasselbe und kein eigener Typ.
+Die Adresse eines Repositorys hat immer zwei Teile, Namespace und Repository.
+
+Die Regeln eines Namespace liegen in einem eigenen Stemma-Repository, dem Namespace-Repository.
+Es enthält die Namespace-Policy als Datei und ein Register; dessen menschliche Owner sind die
+Owner des Namespace.
+Eine Änderung nimmt den gewöhnlichen Weg: ein Pull Request der Stufe 3, mit Erklärungen und einem
+Eintrag der Aufzeichnung.
+Ein Konto reserviert den Namen, und der Namespace entsteht mit dem ersten Push seines
+Namespace-Repositorys.
+
+Für ein Repository werden beide Policies ausgewertet, und die strengere zählt.
+Die annehmende Operation liest die Policy von $T$ und die Namespace-Policy an der Spitze von
+\type{main} des Namespace-Repositorys und nimmt je Änderung das Maximum: die Stufe über die
+berührten Pfade, die Zahl der Freigaben, die engeren Schranken.
+Eine Namespace-Policy kann deshalb nur anheben, und die Mindeststufen des Kerns bleiben, weil ein
+Maximum nie unter sie fällt.
+Die Datei der Namespace-Policy ist selbst immer Stufe 3.
+Ein Fetch bringt sie in den Klon, damit das lokale Gate zum selben Urteil kommt.
+
+Das Register bleibt die einzige Quelle der Rollen in einem Repository.
+Owner eines Namespace haben Rechte nur oberhalb des Repositorys: anlegen, umbenennen, löschen,
+Leser bestimmen.
+Die Namespace-Policy kann aber mit einer Zeile verlangen, dass das Register jedes Repositorys die
+Owner des Namespace als Owner führt.
+Der Hub lehnt dann einen ersten Push und jede Bewegung von \type{main} ab, deren Register sie
+nicht enthält.
+So kann ein Kurs den Owner-Override der Lehrperson garantieren, und \type{op verify} kommt ohne
+Hub zum selben Ergebnis, weil die Rolle im Register steht.
+
+\startitemize
+\item Ein Owner des Namespace gewährt einem Konto \type{create} (Repositories anlegen) oder
+\type{read} (alle privaten Repositories des Namespace lesen), mit einer signierten Erklärung.
+\item Wer ein Repository lesen darf, liest alle seine Branches und Tags, die Aufzeichnung, die
+Erklärungen und die Anker.
+\item Einen Owner-Override sehen die Leser des Repositorys.
+Dazu liefert der Hub je Namespace eine Liste aller Owner-Overrides, gefiltert auf das, was der
+Anfragende lesen darf: Die Lehrperson sieht den ganzen Kurs, Studierende sehen ihre eigenen
+Repositories.
+\item Ein Owner des Namespace kann ein Repository einfrieren.
+Der Hub lehnt dann jedes Ref-Update und jede Erklärung ab; das Lesen geht weiter.
+Zurücksetzen kann niemand: Der Hub würde sonst eine Bewegung erlauben, die das Register nicht
+deckt.
+\item Löschen geschieht in zwei Schritten, mit einer Frist, in der ein Owner des Namespace das
+Repository wiederherstellen kann.
+\stopitemize
+
+\startinfobox
+{\bf Namen und IDs.}
+Ein Name besteht aus \type{a-z}, \type{0-9} und dem Bindestrich, hat 1 bis 64 Zeichen und beginnt
+mit einem Buchstaben oder einer Ziffer.
+Die ID eines Repositorys sind 128 zufällige Bits, die der Hub beim Anlegen vergibt und nie
+wiederverwendet.
+Ein Ref-Update bindet die ID und nicht den Namen: Nach dem Umbenennen bleiben die Aufzeichnung
+und vorbereitete Ref-Updates gültig, und der alte Name antwortet mit dem neuen.
+\stopinfobox
+
+\section[sec:threat-model]{Was ein Hub nicht verhindert}
+
+Agenten laufen mit den Rechten ihres Menschen auf dessen Maschine.
+Ein bösartiger Prozess mit denselben Rechten des Betriebssystems erreicht alles, was dieser
+Benutzer erreicht: die Dateien des Repositorys samt \type{.stemma}, jede Schlüsseldatei und jeden
+\type{ssh-agent} des Benutzers, laufende Agenten, das Programm \type{stemma} und seine Anzeige.
+Nicht erreichbar sind der Hub und sein Schlüssel, Schlüssel auf anderen Maschinen und eine
+Signatur, die eine Berührung eines Hardware-Tokens braucht.
+\in{Tabelle}[tab:threats] ordnet ein, was der Hub gegen einen solchen Prozess ausrichtet.
+
+\startplacetable[title={Was der Hub gegen einen Prozess mit den Rechten des Akteurs ausrichtet},
+reference=tab:threats]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.2\textwidth] {\bf Wirkung} \stopxcell
+\startxcell {\bf Angriff} \stopxcell
+\stopxrow
+\startxrow
+\startxcell Verhindert \stopxcell
+\startxcell Eine Referenz, ein Objekt oder ein Eintrag, am Kern vorbei und ohne Schlüssel
+geschrieben, erreicht den Hub nie.
+Eine gefälschte Freigabe ohne Schlüssel ist kein Beweis.
+Die Aufzeichnung lässt sich nicht fälschen, weil der Prozess den Schlüssel des Hubs nicht
+erreicht und die Quittungen in den Klonen liegen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Sichtbar gemacht \stopxcell
+\startxcell Ein abgeschnittenes oder umgeschriebenes Operation Log zeigt sich als
+widersprechender Anker. \stopxcell
+\stopxrow
+\startxrow
+\startxcell Ohne Gewinn \stopxcell
+\startxcell Das Token sagt nur, welcher Schlüssel spricht. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell Offen \stopxcell
+\startxcell Der Prozess benutzt den Schlüssel des Akteurs.
+Für den Hub ist er dann der Akteur. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+Gegen den benutzten Schlüssel baut Phase 5 einen zweiten Schlüsseltyp und einen Bericht.
+Das Register nimmt neben Ed25519 den Hardware-Schlüssel an
+(\type{sk-ssh-ed25519@openssh.com}), und der Kern verlangt bei jeder Signatur eines solchen
+Schlüssels das Merkmal \quotation{Benutzer anwesend}, ohne Ausnahme nach Typ des Beweises.
+Der Schlüsseltyp ist freiwillig und im Register sichtbar: Jeder Leser sieht, welcher Owner wie
+geschützt ist.
+Der Preis ist eine Berührung je Signatur.
+Ein Push eines Menschen mit Hardware-Schlüssel kostet drei, für die Anmeldung, das Ref-Update und
+den Anker; ein Fetch eines privaten Repositorys kostet eine.
+Wer oft pusht, tut es als Agent mit einem Schlüssel in einer Datei, und der Mensch mit dem
+Hardware-Schlüssel gibt frei und führt die Handlungen der Stufe 3 aus.
+
+Der Bericht ist ein Befehl, der aus der Aufzeichnung und den Erklärungen zusammenstellt, was ein
+Schlüssel in einem Bereich von Nummern getan hat: welche Referenzen er bewegt hat, welche
+Erklärungen von ihm stammen und welche Merges nach \type{main} darauf beruhten.
+Nach einem Diebstahl wirkt der Widerruf ab dem Eintrag, der \type{main} auf ihn bewegt, und die
+Freigaben des Schlüssels verfallen.
+Das Aufräumen bleibt bei den Menschen, mit einem Revert oder einem Purge.
+
+\startwarnbox
+{\bf Grenzen, die bleiben.}
+\startitemize[packed]
+\item Ein Schlüssel als Datei oder in einem \type{ssh-agent} ist der Akteur für jeden Prozess des
+Benutzers.
+Eine Passphrase schützt nur die ruhende Datei, und kein Prüfer sieht sie.
+\item Die Schlüssel mehrerer Akteure unter einem Benutzer fallen zusammen.
+Ein Prozess mit den Schlüsseln zweier Agenten eröffnet mit dem einen und gibt mit dem anderen
+frei; er bringt eine Änderung der Stufe 0 oder 1 allein nach \type{main}.
+Sichtbar bleibt es in der Aufzeichnung und den Erklärungen.
+\item Das Programm und seine Anzeige liegen in Reichweite: Einem Menschen kann das eine gezeigt
+und das andere zur Signatur vorgelegt werden.
+\item Ein Klon kann seine Konfiguration nicht vor seinem Benutzer schützen.
+Nach einer Kompromittierung führt der Weg zurück über einen frischen Klon,
+der mit der Aufzeichnung verglichen wird.
+\item Ein gestohlener Schlüssel eines Owners ohne Hardware-Token übernimmt das Register und damit
+die Regeln des Repositorys auf dem Hub.
+Die Übernahme bleibt sichtbar, und kein Klon verliert seine Objekte.
+Der Weg zurück liegt oberhalb des Repositorys: Der Betreiber sperrt den Schlüssel, und ein Owner
+des Namespace friert das Repository ein.
+\stopitemize
+\stopwarnbox
+
+Daraus folgen Empfehlungen: ein Hardware-Schlüssel für jeden Owner, zwei Owner-Schlüssel an
+getrennten Orten, und die Schlüssel von Agenten getrennt von denen des Menschen, unter einem
+eigenen Benutzer des Betriebssystems oder als Geheimnis der CI.
+Eine Passphrase und \type{ssh-add -c} sind sinnvoll, beweisen aber niemandem etwas.
+
+\section[sec:no-peer]{Zwei Klone ohne Hub}
+
+Register und Signaturen liegen im Repository, deshalb prüft jeder Klon einen einzelnen Beweis
+ohne Hub.
+Die Durchsetzung auf einem geteilten Branch braucht zusätzlich eine Ordnung, die jemand schreibt,
+der nicht der Akteur ist: für das Ausmustern eines Schlüssels, die Schranken des Gates, die
+Schreibhoheit und die Namespace-Policy im Augenblick eines Merges.
+Zwei Klone haben je ein Log mit eigenen Nummern und je ein eigenes \type{main}.
+Ein Klon, der die Ordnung für andere festlegt, wäre ein Hub unter anderem Namen.
+
+Ein Klon ist deshalb nie die Autorität über einen geteilten Branch und nimmt nie einen Push an.
+Zwei Klone lesen voneinander; geschrieben wird auf einen Hub.
+Der Transport von Objekten und Erklärungen zwischen Klonen bleibt möglich, weil Objekte über
+ihren Hash adressiert sind und Erklärungen ohne Hub gültig sind.
+Gebaut wird er nicht; der Auslöser wäre ein Austausch ohne erreichbaren Hub, etwa in einem
+Schulnetz ohne Internet.
+Auch dann wäre der andere Klon nur ein Bote: Nichts von ihm zählt, bevor der Hub es hat.
+
+Im offenen Modus arbeitet man allein; das Teilen beginnt mit dem Register.
+Wer ohne den zentralen Hub arbeiten will, braucht einen eigenen Hub.
+Die Autorität ist eine Rolle und kein bestimmter Server: Ein Klon kennt einen Hub an seiner
+Adresse und seinem Schlüssel, und ein neues Repository auf einem Hub entsteht jederzeit aus einem
+sauberen Klon.
+Geht ein Hub verloren, geht die Aufzeichnung verloren und kein Objekt.
+
+\section[sec:phase5-open]{Offene Fragen}
+
+\startitemize
+\item Die Befehle: Namen, Optionen und Exit-Codes von \type{remote}, \type{clone}, \type{fetch}
+und \type{push}, der Befehle für Erklärungen und Anker und der Befehle eines Namespace.
+Jeder Teil entsteht mit seiner Umsetzung (\in{Kapitel}[chap:cli]).
+\item Purge auf dem Hub: Die Regel der Annahme steht.
+Offen ist, wie Klone einem \type{main} folgen, das ein Purge auf dem Hub umgeschrieben hat, wie
+ein Purge
+Remote-Referenzen behandelt und was aus den Erklärungen eines Klons über entfernte Commits wird
+(ADR-014).
+\item Messung: Die Schwellen für ein Pack-Format, die Haltezeit der Sperre der Referenzen auf dem
+Hub und die Zahl der Wiederholungen eines Merges wegen \type{Stale} sind nicht gemessen
+(ADR-015, ADR-023).
+\item Einträge aus der Zeit vor der Hash-Kette des Operation Log deckt kein Anker des Hubs.
+\item Ein Repository kann seinen Namespace nicht wechseln.
+\item Wie eine Änderung der Stufe 3 in einem Namespace-Repository mit einem einzigen menschlichen
+Owner freigegeben wird, etwa in einem Kurs mit einer Lehrperson.
+\item Strengere Mindeststufen für Firmenkunden bleiben ausserhalb des Umfangs; ADR-027 hält fest,
+was das Modell dafür offen lässt.
+\item Ob und wie der Hub an Dritte weitergegeben wird.
+Davon hängt ab, was \quotation{ein eigener Hub} für sie bedeutet.
+\stopitemize
+
+Commits und Merges auf dem Hub für Agenten ohne Klon baut Phase 5 nicht; die Richtung dafür steht
+in \in{Kapitel}[chap:phase6].
