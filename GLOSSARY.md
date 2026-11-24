@@ -6,6 +6,9 @@ every change to its pointers, together with the actor who made it.
 Each term names the German word that the book uses in parentheses. The book's terminology table
 in `docs/agents/book-style.md` lists the same pairs.
 
+What an entry says about a hub, a remote, a namespace, or "from phase 5 on" is decided
+(ADR-022 to ADR-027) and not implemented yet.
+
 ## Content and history
 
 **Object**:
@@ -417,7 +420,8 @@ The terms of this section, and the token key above, belong to phase 5. They are 
 ADR-022 to ADR-027 and not implemented yet.
 
 **Clone**:
-A repository with a working copy and the full object store that knows a remote. (Klon)
+A repository on the machine of an actor, with the full object store and a working copy
+(ADR-015). It may know a remote. (Klon)
 
 **Hub**:
 A server that stores repositories and enforces their rules in addition to the local enforcement.
@@ -507,9 +511,10 @@ function (ADR-025). (signierte Erklärung)
 _Avoid_: Claim, attestation
 
 **Lines of the hub**:
-What a hub adds to a record entry or a statement when it accepts it, signed with the key of the
-hub: a running number, its time and the register commit, and for a statement the number of the
-last record entry. (Zeilen des Hubs)
+What a hub adds when it accepts something, signed with the key of the hub. For a record entry: a
+running number, its time, the register commit, the policy commits, whether each move was a
+fast-forward, the actor, and the hash of the previous entry. For a statement: a running number,
+its time, the register commit, and the number of the last record entry. (Zeilen des Hubs)
 
 **Order of the hub**:
 The order that the numbers in the lines of the hub fix across clones. A revocation acts from the

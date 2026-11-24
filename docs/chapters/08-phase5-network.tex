@@ -378,8 +378,10 @@ entscheidet der Akteur, ob er seinen Branch neu aufspielt oder einen Merge macht
 
 Die lokale Durchsetzung hält einen Prozess nicht auf, der am Kern vorbei schreibt.
 Der Hub schliesst diese Lücke für alles, was geteilt wird: Eine Referenz bewegt sich dort nur
-mit einem signierten Ref-Update, und \type{main} nur, wenn das Merge-Gate
-(\in{Abschnitt}[sec:merge-gate]) noch einmal gerechnet hat.
+mit einem signierten Ref-Update, und \type{main} bis auf zwei Ausnahmen nur, wenn das
+Merge-Gate (\in{Abschnitt}[sec:merge-gate]) noch einmal gerechnet hat.
+Die Ausnahmen sind der erste Push und der Purge; sie stehen bei den Garantien am Ende des
+Abschnitts.
 
 \subsection{Belege als signierte Erklärungen}
 
@@ -406,8 +408,8 @@ Formats.
 Der Hub prüft eine eingereichte Erklärung nach den Regeln des lokalen Schreibers: Signatur und
 aktiver Schlüssel, eine Eröffnung nur durch den Schreibinhaber, eine Freigabe nur für den
 aktuellen Kopf und nie die eigene.
-Er fügt seine signierten Zeilen an, mit Nummer und Zeit, und liefert die Erklärung allen Lesern
-des Repositorys aus.
+Er fügt seine signierten Zeilen an, mit einer laufenden Nummer, der Zeit und der Nummer des
+letzten Eintrags der Aufzeichnung, und liefert die Erklärung allen Lesern des Repositorys aus.
 
 \subsection{Wie sich main bewegt}
 
@@ -600,14 +602,15 @@ Der Hub lehnt dann jedes Ref-Update und jede Erklärung ab; das Lesen geht weite
 Zurücksetzen kann es keine Rolle des Namespace: Der Hub würde sonst eine Bewegung erlauben, die
 das Register nicht deckt.
 Der Weg zurück sind gewöhnliche Beweise, ein Widerruf und ein Revert oder ein Purge.
-\item Löschen geschieht in zwei Schritten, mit einer Frist, in der ein Owner des Namespace das
-Repository wiederherstellen kann.
+\item Löschen geschieht in zwei Schritten: Nach der signierten Erklärung eines Owners des
+Namespace liefert der Hub das Repository nicht mehr aus, und erst nach einer Frist, in der ein
+Owner es wiederherstellen kann, wird es entfernt.
 \stopitemize
 
 \startinfobox
 {\bf Namen und IDs.}
-Ein Name besteht aus \type{a-z}, \type{0-9} und dem Bindestrich, hat 1 bis 64 Zeichen und beginnt
-mit einem Buchstaben oder einer Ziffer.
+Ein Name besteht aus \type{a-z}, \type{0-9} und dem Bindestrich im Innern, hat 1 bis 64 Zeichen
+und beginnt mit einem Buchstaben oder einer Ziffer.
 Die ID eines Repositorys sind 128 zufällige Bits, die der Hub beim Anlegen vergibt und nie
 wiederverwendet.
 Ein Ref-Update bindet die ID und nicht den Namen: Nach dem Umbenennen bleiben die Aufzeichnung

@@ -128,9 +128,9 @@ holds only in the log that wrote it.
 - A log entry of another clone stands before the revocation only if an anchor covers it whose
   confirmation names a smaller record number; otherwise it counts as after it. The confirmation of
   an anchor is therefore made under the same lock as a ref update.
-- The number in the register counts only in the log that wrote it and names the ID of that log
-  from now on, a change of the register format. In every other log the bound is the `fetch` entry
-  that brought the register commit.
+- The number in the register counts only in the log that wrote it and names the ID of that log from
+  now on, a change of the register format and so a level 3 change. In every other log the bound is
+  the `fetch` entry that brought the register commit.
 
 Rejected: the record alone (log entries of other clones would have no order), and the time of the
 hub (a clock would decide whether a proof counts).

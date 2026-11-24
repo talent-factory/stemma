@@ -3,7 +3,8 @@
 **Status:** Accepted. The decisions marked *(confirmed)* were agreed with the author on
 2026-10-23 (STEMMA-17). The open items at the end are questions for later phases; none of them
 changes a decision above. The decisions of phase 5 on merges on the hub (STEMMA-278) and on the
-lock on the hub (STEMMA-272, STEMMA-273) were added on 2026-11-24.
+lock on the hub (STEMMA-272, STEMMA-273) were added on 2026-11-24; nothing of them is measured
+or implemented yet.
 
 ## Context
 
@@ -93,10 +94,10 @@ objects, because objects are content-addressed (ADR-007), but a second writer fa
 `Locked` while the first one runs. At the target scale, with one writer per clone, this is
 acceptable. Commits without a global lock, with the move of a reference as the only serialized
 step, as in Scion, are a goal for the hub, where many actors write to one repository
-(STEMMA-19). Phase 5 reaches the goal for the hub without rebuilding the lock (STEMMA-272,
-STEMMA-273): the upload of objects runs without the lock, and `refs.lock` covers the ref update
-only, that is the connectivity check, the accepting operation, the record entry and the
-compare-and-swap (ADR-025). No finer lock and no ref update without a lock is built.
+(STEMMA-19). Phase 5 is decided to reach the goal for the hub without rebuilding the lock
+(STEMMA-272, STEMMA-273; not implemented yet): the upload of objects runs without the lock, and
+`refs.lock` covers the ref update only, that is the connectivity check, the accepting operation,
+the record entry and the compare-and-swap (ADR-025). No finer lock and no ref update without a lock is built.
 
 ### Rejected for now *(confirmed)*
 

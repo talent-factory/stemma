@@ -41,7 +41,7 @@ Rejected: `ruzstd` and `flate2`, for the reasons above.
 
 ## Consequences
 
-- The build of `stemma-remote` compiles C code and needs a C compiler. The core does not.
+- The build of `stemma-remote` compiles the C library of zstd. The core gets no new C code.
 - The compression is no part of a format. Neither an object ID nor a stored byte depends on it,
   so the crate can be replaced without a new protocol number.
 - A decoder is a parser of foreign bytes written in C. The bound of the window and the bounds for

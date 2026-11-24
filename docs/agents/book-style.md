@@ -208,7 +208,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Akteur | Benutzer, Nutzer | The one who runs a command; \quotation{Benutzer} only for the user of the operating system |
 | Seite (eines Merges) | Zweig | One of the two commits that a merge joins |
 | Git | git (lower case, except in a command) | The version control system |
-| Klon | Kopie, Checkout (for a clone) | A repository with a working copy and the full object store that knows a remote |
+| Klon | Kopie, Checkout (for a clone) | A repository on the machine of an actor, with the full object store and a working copy (ADR-015); it may know a remote |
 | Hub | Server (for the role), Origin | The server that stores repositories and enforces their rules in addition to the local enforcement; known by its address and its key |
 | das Remote | die Remote, Gegenstelle | A repository on a hub as a clone knows it: name, address, repository ID, pinned key (ADR-022) |
 | Remote-Referenz | Remote-Branch, Tracking-Branch | The state of a branch or tag on the hub as the clone last saw it (ADR-008) |
@@ -226,7 +226,9 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Eintrag der Aufzeichnung | Record-Eintrag | One entry of the record: the signed text of the actor, the lines of the hub, and the signature of the hub (ADR-025) |
 | Quittung | Bestätigung (that is the answer to an anchor) | The record entry that the hub returns for an accepted ref update (ADR-025) |
 | signierte Erklärung, Erklärung | Statement, Aussage (for the proof type) | A signed proof that binds a repository and not the log of a clone: opening, approval, check result, closing, owner override, purge (ADR-025) |
-| Zeilen des Hubs | | What the hub adds to a record entry or a statement: number, time, register and policy commits, signed (ADR-025) |
+| Zeilen des Hubs | | What the hub adds, signed, to a record entry (number, time, register and policy commits) or to a statement (number, time, register commit, number of the last record entry) (ADR-025) |
+| Namespace | Organisation, Gruppe (as a type) | A flat group of repositories on a hub with an ID, a name and one namespace policy (ADR-027) |
+| Transport (`Transport`) | | The interface of the core through which `fetch` and `push` exchange messages; pure I/O (ADR-022) |
 | Ordnung des Hubs | Reihenfolge des Servers | The order that the numbers in the lines of the hub fix across clones (ADR-026) |
 | annehmende Operation | Annahme-Operation | The operation of the core that judges a ref update or a statement on a bare repository (ADR-025) |
 | Schlüssel des Hubs | Server-Schlüssel | The one Ed25519 key of a hub instance, pinned in the remote (ADR-026) |

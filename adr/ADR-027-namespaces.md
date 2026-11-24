@@ -177,7 +177,7 @@ break (point 9 of the hand-over in ADR-003, which stays out of scope):
 1. The combination is the maximum over any number of policies of the same format, not a special
    rule for exactly two.
 2. The lines of the hub in the record name the commits of the policies as a list, today with one
-   entry beside the policy of the repository.
+   entry.
 3. Every further policy is again content of a Stemma repository with a register and level 3, never
    a setting of an operator.
 

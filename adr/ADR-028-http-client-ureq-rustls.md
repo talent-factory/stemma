@@ -17,8 +17,8 @@ is mandatory towards a hub (ADR-024).
 Candidates on the client side (research note of STEMMA-268):
 
 - **`ureq` 3.5** uses blocking I/O without a runtime, declares `#![forbid(unsafe_code)]`, speaks
-  HTTP/1.1 only, and gives bodies as `Read` in both directions. MSRV 1.85. A client with rustls
-  adds 24 to 27 package names to `Cargo.lock`.
+  HTTP/1.1 only, and gives bodies as `Read` in both directions. MSRV 1.85. A client with TLS
+  adds 24 package names to `Cargo.lock` with rustls and 27 with `native-tls`.
 - **`reqwest`** is async on `tokio` and `hyper`. Its feature `blocking` keeps the signatures
   synchronous but brings `tokio` into the tree: 86 to 131 new packages, a hidden runtime with a
   thread per client, and a default timeout of 30 seconds over the whole body.
@@ -71,11 +71,10 @@ Rejected:
 
 ## Consequences
 
-- The lockfile grows by about 25 package names.
+- The lockfile grows by 24 package names, by the count of the research note.
 - A flaw in rustls, `ring` or the compiled-in roots is a flaw in the confidentiality of a transfer
   and of the token. It is no flaw in a proof: receipts, confirmations and statements are signed
   and checked without trusting TLS (ADR-026).
-- The roots are compiled in, so a removed root reaches a user with a new release only.
 - A hub terminates TLS as it chooses. How the hub of stemma-hub does it is decided there.
 
 ## Open Points

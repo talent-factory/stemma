@@ -49,7 +49,8 @@ with their ADR; they were carried in by STEMMA-280 and are not implemented yet.
    delete or hide, with a derived list per namespace (ADR-025, ADR-027).
 10. Relaxing or deleting existing assertions automatically escalates to level 2. The rule is a
     pure function over the old and the new blob (STEMMA-232, STEMMA-248); the gate of stemma-hub
-    enforces it by recomputing the level from the policy of the base commit (ADR-025). It reads `.rs` files with `syn` and the `[lints]` tables of `Cargo.toml`, and
+    enforces it by recomputing the level from the policy of the base commit (ADR-025). It reads
+    `.rs` files with `syn` and the `[lints]` tables of `Cargo.toml`, and
     knows seven signals: fewer `assert*!` calls in a function, `assert*!` turned into
     `debug_assert*!`, a `#[test]` function that disappears (the same body under a new name is a
     rename), `#[ignore]` or `#[should_panic]` added or its `expected` dropped, `#[cfg(...)]` added

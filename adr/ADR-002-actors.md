@@ -14,7 +14,8 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   `--apply` and `op restore --dry-run` have an actor and call the hook. The commands that only
   read (`log`, `op log`, `op verify`, the list forms of `branch` and `tag`, and
   `worktree list`) have no actor and call no hook. Locally nobody checks who reads a
-  repository; on a hub reading is per repository and decided in ADR-024 and ADR-027. Objects stored directly through
+  repository; on a hub reading is per repository and decided in ADR-024 and ADR-027. Objects
+  stored directly through
   `Repository::objects()` are not authorized; no command does that (ADR-007, ADR-009).
 - **A write cannot start without the answer of the authorizer** *(confirmed)*. The answer is a
   value, `Allowed`, which only a `Decision::Allow` can make: its field is private to the module

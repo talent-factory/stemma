@@ -65,11 +65,11 @@ dependency.
 - One operation of the core accepts a ref update and fixes the order of the checks (authorizer,
   policy, escalation, gate rule), the same locally and on the hub. The hub supplies the evidence
   and applies the result; it composes no checks itself. The operation is described in ADR-025.
-- Callable without a working copy, `HEAD` and index: the authorizer against the register of the
-  base commit; the policy of the base commit and the level of a change (`policy_at` becomes
-  reachable); the escalation when tests are weakened; write ownership and lease; the rule table
-  and the bounds of the gate with the count of approvals; the verification of received objects,
-  references and signatures.
+- Callable without a working copy, `HEAD` and index: the authorizer against the register of a
+  commit (on a hub the register at the tip of `main`, ADR-024 and ADR-025); the policy of the base
+  commit and the level of a change (`policy_at` becomes reachable); the escalation when tests are
+  weakened; write ownership and lease; the rule table and the bounds of the gate with the count of
+  approvals; the verification of received objects, references and signatures.
 - Not needed on the hub: `snapshot`, `track`, `status`, `checkout`, `switch`, `restore`,
   `worktree`, `rebase`, `follow_main`.
 - `ObjectStore` and `RefStore` stay sealed. The store of the hub is therefore a Stemma layout per
