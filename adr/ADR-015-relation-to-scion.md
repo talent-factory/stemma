@@ -62,7 +62,7 @@ The first hub of Phase 5 stores objects and references and enforces permissions 
 the write ownership of branches (ADR-004). Commits and merges stay local: a clone builds the
 merge commit, and the hub checks it again with the accepting operation of the core (ADR-025).
 Commits and merges on the server, for agents that work without a clone as in Scion, are not
-built in Phase 5; they come in Phase 6, together with API parity (STEMMA-278). If they come, the
+built in Phase 5; they come in Phase 6, together with API parity (STEMMA-278). When they come, the
 hub runs the same operations of the core as the CLI; there is no second implementation of a
 merge. "The same operations of the core" means the pure functions of the tree merge and of the
 verdict of the gate. The hub creates no commit: it computes and delivers, and the actor composes

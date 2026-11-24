@@ -279,10 +279,10 @@ A fetch also reads the statements of open pull requests (ADR-025) and the namesp
 
 ### No cache in the first version
 
-A public repository is read with the same two requests as a private one, without a token; there
-is no second way of delivery. A later cache works on the clone, not on the object: a new GET
-endpoint with a precomputed stream, followed by an ordinary fetch, as a new protocol number that
-changes no existing request.
+A public repository is read with the same two requests as a private one (the list of references
+and the fetch), without the sign-in and without a token; there is no second way of delivery. A
+later cache works on the clone, not on the object: a new GET endpoint with a precomputed stream,
+followed by an ordinary fetch, as a new protocol number that changes no existing request.
 
 Rejected: a static endpoint per object, a precomputed clone stream now, and a clone as a GET with
 `Cache-Control: public` (the hub cannot call a stored entry back, so a repository that became

@@ -226,7 +226,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Eintrag der Aufzeichnung | Record-Eintrag | One entry of the record: the signed text of the actor, the lines of the hub, and the signature of the hub (ADR-025) |
 | Quittung | Bestätigung (that is the answer to an anchor) | The record entry that the hub returns for an accepted ref update (ADR-025) |
 | signierte Erklärung, Erklärung | Statement, Aussage (for the proof type) | A signed proof that binds a repository and not the log of a clone: opening, approval, check result, closing, owner override, purge (ADR-025) |
-| Zeilen des Hubs | | What the hub adds, signed, to a record entry (number, time, register and policy commits) or to a statement (number, time, register commit, number of the last record entry) (ADR-025) |
+| Zeilen des Hubs | | What the hub adds, signed, to a record entry (number, time, register and policy commits, fast-forward per reference, actor, hash of the previous entry) or to a statement (number, time, register commit, number of the last record entry) (ADR-025) |
 | Namespace | Organisation, Gruppe (as a type) | A flat group of repositories on a hub with an ID, a name and one namespace policy (ADR-027) |
 | Transport (`Transport`) | | The interface of the core through which `fetch` and `push` exchange messages; pure I/O (ADR-022) |
 | Ordnung des Hubs | Reihenfolge des Servers | The order that the numbers in the lines of the hub fix across clones (ADR-026) |

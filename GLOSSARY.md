@@ -526,8 +526,9 @@ The operation of the core that judges a ref update or a statement on a bare repo
 the order of the checks, so that a hub composes none itself (ADR-025). (annehmende Operation)
 
 **Key of the hub**:
-The one Ed25519 key of a hub instance. It signs the statements of the hub only, never for an
-actor; a clone pins it in the configuration of the remote (ADR-026). (Schlüssel des Hubs)
+The one Ed25519 key of a hub instance. It signs only what the hub itself says (record entries,
+the lines of the hub, confirmations of an anchor), never for an actor; a clone pins it in the
+configuration of the remote (ADR-026). (Schlüssel des Hubs)
 
 **Confirmation (of an anchor)**:
 The signed answer of a hub to an anchor of an operation log; it names the time of the hub and the

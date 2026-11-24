@@ -248,7 +248,7 @@ zuordnet (\in{Abschnitt}[sec:signatures]).
 Die Anmeldung am Hub verwendet denselben Schlüssel und führt kein zweites Geheimnis ein.
 
 \startitemize[n]
-\item Der Hub gibt eine Challenge aus, einen einmaligen Wert (Nonce).
+\item Der Hub gibt eine Challenge aus, einen Wert (Nonce), den er nur für Sekunden annimmt.
 \item Der Schlüssel signiert sie, einmal je Befehl.
 Die Signatur ist ein eigener Typ von Beweis und bindet die Adresse des Hubs, wie der Klon sie
 aufruft, die Challenge und den Schlüssel.
@@ -408,8 +408,9 @@ Formats.
 Der Hub prüft eine eingereichte Erklärung nach den Regeln des lokalen Schreibers: Signatur und
 aktiver Schlüssel, eine Eröffnung nur durch den Schreibinhaber, eine Freigabe nur für den
 aktuellen Kopf und nie die eigene.
-Er fügt seine signierten Zeilen an, mit einer laufenden Nummer, der Zeit und der Nummer des
-letzten Eintrags der Aufzeichnung, und liefert die Erklärung allen Lesern des Repositorys aus.
+Er fügt seine signierten Zeilen an, mit einer laufenden Nummer, der Zeit, dem Commit des
+Registers und der Nummer des letzten Eintrags der Aufzeichnung,
+und liefert die Erklärung allen Lesern des Repositorys aus.
 
 \subsection{Wie sich main bewegt}
 
@@ -462,9 +463,9 @@ Bewegung kein Fast-Forward war.
 Ein Owner-Override ist eine signierte Erklärung mit Begründung, die alle Leser sehen.
 
 Ein Tag wird nach derselben Regel gesetzt und gelöscht wie lokal.
-\type{main} bewegt sich sonst nur von $T$ nach $M$, mit einer Ausnahme: Für einen Purge legt ein
-menschlicher Owner nach dem Register von $T$ eine signierte Purge-Erklärung vor, mit alter
-Spitze, neuer Spitze und Begründung.
+\type{main} bewegt sich nach dem ersten Push nur von $T$ nach $M$, mit einer Ausnahme:
+Für einen Purge legt ein menschlicher Owner nach dem Register von $T$ eine signierte
+Purge-Erklärung vor, mit alter Spitze, neuer Spitze und Begründung.
 Der Eintrag ist für alle Leser sichtbar, und Erklärungen über entfernte Commits zählen nicht
 mehr.
 
@@ -484,8 +485,9 @@ Sichtbar ist, worauf das Urteil beruht: die Erklärungen, die Aufzeichnung und d
 
 \startinfobox
 {\bf Eine Operation, zwei Eingänge.}
-Der Kern nimmt ein Ref-Update (\type{accept_ref_update}) oder eine Erklärung
-(\type{accept_statement}) an und nimmt die Sperre der Referenzen selbst, wie das Gate.
+Der Kern nimmt ein Ref-Update oder eine Erklärung an und nimmt die Sperre der Referenzen dabei
+selbst, wie das Gate.
+Die beiden Eingänge heissen \type{accept_ref_update} und \type{accept_statement}.
 Vor der Sperre laufen nur reine Berechnungen über unveränderliche Objekte: Form und Signatur, der
 Tree-Merge, die Stufe.
 Unter der Sperre steht, was von veränderlichem Zustand abhängt: \type{previous}, der Zusammenhang
@@ -694,8 +696,8 @@ und das andere zur Signatur vorgelegt werden.
 \item Ein Klon kann seine Konfiguration nicht vor seinem Benutzer schützen.
 Nach einer Kompromittierung führt der Weg zurück über einen frischen Klon,
 der mit der Aufzeichnung verglichen wird.
-\item Ein gestohlener Schlüssel eines Owners ohne Hardware-Token übernimmt das Register und damit
-die Regeln des Repositorys auf dem Hub.
+\item Mit dem gestohlenen Schlüssel eines Owners ohne Hardware-Token übernimmt ein Prozess das
+Register und damit die Regeln des Repositorys auf dem Hub.
 Die Übernahme bleibt sichtbar, und kein Klon verliert seine Objekte.
 Der Weg zurück liegt oberhalb des Repositorys: Der Betreiber sperrt den Schlüssel, und ein Owner
 des Namespace friert das Repository ein.

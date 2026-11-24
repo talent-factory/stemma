@@ -1,7 +1,7 @@
 # ADR-022: Remotes and the split between stemma and stemma-hub
 
-**Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-269) and carried
-into the ADRs by STEMMA-280. Nothing of it is implemented yet; the slices are children of
+**Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-269) and, for the
+properties that must stay, on 2026-11-24 (STEMMA-277), and carried into the ADRs by STEMMA-280. Nothing of it is implemented yet; the slices are children of
 STEMMA-15.
 
 ## Context

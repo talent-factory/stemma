@@ -198,11 +198,11 @@ that is taken back after a refusal.
   readers of the repository (rule 9 of ADR-004, ADR-027).
 - The write owner may make any move on an unprotected branch, and the record says that it was no
   fast-forward (the way of ADR-019 for a rebase).
-- `main` otherwise moves from `T` to `M` only. The one exception is the purge: a human owner by the
-  register of `T` presents, with the ref update, a signed purge statement (the old tip, the new
-  tip, a reason), and the new history must carry a register that holds this owner. The hub applies
-  no gate, the entry is visible to all readers, and statements about removed commits no longer
-  count (ADR-014).
+- After the first push (ADR-024), `main` moves from `T` to `M` only. The one exception is the
+  purge: a human owner by the register of `T` presents, with the ref update, a signed purge
+  statement (the old tip, the new tip, a reason), and the new history must carry a register that
+  holds this owner. The hub applies no gate, the entry is visible to all readers, and statements
+  about removed commits no longer count (ADR-014).
 - A tag is set and deleted by the same rule as locally: the authorizer grants `tag` or `untag` by
   the register at the tip of `main`. The chain of the name survives the deletion, so the record
   shows that a tag was deleted and set again.
