@@ -152,22 +152,84 @@ const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 /// The messages of the protocol (ADR-023): the list of references, the fetch request, the error,
 /// and the object stream (`stemma_core::protocol`). The input is given to each of the four
 /// readers, because a message does not name its type and each reader must refuse the messages of
-/// the others. A reader that accepts the input writes it back unchanged.
+/// the others. A reader that accepts the input writes it back unchanged, and the value it read is
+/// one that the constructors build. A refusal of a small message is answered with an error
+/// message that is read back.
 pub fn protocol(input: &[u8]) {
     use crate::protocol::{
-        ErrorMessage, FetchRequest, ObjectStreamReader, ObjectStreamWriter, RefList,
+        ErrorMessage, FetchRequest, FormerKey, ObjectStreamReader, ObjectStreamWriter, ParseError,
+        Reason, RefList, Spoken,
     };
+    // A refusal is answered with a message that the reader of the error accepts.
+    let check_refusal = |error: &ParseError| {
+        check_rejection(error);
+        let answer = ErrorMessage::from(error);
+        assert_eq!(
+            ErrorMessage::parse(&answer.encode()).as_ref(),
+            Ok(&answer),
+            "the answer to a refusal is not read"
+        );
+    };
+    // An accepted message is also what the constructors accept: the reader builds its values
+    // itself, so the round trip alone would not see a reader that takes an order, a range, or a
+    // reason that the writer refuses.
     match RefList::parse(input) {
-        Ok(list) => assert_eq!(list.encode(), input, "a second spelling was accepted"),
-        Err(error) => check_rejection(&error),
+        Ok(list) => {
+            assert_eq!(list.encode(), input, "a second spelling was accepted");
+            let former = list
+                .former()
+                .iter()
+                .map(|key| FormerKey::try_new(key.first(), key.last(), key.key().clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .expect("the reader took a range that the writer refuses");
+            let rebuilt = RefList::try_new(
+                list.repository(),
+                list.key().clone(),
+                former,
+                list.references().to_vec(),
+            );
+            assert_eq!(
+                rebuilt.as_ref(),
+                Ok(&list),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
     }
     match FetchRequest::parse(input) {
-        Ok(request) => assert_eq!(request.encode(), input, "a second spelling was accepted"),
-        Err(error) => check_rejection(&error),
+        Ok(request) => {
+            assert_eq!(request.encode(), input, "a second spelling was accepted");
+            let rebuilt = FetchRequest::try_new(
+                request.want().iter().copied(),
+                request.have().iter().copied(),
+            );
+            assert_eq!(
+                rebuilt.as_ref(),
+                Ok(&request),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
     }
     match ErrorMessage::parse(input) {
-        Ok(message) => assert_eq!(message.encode(), input, "a second spelling was accepted"),
-        Err(error) => check_rejection(&error),
+        Ok(message) => {
+            assert_eq!(message.encode(), input, "a second spelling was accepted");
+            let rebuilt = match &message {
+                ErrorMessage::UnsupportedVersion(spoken) => {
+                    Spoken::try_new(spoken.versions().iter().copied())
+                        .map(ErrorMessage::UnsupportedVersion)
+                }
+                ErrorMessage::Malformed(reason) => {
+                    Reason::try_new(reason.as_str()).map(ErrorMessage::Malformed)
+                }
+            };
+            assert_eq!(
+                rebuilt.as_ref(),
+                Ok(&message),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
     }
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");

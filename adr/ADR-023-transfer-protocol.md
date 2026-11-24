@@ -199,8 +199,14 @@ The first protocol number is 1 (`stemma_core::protocol::VERSION`), set by STEMMA
 protocol of phase 5: the slices of the phase add their messages to it, and from the first release
 that carries the protocol on, every change of a message is a new number.
 
+A reader judges the first line before anything else of a message, so a message of another number
+is refused as such whatever follows.
+
 A small message has no line that names its type; the request says which message is expected, and
-each reader refuses the messages of the others. A line ends with a line feed, a field is
+each reader refuses the messages of the others. No message carries a count or an end mark: a
+small message that is cut after a whole line, and a stream that is cut between two frames, read
+as shorter messages. The carrier must report a body that ends early, as HTTP does by the length
+of the body, and an error arrives in place of the message asked for, told apart by the status. A line ends with a line feed, a field is
 separated by one space, and a number is decimal from 1 without a sign or a leading zero. The
 first four messages:
 
@@ -241,7 +247,10 @@ spoken <version> <version> ...
   `reason <text>` for a message that could not be read. `unsupported-version` is the one message
   that is read across numbers: its form never changes, and its first line carries the highest
   version that its sender speaks, so a client of another number still learns the list. The
-  refusals of a ref update, of a statement and of the bounds add their kinds with their slices.
+  versions of `spoken` ascend, each once, at least one, and the first line carries the last of
+  them. A reason is one line that is not empty and holds no control character and no line or
+  paragraph separator. The refusals of a ref update, of a statement and of the bounds add their
+  kinds with their slices.
 
 Example messages are checked in under `crates/stemma-core/protocol-examples/` and are reachable
 as `stemma_core::protocol::examples`, so a hub reads them through its dependency (ADR-022). They
@@ -390,5 +399,8 @@ a new protocol number and, where it concerns the store, a new version of `stemma
 - [ ] The list of references carries the former keys without the signature of the current key
       over them (ADR-026). The signature, its payload and its type tag belong to the slice that
       pins the key, which adds the line to protocol 1.
+- [ ] Whether the list of references needs a last line or a count, so that a list that is cut
+      after a whole line is refused by its reader and not only by the carrier. A list that is
+      cut reads as a list with fewer references.
 - [ ] Whether the list of references should name deleted names with their last record entry, so
       that a client can create one again without a `Stale` answer first.

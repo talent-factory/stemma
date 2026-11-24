@@ -680,8 +680,14 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
         );
     }
     assert!(matches!(
-        changed(&current, "key ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAQQC7"),
-        ParseError::InvalidKey { line: 3, .. }
+        changed(
+            &current,
+            "key ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAAgQCXBd05Px5wE40nIIPlaxp8OFFtQUUxC8OSO9Xc0QM4HmCOn0LWhhBu2vMg/GJKsoq3K4xNrn7n50ImsVh+xsd24RxlC7GSqlN5hKNP15Jv9M+xBCOqjVF7Z2Lh9LSE2BAW5TmX5W5/3m57WaljZXHqFUcROkBIYNXGJoDd5535Sw=="
+        ),
+        ParseError::InvalidKey {
+            line: 3,
+            source: KeyError::NotEd25519 { .. }
+        }
     ));
     assert!(matches!(
         changed(&current, "key none"),
@@ -757,21 +763,23 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
             "{name:?}"
         );
     }
-    for name in ["heads/", "heads/-x", "tags/a//b", "heads/a b", "tags/con"] {
+    for name in ["heads/", "heads/-x", "tags/a//b", "tags/con"] {
         assert!(
             matches!(
                 changed("ref heads/main ", &format!("ref {name} ")),
                 ParseError::InvalidName {
                     line: 7,
                     source: QualifiedNameError::Name(_)
-                } | ParseError::Malformed {
-                    line: 7,
-                    reason: Malformed::Fields
                 }
             ),
             "{name:?}"
         );
     }
+    // A space in a name is a further field.
+    assert_eq!(
+        changed("ref heads/main ", "ref heads/a b "),
+        at(7, Malformed::Fields)
+    );
     assert!(matches!(
         changed(&entry, &entry.to_uppercase()),
         ParseError::InvalidRecordHash { line: 7, .. }
@@ -1102,7 +1110,7 @@ fn a_stream_refuses_frames_that_its_writer_does_not_write() {
     let with_id = format!("{} blob 1\0a", id_text(1));
     assert!(matches!(
         refused(with_id.as_bytes()),
-        StreamError::Header { object: 1 } | StreamError::UnknownKind { object: 1, .. }
+        StreamError::Header { object: 1 }
     ));
     // The second object is counted as the second.
     assert!(matches!(
@@ -1438,4 +1446,280 @@ fn generated_messages_round_trip() {
             .collect();
         assert_eq!(read_stream(&write_stream(&objects), 40).unwrap(), objects);
     }
+}
+
+/// The version is judged before anything else of a message: a later version may hold bytes and
+/// lines that this one cannot read, and its sender must still learn the versions spoken.
+#[test]
+fn another_version_is_refused_as_such_whatever_follows_the_first_line() {
+    let expected = ParseError::UnsupportedVersion { found: 2 };
+    let rests: [&[u8]; 6] = [
+        b"",
+        b"\xff\n",
+        b"cut off",
+        b"error malformed\nreason \xff\n",
+        b"error",
+        b"\0\0\0",
+    ];
+    for rest in rests {
+        let bytes = [b"stemma-protocol 2\n".as_slice(), rest].concat();
+        assert_eq!(RefList::parse(&bytes).unwrap_err(), expected, "{rest:?}");
+        assert_eq!(
+            FetchRequest::parse(&bytes).unwrap_err(),
+            expected,
+            "{rest:?}"
+        );
+        assert_eq!(
+            ErrorMessage::parse(&bytes).unwrap_err(),
+            expected,
+            "{rest:?}"
+        );
+        assert!(
+            matches!(
+                read_stream(&bytes, 9),
+                Err(StreamError::UnsupportedVersion { found: 2 })
+            ),
+            "{rest:?}"
+        );
+        assert_eq!(
+            ErrorMessage::from(&expected),
+            ErrorMessage::UnsupportedVersion(Spoken::here())
+        );
+    }
+    // Under the version spoken here the same rests are what they are.
+    let at = |line, reason| ParseError::Malformed { line, reason };
+    assert_eq!(
+        ErrorMessage::parse(b"stemma-protocol 1\ncut off").unwrap_err(),
+        at(2, Malformed::CutOff)
+    );
+    assert_eq!(
+        ErrorMessage::parse(b"stemma-protocol 1\nerror malformed\nreason \xff\n").unwrap_err(),
+        ParseError::NotUtf8 { valid_up_to: 41 }
+    );
+    // An `unsupported-version` of another number is still read strictly.
+    assert_eq!(
+        ErrorMessage::parse(b"stemma-protocol 2\nerror unsupported-version\nspoken 2").unwrap_err(),
+        at(3, Malformed::CutOff)
+    );
+    // A first line that is not UTF-8 is no first line of any version.
+    assert_eq!(
+        RefList::parse(b"stemma-protocol \xff\nx\n").unwrap_err(),
+        ParseError::NotUtf8 { valid_up_to: 16 }
+    );
+    assert!(matches!(
+        read_stream(b"stemma-protocol \xff\n", 9),
+        Err(StreamError::FirstLine)
+    ));
+}
+
+/// A reader that has refused a stream does not go on: what follows a refused frame is not read
+/// as frames, and a stream that was cut does not look complete on the next call.
+#[test]
+fn a_stream_reader_that_failed_stays_failed() {
+    // A body above the bound that holds a frame of its own.
+    let smuggled = b"stemma-protocol 1\nblob 20\0blob 1\0atree 1\0bxxxxx";
+    let mut reader = ObjectStreamReader::new(smuggled.as_slice(), 8).unwrap();
+    assert!(matches!(
+        reader.next_object(),
+        Err(StreamError::TooLarge { object: 1, .. })
+    ));
+    for _ in 0..3 {
+        assert!(matches!(reader.next_object(), Err(StreamError::Failed)));
+    }
+    // A stream that is cut inside a body is at its end afterwards.
+    let mut reader =
+        ObjectStreamReader::new(b"stemma-protocol 1\nblob 2\0a".as_slice(), 8).unwrap();
+    assert!(matches!(
+        reader.next_object(),
+        Err(StreamError::CutOff { object: 1 })
+    ));
+    assert!(matches!(reader.next_object(), Err(StreamError::Failed)));
+    // The same after a header and a kind that are refused.
+    for frames in [b"blob 01\0a".as_slice(), b"pack 1\0a"] {
+        let bytes = [b"stemma-protocol 1\n".as_slice(), frames].concat();
+        let mut reader = ObjectStreamReader::new(bytes.as_slice(), 8).unwrap();
+        assert!(reader.next_object().is_err());
+        assert!(matches!(reader.next_object(), Err(StreamError::Failed)));
+    }
+    // The end of a stream is no failure: it is reported again.
+    let mut reader = ObjectStreamReader::new(b"stemma-protocol 1\n".as_slice(), 8).unwrap();
+    assert!(matches!(reader.next_object(), Ok(None)));
+    assert!(matches!(reader.next_object(), Ok(None)));
+    assert_eq!(
+        StreamError::Failed.to_string(),
+        "the object stream was refused by an earlier read"
+    );
+    crate::fuzz::check_rejection(&StreamError::Failed);
+}
+
+#[test]
+fn a_refused_stream_has_an_answer_where_this_version_knows_one() {
+    assert_eq!(
+        StreamError::UnsupportedVersion { found: 2 }.answer(),
+        Some(ErrorMessage::UnsupportedVersion(Spoken::here()))
+    );
+    for error in [
+        StreamError::FirstLine,
+        StreamError::CutOff { object: 2 },
+        StreamError::Header { object: 2 },
+        StreamError::UnknownKind {
+            object: 2,
+            kind: "a\nb".to_owned(),
+        },
+    ] {
+        let answer = error.answer().unwrap();
+        assert_eq!(
+            answer,
+            ErrorMessage::Malformed(Reason::try_new(error.to_string()).unwrap())
+        );
+        assert_eq!(ErrorMessage::parse(&answer.encode()).unwrap(), answer);
+    }
+    for error in [
+        StreamError::Io(io::Error::other("gone")),
+        StreamError::Failed,
+        StreamError::TooLarge {
+            object: 1,
+            length: 9,
+            limit: 8,
+        },
+    ] {
+        assert_eq!(error.answer(), None, "{error}");
+    }
+    assert_eq!(
+        StreamError::Header { object: 2 }.to_string(),
+        "object 2: the frame does not begin with a header `<kind> <length>` of at most 64 bytes \
+         and a NUL byte"
+    );
+}
+
+/// A sender that never ends a line or a header does not make the reader hold what it sends.
+#[test]
+fn the_stream_reader_reads_a_bounded_first_line_and_a_bounded_header() {
+    let endless = || BufReader::new(io::repeat(b'a'));
+    assert!(matches!(
+        ObjectStreamReader::new(endless(), u64::MAX),
+        Err(StreamError::FirstLine)
+    ));
+    let mut carrier = Cursor::new(vec![b'a'; 1000]);
+    assert!(ObjectStreamReader::new(&mut carrier, u64::MAX).is_err());
+    assert_eq!(carrier.position(), MAX_FIRST_LINE as u64 + 1);
+
+    let carrier = Cursor::new(first_line(VERSION)).chain(endless());
+    let mut reader = ObjectStreamReader::new(carrier, u64::MAX).unwrap();
+    assert!(matches!(
+        reader.next_object(),
+        Err(StreamError::Header { object: 1 })
+    ));
+}
+
+/// A carriage return at the end of any line is refused by the value of that line.
+#[test]
+fn a_carriage_return_is_refused_on_every_line_of_a_list_of_references() {
+    let text = refs_text();
+    let lines: Vec<&str> = text.lines().collect();
+    let with_cr = |at: usize| {
+        let changed: String = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| format!("{line}{}\n", if i == at { "\r" } else { "" }))
+            .collect();
+        RefList::parse(changed.as_bytes()).unwrap_err()
+    };
+    let key_form = |line| ParseError::Malformed {
+        line,
+        reason: Malformed::KeyForm,
+    };
+    assert_eq!(
+        with_cr(1),
+        ParseError::InvalidRepositoryId {
+            line: 2,
+            source: RepositoryIdParseError::WrongLength(33)
+        }
+    );
+    assert_eq!(with_cr(2), key_form(3));
+    assert_eq!(with_cr(3), key_form(4));
+    assert_eq!(with_cr(4), key_form(5));
+    for at in 5..8 {
+        assert!(
+            matches!(with_cr(at), ParseError::InvalidRecordHash { line, .. } if line == at + 1),
+            "line {}",
+            at + 1
+        );
+    }
+    // A tab is trimmed by the reader of a key and refused by the comparison with its text.
+    let tab = text.replacen(
+        &format!("key {}\n", KEYS[0]),
+        &format!("key {}\t\n", KEYS[0]),
+        1,
+    );
+    assert_eq!(RefList::parse(tab.as_bytes()).unwrap_err(), key_form(3));
+}
+
+/// A reason is one line for a terminal too; the reader names the rule that fired.
+#[test]
+fn a_reason_is_refused_by_the_rule_that_it_breaks() {
+    let read = |reason: &str| {
+        let text = format!("stemma-protocol 1\nerror malformed\nreason {reason}\n");
+        ErrorMessage::parse(text.as_bytes())
+    };
+    let at = |line, reason| ParseError::Malformed { line, reason };
+    for reason in [
+        "a\rb",
+        "tab\there",
+        "\u{85}",
+        "nul\0",
+        "a\u{2028}b",
+        "a\u{2029}b",
+        "",
+    ] {
+        assert_eq!(
+            read(reason).unwrap_err(),
+            at(3, Malformed::Reason),
+            "{reason:?}"
+        );
+        assert_eq!(
+            Reason::try_new(reason).unwrap_err(),
+            ErrorMessageError::Reason,
+            "{reason:?}"
+        );
+    }
+    // A line feed ends the reason, and what follows is a line that does not belong there.
+    assert_eq!(read("a\nb").unwrap_err(), at(4, Malformed::Unexpected));
+    assert_eq!(
+        Reason::from_message(&"a\u{2028}b\u{2029}c").as_str(),
+        "a b c"
+    );
+    // Marks of the text direction are part of a reason, as the type says.
+    assert!(read("a\u{202e}b").is_ok());
+    assert!(!ErrorMessageError::VersionZero.to_string().is_empty());
+}
+
+#[test]
+fn the_edges_of_ranges_and_of_ids_are_exact() {
+    let former = |first, last| FormerKey::try_new(first, last, key(1)).unwrap();
+    assert_eq!(former(5, 5).first(), 5);
+    assert_eq!(
+        RefList::try_new(
+            repository(),
+            key(0),
+            vec![former(5, 20), former(1, 10)],
+            Vec::new()
+        )
+        .unwrap_err(),
+        RefListError::OverlappingRanges(5)
+    );
+    assert_eq!(
+        "0g112233445566778899aabbccddeeff".parse::<RepositoryId>(),
+        Err(RepositoryIdParseError::NotHex(1))
+    );
+    assert_eq!(
+        "é".repeat(16).parse::<RepositoryId>(),
+        Err(RepositoryIdParseError::NotHex(0))
+    );
+    // An invalid key on a `former` line is reported at that line.
+    let text = refs_text().replacen(KEYS[2], "ssh-ed25519 AAAA", 1);
+    assert!(matches!(
+        RefList::parse(text.as_bytes()).unwrap_err(),
+        ParseError::InvalidKey { line: 5, .. }
+    ));
 }

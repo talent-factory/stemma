@@ -27,7 +27,8 @@
 //! [`verify::VerifyError`] (the error of a check of an index, a tree, a commit, or a reference)
 //! for the error of the store inside. [`repository::InitError`], [`repository::OpenError`], and
 //! [`change::GenerateError`] have an `io_error()` for the error of the file system or of the
-//! operating system, and so do [`oplog::OpLogError`] and [`repository::UpdateError`]. A program
+//! operating system, and so do [`oplog::OpLogError`] and [`repository::UpdateError`];
+//! [`protocol::StreamError`] has one for the error of the carrier of an object stream. A program
 //! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;

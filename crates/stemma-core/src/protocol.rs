@@ -3,14 +3,17 @@
 //!
 //! Every message begins with the line `stemma-protocol <n>`. This module speaks one number,
 //! [`VERSION`]. A reader that meets another number refuses with a typed error
-//! ([`ParseError::UnsupportedVersion`], [`StreamError::UnsupportedVersion`]), and the answer to
-//! such a message is [`ErrorMessage::UnsupportedVersion`], which names the versions spoken.
+//! ([`ParseError::UnsupportedVersion`], [`StreamError::UnsupportedVersion`]), whatever follows the
+//! first line, and the answer to such a message is [`ErrorMessage::UnsupportedVersion`], which
+//! names the versions spoken. That answer is the one exception: the reader of the error accepts
+//! an `unsupported-version` under every number (see [`ErrorMessage`]).
 //!
 //! The small messages are line-oriented text: the first line, then lines `<keyword> <value>` in
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
 //! fetch request ([`FetchRequest`]), and the error ([`ErrorMessage`]). The object stream is
 //! binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
-//! There are no capabilities and no optional fields: every extension is a new number.
+//! There are no capabilities and no optional fields: every extension is a new number, from the
+//! first release that carries the protocol on (see [`VERSION`]).
 //!
 //! The readers hold the rule of ADR-005. A reader accepts only what its writer writes, so a
 //! message has exactly one encoding and `parse(bytes).encode() == bytes` for every accepted
@@ -21,6 +24,13 @@
 //! The readers of the small messages take the whole message from memory, and the reader of the
 //! stream takes the largest object it may hold. The bounds for the size of a request and of an
 //! object are set by the receiver (ADR-023); this module names no value.
+//!
+//! No message carries a count or an end mark. A small message that is cut after a whole line, and
+//! a stream that is cut between two frames, read as shorter messages; only a cut inside a line or
+//! a frame is seen here. The carrier must therefore report a body that ends early, as HTTP does
+//! by the length of the body, and the caller must not hand a body to a reader after such a report.
+//! The caller also chooses the reader: an error arrives in place of the message that was asked
+//! for, and the transport says which of the two it is (the status code, ADR-023).
 //!
 //! Not part of a message, because they belong to the transport: TLS, the token, the content
 //! encoding, URL paths, and status codes (ADR-023).
@@ -40,8 +50,10 @@ use crate::refs::{BranchName, BranchNameError, RefKind};
 use crate::signature::{KeyError, PublicKey};
 
 /// The protocol version that this module speaks: the number in the first line of every message.
-/// It is independent of the version of the crate and of `stemma-repository` (ADR-009). A change
-/// of a message needs an ADR and a new number (ADR-022).
+/// It is independent of the version of the crate and of `stemma-repository` (ADR-009). Number 1
+/// is the protocol of phase 5: until the first release that carries the protocol, the slices of
+/// the phase add their messages and lines to it. From that release on, a change of a message
+/// needs an ADR and a new number (ADR-022, ADR-023).
 pub const VERSION: u32 = 1;
 
 /// The keyword of the first line of every message.
@@ -54,7 +66,7 @@ const MAX_FIRST_LINE: usize = VERSION_KEYWORD.len() + 1 + 10;
 /// The longest header of a frame that the reader of a stream reads before it gives up, without
 /// the NUL byte. The header of a known kind has at most 28 bytes (`commit2`, a space, and the
 /// twenty digits of the largest `u64`); the rest is room for the name of a kind that this version
-/// does not know, so that it is reported as such.
+/// does not know, so that a name of up to that length is reported as such.
 const MAX_FRAME_HEADER: usize = 64;
 
 /// The first line of a message of the given version, with its line feed.
@@ -396,7 +408,7 @@ impl Error for RefListError {}
 ///
 /// ```text
 /// stemma-protocol 1
-/// repository <32 hexadecimal digits>
+/// repository <32 lowercase hexadecimal digits>
 /// key ssh-ed25519 <base64>
 /// former <first> <last> ssh-ed25519 <base64>      zero or more
 /// ref heads/<name> <commit> <record entry>        zero or more, then the tags
@@ -496,8 +508,7 @@ impl RefList {
     /// come after the one before it in the order of the qualified names. The first problem is
     /// reported, with its line.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let mut lines = Lines::new(text(bytes)?);
-        expect_version(&mut lines)?;
+        let mut lines = Lines::open(bytes)?;
         let (line, value) = lines.require("repository")?;
         let repository = value
             .parse()
@@ -646,8 +657,7 @@ impl FetchRequest {
     /// and a commit that does not come after the one before it in the order of the IDs, which
     /// includes a commit that is named twice. The first problem is reported, with its line.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let mut lines = Lines::new(text(bytes)?);
-        expect_version(&mut lines)?;
+        let mut lines = Lines::open(bytes)?;
         let want = parse_commits(&mut lines, "want")?;
         if want.is_empty() {
             return Err(malformed(lines.line, Malformed::Expected("want")));
@@ -714,7 +724,9 @@ impl Spoken {
 }
 
 /// The text of an [`ErrorMessage::Malformed`]: one line that is not empty and holds no control
-/// character.
+/// character and no line or paragraph separator (U+2028, U+2029). Other characters that a
+/// terminal treats specially, such as the marks of the text direction, are part of a reason; a
+/// program that shows the reason of another side escapes what its output cannot take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reason(String);
 
@@ -724,7 +736,7 @@ impl Reason {
     /// # Errors
     ///
     /// [`ErrorMessageError::Reason`] if the text is empty or holds a control character, which
-    /// includes a line feed.
+    /// includes a line feed, or a line or paragraph separator.
     pub fn try_new(text: impl Into<String>) -> Result<Self, ErrorMessageError> {
         let text = text.into();
         if is_reason(&text) {
@@ -734,13 +746,14 @@ impl Reason {
         }
     }
 
-    /// The reason from the message of an error. A control character becomes a space, and an
-    /// empty message becomes `-`, so every message gives a reason.
+    /// The reason from the message of an error. A control character and a line or paragraph
+    /// separator become a space, and an empty message becomes `-`, so every message gives a
+    /// reason.
     pub fn from_message(message: &dyn fmt::Display) -> Self {
         let text: String = message
             .to_string()
             .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
+            .map(|c| if breaks_a_line(c) { ' ' } else { c })
             .collect();
         Self(if text.is_empty() {
             "-".to_owned()
@@ -761,9 +774,15 @@ impl fmt::Display for Reason {
     }
 }
 
-/// Whether the text is a reason: not empty, and without a control character.
+/// Whether the character is a control character or a line or paragraph separator, which end a
+/// line in a listing as a line feed does.
+fn breaks_a_line(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// Whether the text is a reason: not empty, and without a character that breaks a line.
 fn is_reason(text: &str) -> bool {
-    !text.is_empty() && !text.chars().any(char::is_control)
+    !text.is_empty() && !text.chars().any(breaks_a_line)
 }
 
 /// Why a part of an error message cannot be built.
@@ -774,7 +793,7 @@ pub enum ErrorMessageError {
     NoVersion,
     /// The version 0 is named as spoken.
     VersionZero,
-    /// The reason is empty or holds a control character.
+    /// The reason is empty or holds a control character or a line or paragraph separator.
     Reason,
 }
 
@@ -842,17 +861,29 @@ impl ErrorMessage {
     ///
     /// Returns an error for input that is not UTF-8, a first line that is missing or malformed,
     /// a line that is missing, unknown, or out of order, a last line without a line feed, and an
-    /// unknown kind of error. For `unsupported-version` it also refuses a version that is not a
-    /// canonical number, versions that are not in ascending order, and a first line whose number
-    /// is not the highest version named; that kind is read under every number. For every other
-    /// kind, another protocol version than [`VERSION`] is
-    /// [`ParseError::UnsupportedVersion`], and so is a message of another version that is not
-    /// an `unsupported-version` at all. `malformed` also refuses a reason that is empty or holds
-    /// a control character.
+    /// unknown kind of error.
+    ///
+    /// `unsupported-version` is read under every number. It also refuses a `spoken` line without
+    /// a version, a version that is not a canonical number, a version that does not come after
+    /// the one before it, which includes a version that is named twice, and a first line whose
+    /// number is not the last version named.
+    ///
+    /// Under another protocol version than [`VERSION`], everything that is not a line
+    /// `error unsupported-version` after the first line is [`ParseError::UnsupportedVersion`]:
+    /// another kind, another line, no line, a line that is cut off, and bytes that are not UTF-8.
+    ///
+    /// `malformed` also refuses a reason that is empty or holds a control character or a line or
+    /// paragraph separator.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let mut lines = Lines::new(text(bytes)?);
-        let version = read_version(&mut lines)?;
-        let kind = lines.take("error")?;
+        let (version, rest) = read_version(bytes)?;
+        // Under another number only the second line of an `unsupported-version` is known, so
+        // whatever else stands there is the message of a version that is not spoken here.
+        let foreign = |error| match version {
+            VERSION => error,
+            found => ParseError::UnsupportedVersion { found },
+        };
+        let mut lines = Lines::after_first_line(bytes, rest).map_err(foreign)?;
+        let kind = lines.take("error").map_err(foreign)?;
         if let Some((_, "unsupported-version")) = kind {
             let (line, value) = lines.require("spoken")?;
             let mut versions: Vec<u32> = Vec::new();
@@ -928,7 +959,7 @@ pub enum Malformed {
     /// The last line has no line feed: the message is cut off.
     CutOff,
     /// The first line is missing or is not `stemma-protocol <number>` with a number from 1
-    /// without a leading zero.
+    /// without a sign or a leading zero that fits 32 bits.
     FirstLine,
     /// A line with this keyword must stand here, and the message ends or goes on with another
     /// line. Carries the keyword.
@@ -954,7 +985,8 @@ pub enum Malformed {
     /// The first line of an `unsupported-version` does not carry the highest version that the
     /// message names.
     NotHighestVersion,
-    /// The reason of an error is empty or holds a control character.
+    /// The reason of an error is empty or holds a control character or a line or paragraph
+    /// separator.
     Reason,
 }
 
@@ -966,9 +998,9 @@ impl fmt::Display for Malformed {
             Self::Expected(keyword) => write!(f, "expected a line `{keyword} ...`"),
             Self::Unexpected => f.write_str("the line does not belong here"),
             Self::Fields => f.write_str("the line does not have the fields of its keyword"),
-            Self::Number => {
-                f.write_str("a number is not a decimal integer from 1 without a leading zero")
-            }
+            Self::Number => f.write_str(
+                "a number is not a decimal integer from 1 without a leading zero, or is too large",
+            ),
             Self::Range => {
                 f.write_str("the range is empty or does not lie after the range of the line before")
             }
@@ -1108,11 +1140,23 @@ struct Lines<'a> {
 }
 
 impl<'a> Lines<'a> {
-    fn new(text: &'a str) -> Self {
-        Self {
-            rest: text,
-            line: 1,
+    /// The lines after the first line of a message of [`VERSION`]. The version is judged before
+    /// the rest of the message is looked at, so a message of another version is refused as such
+    /// even if this version cannot read a byte of it.
+    fn open(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        match read_version(bytes)? {
+            (VERSION, rest) => Self::after_first_line(bytes, rest),
+            (found, _) => Err(ParseError::UnsupportedVersion { found }),
         }
+    }
+
+    /// The lines of `rest`, which is what follows the first line of `message`.
+    fn after_first_line(message: &'a [u8], rest: &'a [u8]) -> Result<Self, ParseError> {
+        let first_line = message.len() - rest.len();
+        let rest = std::str::from_utf8(rest).map_err(|error| ParseError::NotUtf8 {
+            valid_up_to: first_line + error.valid_up_to(),
+        })?;
+        Ok(Self { rest, line: 2 })
     }
 
     /// The next line without its line feed and what follows it, or `None` at the end of the
@@ -1160,20 +1204,24 @@ impl<'a> Lines<'a> {
     }
 }
 
-/// Reads the first line and returns its number.
-fn read_version(lines: &mut Lines<'_>) -> Result<u32, ParseError> {
-    lines
-        .take(VERSION_KEYWORD)?
-        .and_then(|(_, value)| parse_positive::<u32>(value))
-        .ok_or(malformed(1, Malformed::FirstLine))
-}
-
-/// Reads the first line, which must name [`VERSION`].
-fn expect_version(lines: &mut Lines<'_>) -> Result<(), ParseError> {
-    match read_version(lines)? {
-        VERSION => Ok(()),
-        found => Err(ParseError::UnsupportedVersion { found }),
-    }
+/// Reads the first line of a message from its bytes and returns its number and what follows the
+/// line. Only the first line is looked at.
+fn read_version(bytes: &[u8]) -> Result<(u32, &[u8]), ParseError> {
+    let Some(end) = bytes.iter().position(|&byte| byte == b'\n') else {
+        text(bytes)?;
+        let reason = if bytes.is_empty() {
+            Malformed::FirstLine
+        } else {
+            Malformed::CutOff
+        };
+        return Err(malformed(1, reason));
+    };
+    let version = text(&bytes[..end])?
+        .strip_prefix(VERSION_KEYWORD)
+        .and_then(|value| value.strip_prefix(' '))
+        .and_then(parse_positive::<u32>)
+        .ok_or(malformed(1, Malformed::FirstLine))?;
+    Ok((version, &bytes[end + 1..]))
 }
 
 /// Reads a key in its canonical form, which is the text that the writer writes for it.
@@ -1262,13 +1310,20 @@ impl<W: Write> ObjectStreamWriter<W> {
 /// the receiver (ADR-023). A stream that ends between two frames is complete for this reader,
 /// because the stream carries no count: what is missing shows in the connectivity check.
 ///
-/// After an error the reader must not be used again.
+/// The caller gives this reader the body of a successful answer only: an error message that
+/// arrives in place of a stream begins with the same first line, and this reader would report its
+/// lines as a damaged frame.
+///
+/// After an error the stream is lost: the reader does not know where the next frame begins, so
+/// every later call returns [`StreamError::Failed`] and reads nothing.
 #[derive(Debug)]
 pub struct ObjectStreamReader<R: BufRead> {
     reader: R,
     max_object_len: u64,
     /// The number of the next object, from 1.
     object: u64,
+    /// Whether a call has returned an error.
+    failed: bool,
 }
 
 impl<R: BufRead> ObjectStreamReader<R> {
@@ -1297,6 +1352,7 @@ impl<R: BufRead> ObjectStreamReader<R> {
             reader,
             max_object_len,
             object: 1,
+            failed: false,
         })
     }
 
@@ -1305,11 +1361,22 @@ impl<R: BufRead> ObjectStreamReader<R> {
     /// # Errors
     ///
     /// [`StreamError::CutOff`] if the stream ends inside a frame, [`StreamError::Header`] if a
-    /// frame does not begin with `<kind> <length>` and a NUL byte or the length is not in
-    /// canonical decimal form, [`StreamError::UnknownKind`] for a kind that this version does not
+    /// frame does not begin with `<kind> <length>` and a NUL byte within 64 bytes, the header is
+    /// not UTF-8, or the length is not `0` or a decimal integer without a sign or a leading zero
+    /// that fits 64 bits, [`StreamError::UnknownKind`] for a kind that this version does not
     /// know, [`StreamError::TooLarge`] for a body that is longer than the bound, before any of it
-    /// is read, and [`StreamError::Io`] if the reader fails.
+    /// is read, [`StreamError::Io`] if the reader fails, and [`StreamError::Failed`] for every
+    /// call after one of these.
     pub fn next_object(&mut self) -> Result<Option<StreamObject>, StreamError> {
+        if self.failed {
+            return Err(StreamError::Failed);
+        }
+        let next = self.read_object();
+        self.failed = next.is_err();
+        next
+    }
+
+    fn read_object(&mut self) -> Result<Option<StreamObject>, StreamError> {
         let object = self.object;
         let header = match read_delimited(&mut self.reader, 0, MAX_FRAME_HEADER)? {
             Delimited::End => return Ok(None),
@@ -1392,10 +1459,12 @@ fn read_delimited<R: BufRead>(
 pub enum StreamError {
     /// The reader that carries the stream failed.
     Io(io::Error),
-    /// The first line is missing, cut off, or is not `stemma-protocol <number>`.
+    /// The first line is missing, cut off, or is not `stemma-protocol <number>` with a number
+    /// from 1 without a sign or a leading zero that fits 32 bits.
     FirstLine,
     /// The first line is well formed and names another protocol version than [`VERSION`]. The
-    /// answer to the sender is [`ErrorMessage::UnsupportedVersion`] with [`Spoken::here`].
+    /// answer to the sender is [`ErrorMessage::UnsupportedVersion`] with [`Spoken::here`]
+    /// ([`answer`](Self::answer)).
     UnsupportedVersion {
         /// The version that the stream names.
         found: u32,
@@ -1405,8 +1474,9 @@ pub enum StreamError {
         /// Number of the object.
         object: u64,
     },
-    /// A frame does not begin with `<kind> <length>` and a NUL byte, or the length is not a
-    /// decimal integer without a sign or a leading zero that fits 64 bits.
+    /// A frame does not begin with `<kind> <length>` and a NUL byte within 64 bytes, the header
+    /// is not UTF-8, or the length is not `0` or a decimal integer without a sign or a leading
+    /// zero that fits 64 bits.
     Header {
         /// Number of the object.
         object: u64,
@@ -1427,9 +1497,32 @@ pub enum StreamError {
         /// The bound of the receiver, in bytes.
         limit: u64,
     },
+    /// An earlier call on the same reader returned an error, so the stream is lost.
+    Failed,
 }
 
 impl StreamError {
+    /// The message that answers the sender of the stream, if this module has one:
+    /// [`ErrorMessage::UnsupportedVersion`] with the versions spoken here for another protocol
+    /// version, and [`ErrorMessage::Malformed`] for a first line or a frame that cannot be read,
+    /// which includes a stream that is cut off and an unknown kind.
+    ///
+    /// `None` for [`Io`](Self::Io) and [`Failed`](Self::Failed), which say nothing about the
+    /// stream, and for [`TooLarge`](Self::TooLarge): the stream is well formed, and the kind of
+    /// error for a bound comes with the slice that sets the bounds.
+    pub fn answer(&self) -> Option<ErrorMessage> {
+        match self {
+            Self::UnsupportedVersion { .. } => {
+                Some(ErrorMessage::UnsupportedVersion(Spoken::here()))
+            }
+            Self::FirstLine
+            | Self::CutOff { .. }
+            | Self::Header { .. }
+            | Self::UnknownKind { .. } => Some(ErrorMessage::Malformed(Reason::from_message(self))),
+            Self::Io(_) | Self::TooLarge { .. } | Self::Failed => None,
+        }
+    }
+
     /// The error of the reader that carried the stream, if that is what failed.
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
@@ -1454,7 +1547,8 @@ impl fmt::Display for StreamError {
             Self::CutOff { object } => write!(f, "the object stream ends inside object {object}"),
             Self::Header { object } => write!(
                 f,
-                "object {object}: the frame does not begin with `<kind> <length>` and a NUL byte"
+                "object {object}: the frame does not begin with a header `<kind> <length>` of \
+                 at most {MAX_FRAME_HEADER} bytes and a NUL byte"
             ),
             Self::UnknownKind { object, kind } => {
                 write!(f, "object {object}: unknown kind `{}`", kind.escape_debug())
@@ -1467,6 +1561,7 @@ impl fmt::Display for StreamError {
                 f,
                 "object {object}: {length} bytes are more than the limit of {limit} bytes"
             ),
+            Self::Failed => f.write_str("the object stream was refused by an earlier read"),
         }
     }
 }
@@ -1489,8 +1584,10 @@ pub mod examples {
     //! (ADR-022).
 
     /// The message that an example holds, which names its reader.
+    ///
+    /// The enum is exhaustive on purpose: a conformance test that matches on it stops to build
+    /// when a message is added, and so cannot skip the new examples.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    #[non_exhaustive]
     pub enum Message {
         /// A list of references ([`RefList`](super::RefList)).
         RefList,
