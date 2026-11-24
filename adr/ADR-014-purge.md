@@ -202,7 +202,8 @@ Facts that bound the design:
   a hub confirmed stays valid (ADR-026).
 - **An open pull request stops a purge** *(confirmed; STEMMA-238)*. The entries `pr-open` and
   `pr-merge` name commits, so the plan lists them like any entry that names a rewritten commit,
-  and `pr-close` names none. A pull request is the sequence of its entries (ADR-004, ADR-011), so
+  and `pr-close` names none. A pull request is the sequence of its entries (ADR-004, ADR-011; from
+  phase 5 on its evidence is signed statements, ADR-025), so
   a stub in the place of the opening of a pull request that is still open would remove it from
   the log. The plan refuses (`PurgeError::OpenPullRequest`, which names the number) and writes
   nothing; the person closes the pull request or merges it, and runs the purge again. A closed or

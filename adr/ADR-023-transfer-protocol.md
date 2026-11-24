@@ -272,7 +272,7 @@ token signs in again.
 | Fetch or clone of a public repository | 2 |
 | Fetch or clone of a private repository | 4 |
 | Push | 5: sign-in, upload, ref update, and the anchor of the new tip of the log (ADR-026) |
-| Push without new objects | 4 |
+| Push without new objects | 4: the same without the upload |
 
 A fetch also reads the statements of open pull requests (ADR-025) and the namespace policy
 (ADR-027), which may add a request each.

@@ -37,7 +37,9 @@ deletion. `old` is redundant to `previous` and makes an entry readable on its ow
 only `-` to a commit and a commit to `-` (ADR-008).
 
 The payload holds no time, no name of the actor and no message: the actor follows from the key and
-the register, and the time is set by the hub. It binds the repository by its ID, so a rename voids
+the register, and the time is set by the hub. The list of references names the ID in a line; the
+client keeps it in the configuration of the remote and notices when another repository lies under
+the same address. The payload binds the repository by its ID, so a rename voids
 no prepared update, and an update with `previous -` cannot be replayed into a new repository that
 took over an old name.
 
@@ -219,8 +221,8 @@ of the statements, the time, the signer of the hub (ADR-026), and the namespace 
 demanded owners (ADR-027). The operation tells the cases apart itself: `main` (recompute the gate,
 or a purge), a branch (write ownership), a tag (`tag` and `untag`); all references of an update,
 all or nothing. The verdict about `main` is a pure function over the commits, the register and the
-policy of `T` and the statements, which `merge_gate` calls locally too. The rule stands in one
-place, and the in-memory `Transport` covers it in the public CI (ADR-022).
+policy of `T`, the namespace policy and the statements, which `merge_gate` calls locally too. The
+rule stands in one place, and the in-memory `Transport` covers it in the public CI (ADR-022).
 
 The operation is one call that takes `refs.lock` itself in the middle, as `merge_gate` does:
 
@@ -233,8 +235,11 @@ The operation is one call that takes `refs.lock` itself in the middle, as `merge
 - The first version may compute everything under the lock. The trigger for moving work before it
   is the measured holding time.
 
-The upload of objects runs without the lock (ADR-007). The gate needs no ref update without a
-global lock; the open item of ADR-015 stays open, with the measured waiting time as its trigger.
+The upload of objects runs without the lock (ADR-007), and reading takes no lock: a fetch reads
+references and objects while a push runs, and the list of references is not a snapshot across all
+references, which is enough because the client names only commits that the hub had. The gate needs
+no ref update without a global lock; the open item of ADR-015 stays open, with the measured
+waiting time as its trigger.
 
 Six properties are requirements on the slices, so that a later hub can compute for an agent
 without a clone (ADR-015):
@@ -273,8 +278,10 @@ revocation on `main` takes the effect from the statements of a key.
 ## Consequences
 
 - A process that writes a reference, a statement or a log entry past the core never reaches the
-  hub without a key, and `main` moves only with the gate recomputed. Points 2 and 8 of the
-  hand-over in ADR-003 are met.
+  hub without a key, and `main` moves from `T` to `M` only with the gate recomputed. Two states
+  reach `main` without the gate: the first push into an empty repository, whose register must
+  hold the key of the request as an owner (ADR-024), and the purge of a human owner. Points 2 and
+  8 of the hand-over in ADR-003 are met.
 - The formats of phase 4 get a portable form: the payload of an approval and the proof of a check
   become statements, the entries `pr-open`, `pr-approve` and `check` name a hash, and the fold of
   the gate reads from the statements. This is a new format version (ADR-009, ADR-011).

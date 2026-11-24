@@ -276,7 +276,7 @@ meaning: different actor IDs.
 Decided for phase 5 (STEMMA-273, ADR-025); not implemented yet.
 
 - The verdict about `main` is a pure function over the commits, the register and the policy of
-  the tip `T`, and the signed statements. `merge_gate` calls it locally, and the accepting
+  the tip `T`, the namespace policy (ADR-027), and the signed statements. `merge_gate` calls it locally, and the accepting
   operation calls it on a hub, so the rule stands in one place.
 - The evidence is signed statements. An approval and a check result are statements of registered
   actors, and the gate folds the set of statements instead of the entries of the log; the entries

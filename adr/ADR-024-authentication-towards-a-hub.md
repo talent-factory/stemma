@@ -133,7 +133,7 @@ the low ones only.
 ## Consequences
 
 - An actor has one secret, its key, for the repository and for the hub.
-- A hub that is taken over can refuse, delay and lie about what it holds. It cannot make a change
+- A hub that is taken over can forge no approval and no log entry, and it cannot make a change
   count that the register does not cover.
 - A key in a file or in an `ssh-agent` is the actor for every process of the operating system
   user; the token adds nothing to that and takes nothing from it. The limits are named in ADR-003.

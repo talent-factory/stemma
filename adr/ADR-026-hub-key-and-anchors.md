@@ -29,7 +29,9 @@ It never speaks for an actor (ADR-024).
   that rewrites its record.
 - The core never knows the key. The accepting operation receives a signer (bytes in, signature
   out) from the caller, calls it under the lock and writes the entry with its signature in one
-  step. The in-memory `Transport` covers it with a test key.
+  step. The same pattern holds for the anchor: an operation of the core on the bare repository
+  checks the signature of the actor, writes the anchor into the destination that the caller
+  passes and returns the confirmation. The in-memory `Transport` covers both with a test key.
 
 Rejected: no key (number, time and anchor would be statements that hold only during the
 connection), one key per repository (as many secrets as repositories in one process), a signature

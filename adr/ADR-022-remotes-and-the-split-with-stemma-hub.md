@@ -102,6 +102,10 @@ are recorded so that a later fetch from a clone stays possible (STEMMA-277):
 3. Signed statements (ADR-025) are valid without a hub.
 4. Object IDs never depend on the way of transport.
 
+Such a fetch would write remote references of that clone only and move no local branch and no
+`main`; statements from a peer would count as not yet submitted and get their order with the
+lines of the hub. The peer is a courier, and nothing from it counts before the hub has it.
+
 A later fetch from a clone costs a new protocol number and a new version of the layout, with
 decisions on a remote reference without a record entry and on statements without the lines of the
 hub. Its trigger is an exchange of work without a reachable hub, for example in a school network
@@ -112,8 +116,7 @@ without internet. No phase schedules it.
 - The core stays free of network code and of an async runtime, and every rule of a `fetch` or a
   `push` is testable without a socket.
 - A change of the protocol is a change of this repository first. The hub follows with a raised
-  pin, so the two repositories never disagree about a message for longer than one pull request of
-  the hub.
+  pin.
 - The hub cannot loosen a check, because it calls one operation and has no parts to rearrange.
 - The ADRs of the hub itself (its HTTP server, its data tree, its operation) live in stemma-hub.
   They are written when that repository exists (STEMMA-279).

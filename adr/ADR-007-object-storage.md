@@ -166,7 +166,8 @@ server will later keep objects elsewhere (API-first). The implementation is
       is too short costs a repeated upload and never data: the ref update reports missing objects
       and the client uploads again. An age is used here although ADR-011 rejected it for `tmp/`:
       there the lock decides, and an age would be a guess that cuts a slow writer short; here no
-      lock spans an upload and its ref update, and a wrong guess costs a second upload. The clock serves the age of files only and occurs in no repository. The operation
+      lock spans an upload and its ref update, and a wrong guess costs a second upload. The clock
+      serves the age of files only and occurs in no repository. The operation
       treats objects that a computation stored like every unnamed object (ADR-025).
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31). An upload on a hub runs without the lock, so it writes its

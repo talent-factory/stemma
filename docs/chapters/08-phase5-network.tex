@@ -113,9 +113,8 @@ Ein Klon ist dieselbe Anfrage ohne \type{have}.
 Eine zweite Runde gibt es nicht.
 Ein \type{have}, das der Hub nicht kennt, übergeht er; er sendet dann zu viel, nie zu wenig, und
 ein doppeltes Objekt schadet nicht, weil sein Hash es adressiert.
-Fetch und Klon kosten damit zwei Anfragen, unabhängig von der Grösse des Verlaufs.
-Die Arbeit des Hubs wächst mit der Zahl der Objekte, die er sendet, und mit den Commits, die er
-bis zu einem bekannten \type{have} abläuft.
+Fetch und Klon eines öffentlichen Repositorys kosten damit zwei Anfragen, unabhängig von der
+Grösse des Verlaufs.
 
 Ein \type{want} ist an eine Referenz gebunden: Der Hub liefert nur, was von einer Referenz eines
 Repositorys aus erreichbar ist, das der Anfragende lesen darf.
@@ -229,6 +228,8 @@ Rumpf der Antwort.
 Der Klon folgt keiner Weiterleitung, damit ein Token nie an einen anderen Host geht.
 Ein Fetch oder Klon eines öffentlichen Repositorys kostet 2 Anfragen, der eines privaten 4, ein
 Push 5: die Anmeldung mit zwei Anfragen, der Upload, das Ref-Update und der Anker.
+Ein Fetch liest ausserdem die Erklärungen offener Pull Requests und die Namespace-Policy, was je
+eine Anfrage hinzufügen kann.
 
 \startinfobox
 {\bf Wann ein Pack-Format nötig wird.}
@@ -247,7 +248,7 @@ zuordnet (\in{Abschnitt}[sec:signatures]).
 Die Anmeldung am Hub verwendet denselben Schlüssel und führt kein zweites Geheimnis ein.
 
 \startitemize[n]
-\item Der Hub gibt eine Challenge aus, eine Zufallszahl.
+\item Der Hub gibt eine Challenge aus, einen einmaligen Wert (Nonce).
 \item Der Schlüssel signiert sie, einmal je Befehl.
 Die Signatur ist ein eigener Typ von Beweis und bindet die Adresse des Hubs, wie der Klon sie
 aufruft, die Challenge und den Schlüssel.
@@ -436,8 +437,10 @@ Code aus.
 Ein Prüfergebnis ist die Erklärung eines Akteurs aus dem Register, und niemand beweist den Lauf.
 
 Eine Ablehnung hinterlässt nur unbenannte Objekte und nichts, was zurückzunehmen wäre.
-Hat sich \type{main} inzwischen bewegt, holt der Befehl den neuen Stand, rechnet neu und signiert
-neu, eine begrenzte Zahl von Malen.
+Hat sich \type{main} inzwischen bewegt, holt \type{pr merge} den neuen Stand, rechnet neu und
+signiert neu, eine begrenzte Zahl von Malen.
+Ein gewöhnlicher Push wiederholt dagegen nicht von selbst
+(\in{Abschnitt}[sec:ref-update]).
 Ohne Verbindung bleiben Commits, Branches, das Eröffnen eines Pull Requests, Freigaben und
 Prüfungen möglich; nur die Bewegung des geteilten \type{main} wartet auf den Hub.
 
@@ -466,8 +469,11 @@ mehr.
 \subsection{Garantien und Grenzen}
 
 Auf dem Hub gilt: Jede Bewegung einer Referenz ist von einem Schlüssel signiert, der im Register
-an der Spitze von \type{main} aktiv war, und jeder Commit von \type{main} hat das Gate bestanden,
-das der Hub selbst gerechnet hat.
+an der Spitze von \type{main} aktiv war, und \type{main} bewegt sich von $T$ nach $M$ nur, wenn
+das Gate bestanden ist, das der Hub selbst gerechnet hat.
+Ohne Gate kommen zwei Stände nach \type{main}: der erste Push in ein leeres Repository, dessen
+Register den Schlüssel der Anfrage als Owner führen muss, und der Purge eines menschlichen
+Owners.
 Eine Ablehnung nennt dem Absender den vollen Grund: die Rolle, den Inhaber der Lease, die
 berechnete Stufe, die gezählten und fehlenden Freigaben und Prüfergebnisse oder die Schranke.
 Sie verrät nichts, denn wer sie bekommt, darf lesen und könnte alles selbst berechnen.
@@ -591,8 +597,9 @@ Anfragende lesen darf: Die Lehrperson sieht den ganzen Kurs, Studierende sehen i
 Repositories.
 \item Ein Owner des Namespace kann ein Repository einfrieren.
 Der Hub lehnt dann jedes Ref-Update und jede Erklärung ab; das Lesen geht weiter.
-Zurücksetzen kann niemand: Der Hub würde sonst eine Bewegung erlauben, die das Register nicht
-deckt.
+Zurücksetzen kann es keine Rolle des Namespace: Der Hub würde sonst eine Bewegung erlauben, die
+das Register nicht deckt.
+Der Weg zurück sind gewöhnliche Beweise, ein Widerruf und ein Revert oder ein Purge.
 \item Löschen geschieht in zwei Schritten, mit einer Frist, in der ein Owner des Namespace das
 Repository wiederherstellen kann.
 \stopitemize
@@ -651,7 +658,8 @@ Für den Hub ist er dann der Akteur. \stopxcell
 
 Gegen den benutzten Schlüssel baut Phase 5 einen zweiten Schlüsseltyp und einen Bericht.
 Das Register nimmt neben Ed25519 den Hardware-Schlüssel an
-(\type{sk-ssh-ed25519@openssh.com}), und der Kern verlangt bei jeder Signatur eines solchen
+(\type{sk-ssh-ed25519@openssh.com}; mit einem echten Hardware-Token ist der Weg noch nicht
+erprobt, ADR-020), und der Kern verlangt bei jeder Signatur eines solchen
 Schlüssels das Merkmal \quotation{Benutzer anwesend}, ohne Ausnahme nach Typ des Beweises.
 Der Schlüsseltyp ist freiwillig und im Register sichtbar: Jeder Leser sieht, welcher Owner wie
 geschützt ist.
@@ -728,10 +736,9 @@ Geht ein Hub verloren, geht die Aufzeichnung verloren und kein Objekt.
 und \type{push}, der Befehle für Erklärungen und Anker und der Befehle eines Namespace.
 Jeder Teil entsteht mit seiner Umsetzung (\in{Kapitel}[chap:cli]).
 \item Purge auf dem Hub: Die Regel der Annahme steht.
-Offen ist, wie Klone einem \type{main} folgen, das ein Purge auf dem Hub umgeschrieben hat, wie
-ein Purge
-Remote-Referenzen behandelt und was aus den Erklärungen eines Klons über entfernte Commits wird
-(ADR-014).
+Offen ist, wie Klone einem \type{main} folgen, das ein Purge auf dem Hub umgeschrieben hat,
+wie ein Purge Remote-Referenzen behandelt
+und was aus den Erklärungen eines Klons über entfernte Commits wird (ADR-014).
 \item Messung: Die Schwellen für ein Pack-Format, die Haltezeit der Sperre der Referenzen auf dem
 Hub und die Zahl der Wiederholungen eines Merges wegen \type{Stale} sind nicht gemessen
 (ADR-015, ADR-023).

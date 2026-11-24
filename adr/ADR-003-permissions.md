@@ -28,7 +28,8 @@ places them in the repository and lets the core enforce them locally:
 
 ## Limit
 
-Local enforcement binds the processes that go through the core. A hub adds a second place that
+Local enforcement binds the processes that go through the core. What follows about a hub is
+decided for phase 5 and not implemented yet. A hub adds a second place that
 checks every proof again (ADR-024, ADR-025, ADR-026). What is left is the process that uses the key
 of the actor (STEMMA-275).
 
@@ -50,7 +51,8 @@ Root and the kernel are outside the model: no local measure would count any more
 
 - Stopped: a reference, an object or a log entry that is written past the core without a key
   never reaches the hub, because every ref update and every statement needs a signature against
-  the register at the tip of `main`, and `main` moves only with the gate recomputed (ADR-025). A
+  the register at the tip of `main`, and `main` moves from `T` to `M` only with the gate
+  recomputed (ADR-025). A
   forged approval or check result without a key is no proof, and the hub never signs for an actor
   (ADR-024). The record and its order cannot be forged, because the process does not reach the key
   of the hub and the receipts lie in the clones (ADR-026).
@@ -60,6 +62,9 @@ Root and the kernel are outside the model: no local measure would count any more
 - Left open: the process uses the key of the actor, and then it is the actor for the hub.
 
 ### What phase 5 builds against a used key
+
+Both are decided and not implemented yet. Not verified: that `ssh-keygen -Y sign` signs with a
+hardware token in the way the `Signer` calls it (ADR-020).
 
 - The register accepts the key type `sk-ssh-ed25519@openssh.com`, a key on a hardware token, and
   the verifier of the core demands the flag "user present" on every signature of such a key

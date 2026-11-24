@@ -93,7 +93,8 @@ type and carries the flags and the counter in the signed data. Not verified: tha
 
 Rejected: a second key for transport only (a new attribute in the register format and a
 distinction in the authorizer, and a stolen transport key reads private repositories and sends
-anchors), and an exception for single types of proof.
+anchors), and an anchor that travels inside the signed ref update, to save a touch (it would
+reopen the decisions on the anchor and on the ref update).
 
 ## Open Points
 

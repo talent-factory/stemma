@@ -157,7 +157,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Fenster ungeprüfter Commits | | The commits of `main` after the verified tip (ADR-019) |
 | Schranke | Limit, Grenze (for these three) | A rule of the gate that makes a change wait: the pause at a red tip, the window of unverified commits, the reservation (ADR-019) |
 | Reservierung | Reservation | The claim of a change of level 2 or 3 after `N` invalidated runs; all other changes wait, except the repair of a red tip (ADR-019) |
-| Pull Request | Merge Request, PR | The request of the write owner to merge a branch into `main`; the sequence of its entries in the operation log (ADR-004) |
+| Pull Request | Merge Request, PR | The request of the write owner to merge a branch into `main`; the sequence of its entries in the operation log (ADR-004); from phase 5 on named by the hash of its signed opening (ADR-025) |
 | Freigabe | Approval, Review (for the entry) | Entry `pr-approve`: a reviewer signs the head of a pull request (ADR-004) |
 | Kopf (eines Pull Requests) | Spitze (of the branch at approval) | The commit at the tip of the branch when the pull request was opened or approved; an approval binds it |
 | Risikostufe | Severity | A level from 0 to 3 that decides who must approve a change (ADR-004) |
@@ -223,6 +223,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Hardware-Schlüssel | Token-Schlüssel, Sicherheitsschlüssel | A key of the type `sk-ssh-ed25519@openssh.com` on a hardware token (ADR-020) |
 | Ref-Update | Push (for the signed request) | The signed request to move one or several references on a hub (ADR-025) |
 | Aufzeichnung der Ref-Updates, Aufzeichnung | Protokoll (that is the transfer protocol), Journal, Reflog | The hash chain of accepted ref updates that the hub writes and signs (ADR-025) |
+| Eintrag der Aufzeichnung | Record-Eintrag | One entry of the record: the signed text of the actor, the lines of the hub, and the signature of the hub (ADR-025) |
 | Quittung | Bestätigung (that is the answer to an anchor) | The record entry that the hub returns for an accepted ref update (ADR-025) |
 | signierte Erklärung, Erklärung | Statement, Aussage (for the proof type) | A signed proof that binds a repository and not the log of a clone: opening, approval, check result, closing, owner override, purge (ADR-025) |
 | Zeilen des Hubs | | What the hub adds to a record entry or a statement: number, time, register and policy commits, signed (ADR-025) |

@@ -6,8 +6,7 @@
 entries (STEMMA-39) on 2026-10-23. All are implemented; for the retention that means that
 phase 1 keeps every entry, and its rules for later are not built. The open items at the end are
 questions for later (retention together with the garbage collection, who may read the log, the
-width of the number) and none of them changes a
-decision. The flush of directories on Windows was decided on 2026-10-24 (STEMMA-84). The anchor
+width of the number) and none of them changes a decision. The flush of directories on Windows was decided on 2026-10-24 (STEMMA-84). The anchor
 that the actor cannot change, the statement about what a hub sees, and the entries that name a
 signed statement were decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, STEMMA-274,
 STEMMA-56; see "The log and a hub"); they are not implemented yet.

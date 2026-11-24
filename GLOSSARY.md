@@ -413,6 +413,9 @@ _Avoid_: Security key, FIDO key
 
 ## Network and hub
 
+The terms of this section, and the token key above, belong to phase 5. They are decided in
+ADR-022 to ADR-027 and not implemented yet.
+
 **Clone**:
 A repository with a working copy and the full object store that knows a remote. (Klon)
 
@@ -458,6 +461,14 @@ repository: to create one, for a namespace, and to read without a register entry
 none (ADR-024). (Konto)
 _Avoid_: User, login
 
+**Sign-in**:
+The signed challenge that yields a token, once per command (ADR-024). (Anmeldung)
+_Avoid_: Login
+
+**Upload**:
+The first step of a push: the object stream goes to the hub, which stores the objects unnamed
+until a ref update names them (ADR-023). (Upload)
+
 **Challenge**:
 A nonce of a hub that the key of the sender signs once per command, bound to the address of the
 hub. It yields a token (ADR-024). (Challenge)
@@ -481,8 +492,8 @@ _Avoid_: Reflog, protocol, journal
 
 **Record entry**:
 One entry of the record: the signed payload of the actor as received, the lines of the hub
-(number, time, register commit, policy commits, the actor), and the signature of the hub.
-(Eintrag der Aufzeichnung)
+(number, time, register commit, policy commits, whether each move was a fast-forward, the actor,
+the hash of the previous entry), and the signature of the hub. (Eintrag der Aufzeichnung)
 
 **Receipt**:
 The record entry that a hub returns for an accepted ref update. The clone checks it and only then
@@ -496,9 +507,14 @@ function (ADR-025). (signierte Erklärung)
 _Avoid_: Claim, attestation
 
 **Lines of the hub**:
-What a hub adds to a record entry or a statement when it accepts it: a running number, its time,
-and the commits whose register and policies it used, signed with the key of the hub. They are the
-order of the hub. (Zeilen des Hubs)
+What a hub adds to a record entry or a statement when it accepts it, signed with the key of the
+hub: a running number, its time and the register commit, and for a statement the number of the
+last record entry. (Zeilen des Hubs)
+
+**Order of the hub**:
+The order that the numbers in the lines of the hub fix across clones. A revocation acts from the
+record entry that moves `main` to it, and a statement lies before it if its lines name a smaller
+record number (ADR-026). (Ordnung des Hubs)
 
 **Accepting operation**:
 The operation of the core that judges a ref update or a statement on a bare repository and fixes
@@ -507,6 +523,10 @@ the order of the checks, so that a hub composes none itself (ADR-025). (annehmen
 **Key of the hub**:
 The one Ed25519 key of a hub instance. It signs the statements of the hub only, never for an
 actor; a clone pins it in the configuration of the remote (ADR-026). (Schlüssel des Hubs)
+
+**Confirmation (of an anchor)**:
+The signed answer of a hub to an anchor of an operation log; it names the time of the hub and the
+number of the last record entry (ADR-026). (Bestätigung)
 
 **Log ID**:
 The random ID of the operation log of one `.stemma`. A hub keeps anchors per repository and log
@@ -533,8 +553,8 @@ statement (ADR-027). (Gewährung)
 
 **Freeze**:
 The state in which a hub refuses every ref update and every statement to a repository while
-reading goes on. An owner of the namespace sets and lifts it with a signed statement; nobody sets
-a repository back (ADR-027). (Einfrieren)
+reading goes on. An owner of the namespace sets and lifts it with a signed statement; no role of
+the namespace sets a repository back (ADR-027). (Einfrieren)
 
 **Operator**:
 Whoever runs a hub. The operator can block a key and set bounds, and can change no register.

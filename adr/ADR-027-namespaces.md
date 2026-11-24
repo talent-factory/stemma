@@ -98,7 +98,8 @@ owner.
   of the namespace). An owner of the namespace grants and withdraws with a signed statement, a new
   type of proof that binds the hub, the namespace ID, the account and the right. The hub checks it
   against the register at the tip of `main` of the namespace repository and appends it with its
-  own signed lines; the list is the fold of these statements, in the order of the hub. Owners have
+  own signed lines; the list is the fold of these statements, in the order of the hub. It is
+  visible to the owners and to every account in its own lines. Owners have
   both rights by themselves. There are no readers per single repository: the register serves that.
 - Who may read a repository (it is public, the register of `main`, or the grant `read`) reads all
   its branches and tags, the record, the statements and the anchors. What not everyone should see
@@ -139,7 +140,9 @@ running number as the ID, and the hash of the first register as the ID.
 
 - An owner of the namespace deletes a repository with a signed statement that names the ID. From
   then on the hub does not serve it and answers as for a missing one, but keeps it for a grace
-  period in which an owner of the namespace can restore it. The ID is never assigned again. The
+  period in which an owner of the namespace can restore it. The ID is never assigned again, and
+  the name stays taken until the period ends. A namespace can be deleted only when it holds no
+  repository but its namespace repository. The
   owners of a repository do not delete it: creating and deleting are rights above the repository.
 - A repository cannot change its namespace in phase 5.
 - An owner of the namespace freezes a repository with a signed statement and a reason and lifts
@@ -148,7 +151,8 @@ running number as the ID, and the hash of the first register as the ID.
   so `op verify` does not change.
 - A role of the namespace never sets a repository back: the hub would allow a move that the
   register does not cover. The way back is ordinary proofs (ADR-003).
-- Three bounds hold beside the quota per repository: the number of repositories per namespace, the
+- Three bounds hold beside the quota per repository (an upper bound on the bytes of the whole
+  store, named and unnamed objects together): the number of repositories per namespace, the
   sum of the bytes of all repositories of a namespace, and the number of namespaces that an
   account created. They are settings of the hub. The namespace policy sets no bounds: they are
   operation and no rule of a repository.
@@ -182,7 +186,7 @@ break (point 9 of the hand-over in ADR-003, which stays out of scope):
 - A course is a namespace: the teacher owns the namespace repository, sets the namespace policy
   and may demand to be an owner of every repository of the course.
 - The policy format gets the line that demands the owners of the namespace, and rule 8 of ADR-004
-  names one more file. Both are level 3 changes of the core.
+  names one more file, which is a level 3 change of the core.
 - New types of proof arise: the reservation of a namespace, the grant and its withdrawal, the
   rename, the deletion and its restoration, the freeze and its lifting, and "private only".
 - A change of the owners of a namespace is expensive where the namespace demands them in every
