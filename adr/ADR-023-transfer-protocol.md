@@ -2,8 +2,10 @@
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 and 2026-11-24 (STEMMA-270
 for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-56, STEMMA-273,
-STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. Nothing of it is implemented
-yet. The numbers under "Basis" give a direction, not a threshold.
+STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
+`stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
+"The first number is 1"); nothing else of it is implemented yet. The numbers under "Basis" give a
+direction, not a threshold.
 
 ## Context
 
@@ -164,10 +166,11 @@ checked-in example messages.
 - Not covered, because they belong to the transport: TLS, the carriage of the token, the content
   encoding, and URL paths and status codes.
 - The number is independent of `stemma-repository`, which does not travel, and of the object
-  kinds. An older client that meets a kind it does not know fails in the connectivity check with a
-  typed error and moves no reference; it learns this on receipt, not on the first request. An ADR
-  that introduces an object kind says whether it raises the protocol number. The hash algorithm
-  needs no field (ADR-001).
+  kinds. An older client that meets a kind it does not know fails with a typed error and moves no
+  reference: in the reader of the stream, which refuses a frame of an unknown kind, or in the
+  connectivity check. It learns this on receipt, not on the first request. An ADR that introduces
+  an object kind says whether it raises the protocol number. The hash algorithm needs no field
+  (ADR-001).
 
 Rejected: a new object kind always raises the number, and a negotiation of capabilities.
 
@@ -189,6 +192,60 @@ Rejected: a new object kind always raises the number, and a negotiation of capab
 The token travels in the `Authorization` header of a request and in no message, so fetch, upload
 and ref update look the same for a public and a private repository, and no stored or logged
 message holds a secret. The trait `Transport` gets a step for the sign-in.
+
+### The first number is 1
+
+The first protocol number is 1 (`stemma_core::protocol::VERSION`), set by STEMMA-283. It is the
+protocol of phase 5: the slices of the phase add their messages to it, and from the first release
+that carries the protocol on, every change of a message is a new number.
+
+A small message has no line that names its type; the request says which message is expected, and
+each reader refuses the messages of the others. A line ends with a line feed, a field is
+separated by one space, and a number is decimal from 1 without a sign or a leading zero. The
+first four messages:
+
+```text
+stemma-protocol 1                                   the list of references
+repository <32 lower-case hexadecimal digits>
+key ssh-ed25519 <base64>
+former <first> <last> ssh-ed25519 <base64>          zero or more
+ref heads/<name> <commit> <record entry>            zero or more, then tags/<name>
+
+stemma-protocol 1                                   the fetch request
+want <commit>                                       one or more
+have <commit>                                       zero or more
+
+stemma-protocol 1                                   the object stream
+<kind> <length> NUL <body>                          zero or more
+
+stemma-protocol <highest version spoken>            the error
+error unsupported-version
+spoken <version> <version> ...
+```
+
+- **List of references.** A key is an Ed25519 public key in the OpenSSH form without a comment.
+  A former key names the range of record numbers that it signed (ADR-026); the ranges ascend and
+  share no number. The references stand in the order of the bytes of their qualified names, each
+  once; the record entry is the hash of the last record entry of the name (ADR-025), in the form
+  of an object ID. The list holds the references that exist: a deleted name is not listed, and a
+  client that creates it again learns its chain from the `Stale` answer.
+- **Fetch request.** `want` and `have` are sets, each written in the order of the IDs, each commit
+  once. A request without a `want` is refused.
+- **Object stream.** The frame is the header of the store (ADR-007): the kind, the length of the
+  body in decimal (`0` for an empty body), a NUL byte, the body, and no ID. The stream has no
+  count and no end mark, so a stream that ends between two frames is complete for its reader;
+  what is missing shows in the connectivity check. The reader checks the frames only, refuses an
+  unknown kind, and refuses a body above the bound of the receiver before it reads it.
+- **Error.** The second line names the kind, and the lines after it carry its facts. The first
+  kinds are `unsupported-version` with the line `spoken`, and `malformed` with one line
+  `reason <text>` for a message that could not be read. `unsupported-version` is the one message
+  that is read across numbers: its form never changes, and its first line carries the highest
+  version that its sender speaks, so a client of another number still learns the list. The
+  refusals of a ref update, of a statement and of the bounds add their kinds with their slices.
+
+Example messages are checked in under `crates/stemma-core/protocol-examples/` and are reachable
+as `stemma_core::protocol::examples`, so a hub reads them through its dependency (ADR-022). They
+are also the seeds of the fuzz target `protocol`.
 
 ### Mapping to HTTP
 
@@ -330,3 +387,8 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       of a request. Left to the slices.
 - [ ] Whether `push` reads the references first to report a stale state early. It belongs to the
       command surface.
+- [ ] The list of references carries the former keys without the signature of the current key
+      over them (ADR-026). The signature, its payload and its type tag belong to the slice that
+      pins the key, which adds the line to protocol 1.
+- [ ] Whether the list of references should name deleted names with their last record entry, so
+      that a client can create one again without a `Stale` answer first.

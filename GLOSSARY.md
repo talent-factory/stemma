@@ -451,8 +451,8 @@ HTTP client in `stemma-remote` and an in-memory variant for tests implement it (
 
 **Protocol version**:
 The number `stemma-protocol <n>`, the first line of every message between a clone and a hub. It is
-independent of the repository format, and every extension is a new number (ADR-023).
-(Protokollversion)
+independent of the repository format, and every extension is a new number; the first number is 1
+(ADR-023). (Protokollversion)
 
 **Object stream**:
 The body of a fetch or an upload: whole objects in the encoding of the store, ancestors first,

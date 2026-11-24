@@ -2,7 +2,8 @@
 //! index, object storage, references (branches, tags, and HEAD, ADR-008), the repository (ADR-009),
 //! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), the best common
 //! ancestors of two commits ([`merge_base`]), conflicts as sums of trees ([`conflict`]), the merge
-//! of trees ([`merge`]), and the SSHSIG signatures of proofs ([`signature`], ADR-020).
+//! of trees ([`merge`]), the SSHSIG signatures of proofs ([`signature`], ADR-020), and the messages
+//! between a clone and a hub ([`protocol`], ADR-023).
 //!
 //! # Errors
 //!
@@ -59,6 +60,7 @@ pub mod oplog;
 pub mod policy;
 #[cfg(test)]
 mod properties;
+pub mod protocol;
 pub mod pull;
 pub mod refs;
 pub mod register;

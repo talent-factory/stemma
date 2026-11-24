@@ -54,6 +54,9 @@ Jede Nachricht beginnt mit der Zeile \type{stemma-protocol <n>}.
 Diese Protokollversion ist unabhängig von der Version des Repository-Formats (ADR-009) und von
 der Version des Programms; eine Änderung braucht ein ADR und eine neue Nummer.
 Ein Hub kann mehrere Versionen bedienen, ein Klon spricht eine.
+Die erste Protokollversion ist 1.
+Ein Leser, der eine andere Nummer liest, lehnt mit einem eigenen Fehler ab, und die Antwort an
+den Absender nennt die Versionen, die diese Seite spricht.
 
 Der Hub öffnet jedes Repository als Bare-Repository, also ohne Arbeitskopie, und ruft die
 Operationen des Kerns auf.
@@ -178,6 +181,34 @@ Die kleinen Nachrichten sind zeilenweiser Text in fester Reihenfolge, wie die Ei
 Operation Log; der Objektstrom ist binär und beginnt mit derselben ersten Zeile.
 Es gibt keine Listen von Fähigkeiten und keine optionalen Felder: Jede Erweiterung ist eine neue
 Protokollversion.
+Gebaut sind die ersten vier Nachrichten: die Liste der Referenzen, die Fetch-Anfrage, der
+Objektstrom und der Fehler.
+Die Liste der Referenzen eines Repositorys mit einem Branch sieht so aus, mit gekürzten Werten:
+
+\starttyping
+stemma-protocol 1
+repository 00112233445566778899aabbccddeeff
+key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIjw...
+ref heads/main b3:94e11db2... b3:a1a1a1a1...
+\stoptyping
+
+Eine Zeile \type{ref} nennt den Namen der Referenz, ihren Commit und den Hash ihres letzten
+Eintrags der Aufzeichnung (\in{Abschnitt}[sec:ref-update]).
+Die Fetch-Anfrage besteht aus Zeilen \type{want <Commit>} und danach \type{have <Commit>}.
+Im Objektstrom folgt auf die erste Zeile je Objekt der Kopf, den es auch im Objektspeicher hat
+(Art, Länge und ein NUL-Byte), und sein Rumpf.
+Ein Fehler nennt in der zweiten Zeile seine Art, zum Beispiel \type{error unsupported-version},
+und darunter die Angaben dazu, hier die Zeile \type{spoken} mit den gesprochenen Versionen.
+Diese eine Nachricht hat unter jeder Protokollversion dieselbe Form, damit auch ein Klon einer
+anderen Version sie lesen kann.
+
+Für jede Nachricht gilt die Regel der strengen Leser (\in{Abschnitt}[sec:strict-readers]):
+Der Leser nimmt nur an, was der Schreiber schreibt.
+Listen stehen deshalb in fester Reihenfolge, die Referenzen nach ihrem Namen und die Commits einer
+Fetch-Anfrage nach ihrer ID, und eine Nachricht hat genau eine Schreibweise.
+Die genauen Formate stehen in ADR-023; die Beispielnachrichten liegen im Kern
+(\type{protocol-examples/}) und sind zugleich die Startwerte des Fuzzers.
+
 Die Adresse eines Remote ist die Adresse des Repositorys,
 \type{<Hub>/<Namespace>/<Repository>}, und alle Endpunkte liegen darunter
 (\in{Tabelle}[tab:hub-requests]).
