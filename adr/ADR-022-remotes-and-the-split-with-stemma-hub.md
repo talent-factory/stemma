@@ -51,7 +51,9 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
   such as the page of a proxy; the error then carries the words of the carrier, for HTTP the
   status (ADR-023). A transport reads no body, so it tells such an answer from an error message by
   something outside the body; for `stemma-remote` that is the media type, which its slice sets
-  (ADR-023, open items).
+  (ADR-023, open items). This narrows rule 3 of the mapping to HTTP in ADR-023: a body that the
+  transport hands over as an error message and that its reader refuses is an error of that
+  reader, reported by the core, and no transport error.
 - A body that ends early is an error of its reader, never an early end, because no message
   carries a count or an end mark. A body that the caller drops before its end is no error: the
   next request is allowed, and the transport discards what was left.
@@ -123,12 +125,13 @@ dependency.
   through its git dependency.
 - The in-memory `Transport` (`MemoryTransport`, STEMMA-287) passes bytes as a network does: it
   parses a request with the strict reader, answers a request that the reader refuses with the
-  error message of the protocol, and encodes the answer with its writer. The other side is a
-  trait of two methods (`OtherSide`) that take and return the values of the protocol. Its
-  implementation is the answering operation of the core once that is built (STEMMA-288), and the
-  accepting operation follows with the requests of a push; until then the tests of the transport
-  answer from a bare repository themselves. A test may also implement the trait to answer what a
-  correct side never answers.
+  error message of the protocol, and encodes a list of references and an error with their
+  writers. The other side is a trait of two methods (`OtherSide`) that take the values of the
+  protocol: it returns a small answer as a value, and it writes an object stream itself, which
+  the transport passes on unread. Its implementation is the answering operation of the core
+  once that is built (STEMMA-288), and the accepting operation follows with the requests of a
+  push; until then the tests of the transport answer from a bare repository themselves. A test
+  may also implement the trait to answer what a correct side never answers.
 - The end-to-end tests with real HTTP live in stemma-hub and use `stemma-remote` and the CLI of
   the pinned commit.
 - A scheduled job of the hub builds and tests against the tip of stemma `main` instead of the

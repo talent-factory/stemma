@@ -1,5 +1,5 @@
 //! The tests of the transport: the messages of the protocol travel between two repositories
-//! through [`MemoryTransport`], a request that cannot be read is answered with the error of the
+//! through [`MemoryTransport`], a request that the reader refuses is answered with the error of the
 //! protocol, and a side that cannot answer is a failure of the transport.
 //!
 //! The answering operation of the core is not built yet, so the other side of these tests is
@@ -404,7 +404,7 @@ fn the_example_messages_travel_byte_for_byte() {
 }
 
 #[test]
-fn a_request_that_cannot_be_read_is_answered_with_malformed_and_the_side_is_not_asked() {
+fn a_request_that_the_reader_refuses_is_answered_with_malformed_and_the_side_is_not_asked() {
     let mut transport = MemoryTransport::new(Refusing::new(|| panic!("the side was asked")));
     // A fetch request wants at least one commit.
     let mut request: &[u8] = b"stemma-protocol 1\n";

@@ -30,8 +30,10 @@ use crate::protocol::{ErrorMessage, FetchRequest, RefList};
 /// The body of an answer, as a stream. It borrows the transport, so one request runs at a time.
 ///
 /// A body that ends before the other side has sent all of it is reported by the carrier: its
-/// reader returns an error, never an early end. The readers of the protocol take an early end
-/// for a shorter message, because no message carries a count or an end mark (ADR-023).
+/// reader returns an error, never an early end. No message carries a count or an end mark, so a
+/// reader of the protocol cannot tell every early end: it refuses a cut inside a line or a frame
+/// and a cut before a line that must be there, and reads a cut after a whole line or a whole
+/// frame as a shorter message (ADR-023).
 ///
 /// The caller may drop a body before its end, for example after a reader refused it. The next
 /// request is allowed then, and the transport discards what was left.
@@ -43,8 +45,7 @@ pub type Body<'a> = Box<dyn BufRead + 'a>;
 pub enum Answer<'a> {
     /// The message that the request asks for.
     Message(Body<'a>),
-    /// An error in its place, for the reader
-    /// [`ErrorMessage::parse`].
+    /// An error in its place, for the reader [`ErrorMessage::parse`].
     Error(Body<'a>),
 }
 
@@ -64,8 +65,7 @@ impl fmt::Debug for Answer<'_> {
 /// afterwards by the caller. An implementation does I/O and nothing else. It does not read, check
 /// or change a message, and it decides nothing about a repository.
 pub trait Transport {
-    /// Asks for the list of references. The message of the answer is a
-    /// [`RefList`].
+    /// Asks for the list of references. The message of the answer is a [`RefList`].
     ///
     /// # Errors
     ///
@@ -73,9 +73,8 @@ pub trait Transport {
     /// what comes back is no answer of the other side.
     fn refs(&mut self) -> Result<Answer<'_>, TransportError>;
 
-    /// Sends a fetch request, which `request` holds as
-    /// [`FetchRequest::encode`] writes it. The message of
-    /// the answer is an object stream
+    /// Sends a fetch request, which `request` holds as [`FetchRequest::encode`] writes it. The
+    /// message of the answer is an object stream
     /// ([`ObjectStreamReader`](crate::protocol::ObjectStreamReader)).
     ///
     /// # Errors
@@ -144,10 +143,10 @@ impl Error for TransportError {
 /// The methods take the values of [`protocol`](crate::protocol): the transport reads the bytes of
 /// a request before it asks. A small answer is returned as a value, which the transport encodes;
 /// an object stream is written by this side itself, and the transport passes its bytes on as
-/// they are. The answering operation of the core for `refs` and
-/// `fetch` is the implementation that the tests of `fetch` use, once it is built; the accepting
-/// operation follows with the requests of a push. A test may implement the trait itself to
-/// answer what a correct side never answers.
+/// they are. The answering operation of the core for `refs` and `fetch` is the implementation
+/// that the tests of `fetch` use, once it is built; the accepting operation follows with the
+/// requests of a push. A test may implement the trait itself to answer what a correct side never
+/// answers.
 pub trait OtherSide {
     /// Answers the list of references.
     ///
@@ -168,6 +167,7 @@ pub trait OtherSide {
 
 /// Why an [`OtherSide`] did not answer with the message that was asked for.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Refusal {
     /// It answers this error, which travels as [`Answer::Error`].
     Error(ErrorMessage),
@@ -188,10 +188,10 @@ impl From<ErrorMessage> for Refusal {
 /// Between the two sides travel bytes, as over a network. A request is read to its end and
 /// parsed by the strict reader of the protocol, as a hub parses it. A list of references and an
 /// error are encoded by their writers; an object stream is passed on as the other side wrote it,
-/// unread. So the caller reads an answer with the reader that it uses for every transport. A request
-/// that the reader refuses is answered with the error of the protocol
-/// ([`ErrorMessage`]): `unsupported-version` for another protocol
-/// version, `malformed` for everything else, and the other side is not asked.
+/// unread. So the caller reads an answer with the reader that it uses for every transport. A
+/// request that the reader refuses is answered with the error of the protocol
+/// ([`ErrorMessage`]): `unsupported-version` for another protocol version, `malformed` for
+/// everything else, and the other side is not asked.
 ///
 /// The answer is complete before the method returns, and it is held in memory. This transport
 /// compresses nothing and sets no bound for the size of a request.
