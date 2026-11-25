@@ -1,0 +1,3 @@
+stemma-protocol 1
+error malformed
+reason line 2: expected a line `want ...`
