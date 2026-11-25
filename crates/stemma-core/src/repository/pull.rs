@@ -63,7 +63,9 @@ impl Repository {
 
     /// The write owner of `branch` opens a pull request that would merge it into `main`.
     ///
-    /// The rules, all checked under the lock of the references:
+    /// The rules. Those that depend on nothing that moves (the branch is not `main`, the shape
+    /// of the reviewers) are checked before the statement is signed, the others under the lock
+    /// of the references:
     ///
     /// - the branch exists and is not `main`;
     /// - only the write owner opens: where the branch has a lease ([`lease::applies`]), `actor`
@@ -645,8 +647,8 @@ pub enum PullError {
     /// The repository has a register, so the statement of an opening, a closing, an approval,
     /// or a check needs a signature, and the caller gave no signer.
     SignatureRequired,
-    /// The key of the signature is retired or revoked: it keeps what it signed before, as far
-    /// as the register says, but signs nothing new.
+    /// The key of the signature is retired: it keeps what it signed before its retirement, but
+    /// signs nothing new. A revoked key is refused as [`Proof`](Self::Proof).
     KeyNotActive,
     /// The statement could not be signed, or the signer signed with another key than the one
     /// it named.
@@ -697,7 +699,8 @@ impl fmt::Display for PullError {
             Self::SameOpening { number } => write!(
                 f,
                 "this opening made the pull request {number}, which has ended; an ended pull \
-                 request is final, so the next one needs a new head"
+                 request is final, so the next one needs a new head, other reviewers, or another \
+                 repair"
             ),
             Self::BranchMoved { branch } => write!(
                 f,
@@ -2346,6 +2349,311 @@ mod tests {
                 .unwrap()
                 .count(),
             1
+        );
+    }
+
+    /// An enforcing repository with the lease of the branch held by Daniel.
+    fn enforcing(dir: &TempDir) -> (Repository, Register) {
+        let (repository, _) = repository(dir);
+        repository
+            .claim_lease(&feature(), &daniel(), 60, &AllowAll)
+            .unwrap();
+        (repository, approvers())
+    }
+
+    fn open_signed(repository: &Repository, register: &Register) -> Result<Entry, PullError> {
+        repository.open_pull(
+            &feature(),
+            &daniel(),
+            vec![],
+            None,
+            Some(register),
+            Some(&Seeded::new(1)),
+            &AllowAll,
+        )
+    }
+
+    /// What the writers have written: the entries of the log and the statements of the set.
+    fn written(repository: &Repository) -> (usize, usize) {
+        (
+            repository.oplog().entries().unwrap().len(),
+            repository.statement_set().hashes().unwrap().len(),
+        )
+    }
+
+    #[test]
+    fn a_retired_key_signs_no_new_statement_and_nothing_is_written() {
+        let dir = TempDir::new();
+        let (repository, mut register) = enforcing(&dir);
+        let number = open_signed(&repository, &register).unwrap().number();
+        // Retired from far ahead: what the key signed before still counts, nothing new does.
+        // Every writer makes its statement in one place (`make_statement`), so the approval
+        // and the check stand for the opening and the closing; the key of the one owner of
+        // this register cannot be retired.
+        register
+            .retire(&Identity::of(&mia()), &key(2), 1_000)
+            .unwrap();
+        let before = written(&repository);
+        let error = repository
+            .approve_pull(
+                number,
+                &mia(),
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(matches!(error, PullError::KeyNotActive), "{error:?}");
+        let error = repository
+            .record_check(
+                repository.refs().branch(&feature()).unwrap().unwrap(),
+                None,
+                crate::oplog::CheckResult::Pass,
+                &mia(),
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::repository::CheckError::KeyNotActive),
+            "{error:?}"
+        );
+        assert_eq!(written(&repository), before);
+    }
+
+    #[test]
+    fn a_closing_is_signed_by_whoever_closes_and_refused_before_anything_is_written() {
+        let dir = TempDir::new();
+        let (repository, register) = enforcing(&dir);
+        let number = open_signed(&repository, &register).unwrap().number();
+        let before = written(&repository);
+        let close = |actor: &Actor, signer: Option<&dyn Signer>| {
+            repository.close_pull(number, actor, Some(&register), signer, &AllowAll)
+        };
+        assert!(matches!(
+            close(&daniel(), None),
+            Err(PullError::SignatureRequired)
+        ));
+        // The key of Mia does not close for Daniel, and Mia may not close at all.
+        assert!(matches!(
+            close(&daniel(), Some(&Seeded::new(2))),
+            Err(PullError::Proof(_))
+        ));
+        assert!(matches!(
+            close(&mia(), Some(&Seeded::new(2))),
+            Err(PullError::NotAllowedToClose { .. })
+        ));
+        assert_eq!(written(&repository), before);
+        let entry = close(&daniel(), Some(&Seeded::new(1))).unwrap();
+        let statement = repository
+            .statement_set()
+            .get(&entry.statement().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(statement.key(), Some(&key(1)));
+        let pulls = repository.pull_requests().unwrap();
+        assert!(
+            matches!(pulls[0].state(), PullState::Closed { entry: closed, .. } if *closed == entry.number())
+        );
+        let entries = repository.oplog().verify().unwrap();
+        repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_pull_request_that_ends_while_its_closing_is_signed_is_found_under_the_lock() {
+        struct Closing<'a>(&'a Repository, u64);
+
+        impl Signer for Closing<'_> {
+            fn sign(&self, message: &[u8]) -> Result<crate::signature::Signature, SignError> {
+                by_hand::close(self.0, &daniel(), self.1, Some(&Seeded::new(1)));
+                Seeded::new(1).sign(message)
+            }
+
+            fn public_key(&self) -> Result<PublicKey, SignError> {
+                Ok(key(1))
+            }
+        }
+
+        let dir = TempDir::new();
+        let (repository, register) = enforcing(&dir);
+        let number = open_signed(&repository, &register).unwrap().number();
+        let before = written(&repository);
+        let error = repository
+            .close_pull(
+                number,
+                &daniel(),
+                Some(&register),
+                Some(&Closing(&repository, number)),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(matches!(error, PullError::NotOpen { .. }), "{error:?}");
+        // The only new entry and the only new statement are those of the other closing.
+        assert_eq!(written(&repository), (before.0 + 1, before.1 + 1));
+    }
+
+    #[test]
+    fn a_branch_that_moves_while_its_opening_is_signed_is_refused_and_nothing_is_written() {
+        struct Moving<'a>(&'a Repository);
+
+        impl Signer for Moving<'_> {
+            fn sign(&self, message: &[u8]) -> Result<crate::signature::Signature, SignError> {
+                push_commit(self.0, &daniel());
+                Seeded::new(1).sign(message)
+            }
+
+            fn public_key(&self) -> Result<PublicKey, SignError> {
+                Ok(key(1))
+            }
+        }
+
+        let dir = TempDir::new();
+        let (repository, register) = enforcing(&dir);
+        let before = written(&repository);
+        let error = repository
+            .open_pull(
+                &feature(),
+                &daniel(),
+                vec![],
+                None,
+                Some(&register),
+                Some(&Moving(&repository)),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, PullError::BranchMoved { branch } if *branch == feature()),
+            "{error:?}"
+        );
+        // The only new entry is the commit that moved the branch; no statement was put.
+        assert_eq!(written(&repository), (before.0 + 1, before.1));
+        // A new try opens on the new head.
+        let opened = open_signed(&repository, &register).unwrap();
+        let head = repository.refs().branch(&feature()).unwrap().unwrap();
+        assert_eq!(opened.pull().unwrap().commit(), Some(&head));
+    }
+
+    #[test]
+    fn a_lost_statement_never_opens_a_pull_request_again() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let number = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
+            .unwrap()
+            .number();
+        let closed = repository
+            .close_pull(number, &daniel(), None, None, &AllowAll)
+            .unwrap();
+        let path = repository
+            .statement_set()
+            .path_of(&closed.statement().unwrap());
+        // The closing can only hold the change back, so it stands from the lines of its entry
+        // where its statement is gone or is no statement; `op verify` reports the damage.
+        for damage in [None, Some("not a statement")] {
+            match damage {
+                None => std::fs::remove_file(&path).unwrap(),
+                Some(text) => std::fs::write(&path, text).unwrap(),
+            }
+            let pulls = repository.pull_requests().unwrap();
+            assert!(
+                matches!(pulls[0].state(), PullState::Closed { entry, .. } if *entry == closed.number()),
+                "{damage:?}: {pulls:?}"
+            );
+            assert!(matches!(
+                repository.approve_pull(number, &mia(), None, None, &AllowAll),
+                Err(PullError::NotOpen { .. })
+            ));
+            let entries = repository.oplog().verify().unwrap();
+            assert!(
+                repository.verify_statements(&entries, None).is_err(),
+                "{damage:?}"
+            );
+        }
+        // An opening can let a change through, so it counts only with its statement.
+        let opening = repository.oplog().entries().unwrap();
+        let opening = opening
+            .iter()
+            .find(|entry| entry.number() == number)
+            .unwrap();
+        std::fs::remove_file(
+            repository
+                .statement_set()
+                .path_of(&opening.statement().unwrap()),
+        )
+        .unwrap();
+        assert!(repository.pull_requests().unwrap().is_empty());
+    }
+
+    #[test]
+    fn op_verify_refuses_a_retired_key_on_a_check_and_counts_what_is_unsigned() {
+        let dir = TempDir::new();
+        let (repository, mut register) = enforcing(&dir);
+        let number = open_signed(&repository, &register).unwrap().number();
+        let head = repository.refs().branch(&feature()).unwrap().unwrap();
+        // An approval without a signature is no damage: it does not count, and it is counted.
+        by_hand::approve(&repository, &mia(), number, head, None);
+        let entries = repository.oplog().verify().unwrap();
+        let verified = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap();
+        assert_eq!((verified.statements, verified.unsigned), (2, 1));
+        assert_eq!(
+            repository
+                .verify_statements(&entries, None)
+                .unwrap()
+                .unsigned,
+            0,
+            "the open mode asks for no signature"
+        );
+        // A check of a key that was retired before its entry is damage: only an approval of a
+        // key that no longer counts is void and passes.
+        let check = by_hand::check(
+            &repository,
+            &ana(),
+            head,
+            None,
+            crate::oplog::CheckResult::Pass,
+            Some(&Seeded::new(3)),
+        );
+        let approval = by_hand::approve(&repository, &ana(), number, head, Some(&Seeded::new(3)));
+        register
+            .retire(&Identity::of(&ana()), &key(3), check.number())
+            .unwrap();
+        assert!(approval.number() > check.number());
+        let entries = repository.oplog().verify().unwrap();
+        let error = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                StatementCheckError::Proof {
+                    number,
+                    error: ProofError::KeyNoLongerCounts { .. }
+                } if number == check.number()
+            ),
+            "{error:?}"
+        );
+        // Neither counts: the check for the rule table, the approval for the recount.
+        assert!(repository
+            .counted_checks(
+                number,
+                &head,
+                &head,
+                crate::policy::RiskLevel::Zero,
+                Some(&register)
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            repository
+                .recount_approvals(number, Some(&register))
+                .unwrap()
+                .count(),
+            0
         );
     }
 

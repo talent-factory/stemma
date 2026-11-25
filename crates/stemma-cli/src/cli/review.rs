@@ -123,9 +123,10 @@ fn pull_kind(error: &PullError) -> FailureKind {
 /// the file system is not.
 fn set_kind(error: &SetError) -> FailureKind {
     match error {
-        SetError::Malformed { .. } | SetError::WrongName { .. } | SetError::UnexpectedFile(_) => {
-            FailureKind::Damaged
-        }
+        SetError::Malformed { .. }
+        | SetError::WrongName { .. }
+        | SetError::TooLarge { .. }
+        | SetError::UnexpectedFile(_) => FailureKind::Damaged,
         _ => FailureKind::Other,
     }
 }

@@ -266,9 +266,9 @@ impl Recount {
 /// function over what the statements say. `approvals` are those of the fold; the ones that name
 /// another pull request are passed over. `authors` wrote the commits that the pull request
 /// brings. `proof` checks the signature of one approval against the register; it is the only
-/// part that reads anything else. An approval counts if it names `head`, its reviewer is neither
-/// the opener nor an author, its proof holds, and its identity has no approval that counts
-/// already.
+/// part that reads anything else. An approval counts if it stands after the opening in the order of the
+/// holder, names `head`, its reviewer is neither the opener nor an author, its proof holds, and
+/// its identity has no approval that counts already.
 ///
 /// The writer of an approval asks the same questions before it writes the statement, but a
 /// statement can come from another hand, or the head can move after it; the recount does not
@@ -468,6 +468,20 @@ mod tests {
         // The statement names no opener, so its reader cannot refuse it; the fold does.
         let pulls = fold(&[Placed::new(1, 10, ana(), opening("a"))], &[]).pulls;
         assert!(pulls.is_empty());
+    }
+
+    #[test]
+    fn an_owner_override_is_no_evidence_about_a_pull_request() {
+        let taken = statement::OwnerOverride::try_new(
+            None,
+            branch("a"),
+            Identity::of(&ana()),
+            Some(commit(A)),
+            "the holder is away",
+        )
+        .unwrap();
+        let placed = Placed::new(1, 10, mia(), Statement::unsigned(Body::Override(taken)));
+        assert_eq!(fold(&[placed], &[]), crate::evidence::Evidence::default());
     }
 
     #[test]

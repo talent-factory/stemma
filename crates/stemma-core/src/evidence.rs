@@ -14,8 +14,10 @@
 //!
 //! - In a clone the entry of the operation log that names the hash of the statement places it
 //!   (ADR-011): the number and the time are those of the entry, and the actor is its actor. In
-//!   an enforcing repository the signature of the statement must be one of a key of that actor,
-//!   which the rules that count the evidence ask against the register; in the open mode the
+//!   an enforcing repository the signature of an approval and of a check must be one of a key
+//!   of that actor, which the rules that count them ask against the register. Nothing asks
+//!   that for an opening and a closing after they are written: the fold takes no register, and
+//!   `op verify` reports a signature that the register does not accept. In the open mode the
 //!   actor is a claim, as the whole entry is (ADR-003).
 //! - On a hub the lines that the hub adds to a statement it keeps place it: its running number,
 //!   its time, and the actor that the register names for the key.
@@ -28,11 +30,11 @@
 //!
 //! A set can hold more than the writers of this crate would write: a log can be edited by hand,
 //! and a purge leaves a closing whose opening is gone (ADR-014). The fold skips what does not
-//! fit and reports nothing: a closing, an approval, or a merge of a pull request that it does
+//! fit and reports nothing: a closing or a merge of a pull request that it does
 //! not know, whatever follows the end of a pull request, an opening that is placed a second
 //! time (the same opening is not accepted twice), and an opening whose opener is one of its
-//! reviewers. An approval and a check are listed as they are; whether they count is not a
-//! question of the fold.
+//! reviewers. An approval and a check are listed as they are, an approval of a pull request that
+//! the fold does not know included; whether they count is not a question of the fold.
 
 use crate::check::Check;
 use crate::object::CommitId;

@@ -324,7 +324,8 @@ pub enum CheckError {
     /// The repository has a register, so the statement of a check needs a signature, and the
     /// caller gave no signer.
     SignatureRequired,
-    /// The key of the signature is retired or revoked and signs nothing new.
+    /// The key of the signature is retired and signs nothing new. A revoked key is refused as
+    /// [`Proof`](Self::Proof).
     KeyNotActive,
     /// The statement could not be signed, or the signer signed with another key than the one
     /// it named.
@@ -1059,6 +1060,41 @@ mod tests {
         let found = f.repository.last_green_tip(&main, None).unwrap().unwrap();
         assert_eq!(found.number(), on_line.number());
         assert_ne!(found.number(), on_second_parent.number());
+    }
+
+    #[test]
+    fn a_failing_run_stands_without_its_statement_and_a_passing_one_does_not() {
+        let dir = TempDir::new();
+        let f = fixture(&dir);
+        let register = register();
+        let set = f.repository.statement_set();
+        let failed = signed_run(&f, &human("ana"), 2, None, CheckResult::Fail);
+        let passed = signed_run(&f, &human("ana"), 2, Some(f.tip), CheckResult::Pass);
+        for entry in [&failed, &passed] {
+            std::fs::remove_file(set.path_of(&entry.statement().unwrap())).unwrap();
+        }
+        // A failure can only hold a change back, so it is read from the lines of its entry.
+        let listed: Vec<(u64, bool)> = f
+            .repository
+            .checks()
+            .unwrap()
+            .iter()
+            .map(|check| (check.number(), check.passed()))
+            .collect();
+        assert_eq!(listed, [(failed.number(), false)]);
+        // It carries no signature: it counts in the open mode and not in an enforcing one,
+        // where a failure without the signature of its writer must not pause `main`.
+        let proven = |register| -> Vec<u64> {
+            f.repository
+                .proven_checks(register)
+                .unwrap()
+                .iter()
+                .map(Check::number)
+                .collect()
+        };
+        assert_eq!(proven(None), [failed.number()]);
+        assert!(proven(Some(&register)).is_empty());
+        assert!(counted(&f, RiskLevel::Zero, None).is_empty());
     }
 
     #[test]

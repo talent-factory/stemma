@@ -298,8 +298,8 @@ owner-override   branch <name>
   run, or `-` for a run on the commit as it is; it is never the commit itself.
 - **The owner override.** It names the branch, the holder whose write ownership is overridden,
   the commit at the tip of the branch (or `-` for a branch that does not exist), and the
-  reason: one line of 1 to 1,024 bytes without a control character and without a space at its
-  ends. The commit binds the statement to one state of the branch. The local entry
+  reason: one line of 1 to 1,024 bytes without a control character, without a line or
+  paragraph separator, and without a space at its ends. The commit binds the statement to one state of the branch. The local entry
   `lease-override` does not name it yet (ADR-011).
 - **The hash.** The hash of a statement is the BLAKE3 hash of the line `stemma-statement-hash 1`
   and the whole message, the signature included. It has the form of an object ID and is the
@@ -324,9 +324,12 @@ owner-override   branch <name>
   no statement), and returns the pull requests with their state, the approvals, and the
   checks. A clone calls it with the entries of its log as that order (ADR-011), and the local
   gate reads its result (ADR-019); a hub calls the same function with its lines. The fold is
-  tolerant: it skips a closing, an approval, or a merge of a pull request that it does not
+  tolerant: it skips a closing or a merge of a pull request that it does not
   know, whatever follows the end of a pull request, an opening that is placed a second time,
-  and an opening whose opener is one of its reviewers. Which approvals and checks count is
+  and an opening whose opener is one of its reviewers. It lists every approval and every
+  check as it is, and where the statement of a closing or of a failing run cannot be read, a
+  clone places it from the lines of its entry, because what only holds a change back must not
+  vanish with a file. Which approvals and checks count is
   decided by the rules of phase 4, unchanged, which now ask the register for the signature of
   the statement.
 
@@ -499,9 +502,10 @@ revocation on `main` takes the effect from the statements of a key.
       (`repository -`), so they count locally only. Which remote gives a statement its ID, and
       whether a statement made before the first push is signed again, belongs to the slice that
       submits statements.
-- [ ] An opening and a closing are not counted against the register by the fold of a clone;
-      `op verify` reports one that the register does not accept, and a hub checks every
-      statement when it is submitted.
+- [ ] An opening and a closing are not counted against the register by the fold of a clone,
+      so one without a signature makes or ends a pull request in an enforcing repository too.
+      `op verify` reports a signature that the register does not accept and counts the
+      unsigned ones, and a hub checks every statement when it is submitted.
 - [ ] How commands name a pull request for people (a prefix of the hash, a running number in the
       lines of the hub). It belongs to the command surface.
 - [ ] A policy that names the writers of checks. Possible later without a break, because it only

@@ -137,7 +137,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   (11), before the former owner of a worktree (12), before the remotes (13), before the bare
   repository (14), or before the signed statements (15) rises to 16 with its next entry or purge
   (ADR-014, ADR-011, ADR-010).
-  Version 16 adds the directory `statements/` and changes two entries of the log: `pr-open`,
+  Version 16 adds the directory `statements/` and changes four entries of the log: `pr-open`,
   `pr-close`, and `pr-approve` end with a line that names a statement, and `check` has its
   version 2 with that line (ADR-011). A program that knows only version 15 would call such an
   entry damage, so it has to refuse the repository. A repository of an older version is read as

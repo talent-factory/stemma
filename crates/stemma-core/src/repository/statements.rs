@@ -19,8 +19,8 @@ use std::fmt;
 
 use super::Repository;
 use crate::evidence::{self, Evidence, Merge, Placed};
-use crate::oplog::{Entry, OpLogError, PullKind, Record};
-use crate::protocol::statement::{Body, Statement, StatementHash, StatementKind};
+use crate::oplog::{CheckResult, Entry, OpLogError, PullKind, Record};
+use crate::protocol::statement::{Body, Checked, Closing, Statement, StatementHash, StatementKind};
 use crate::refs::RefError;
 use crate::register::{Identity, ProofError, Register};
 use crate::statements::{SetError, StatementSet, STATEMENT_DIR};
@@ -57,6 +57,11 @@ impl Repository {
     /// The statements that the entries place, and the merges that they record, both in the
     /// order of the entries. An entry places its statement if the set holds it, the strict
     /// reader accepts it, and it says what the lines of the entry say ([`disagreement`]).
+    ///
+    /// An entry that places nothing counts for nothing, with one exception: what can only hold
+    /// a change back stays ([`held_back`]). A closing and a failing run are placed from the
+    /// lines of the entry where their statement cannot be, so losing a file of the set never
+    /// opens a pull request again and never takes a red tip away in the open mode.
     fn placed(&self, entries: &[Entry]) -> Result<(Vec<Placed>, Vec<Merge>), SetError> {
         let set = self.statement_set();
         let openings = openings_of(entries);
@@ -69,13 +74,15 @@ impl Repository {
             let Some(hash) = entry.statement() else {
                 continue;
             };
-            let statement = match set.get(&hash) {
-                Ok(Some(statement)) => statement,
-                Ok(None) => continue,
+            let read = match set.get(&hash) {
+                Ok(statement) => statement,
                 Err(error @ SetError::Io { .. }) => return Err(error),
-                Err(_) => continue,
+                Err(_) => None,
             };
-            if disagreement(entry, &statement, &openings).is_none() {
+            let statement = read
+                .filter(|statement| disagreement(entry, statement, &openings).is_none())
+                .or_else(|| held_back(entry, &openings));
+            if let Some(statement) = statement {
                 placed.push(Placed::new(
                     entry.number(),
                     entry.time(),
@@ -102,7 +109,10 @@ impl Repository {
     /// Three things are no damage. A statement that no entry names counts for nothing; a writer
     /// that stopped between the statement and its entry leaves one, and so does a purge that
     /// replaced the entry by a stub (ADR-014). An unsigned statement in an enforcing repository
-    /// does not count and proves nothing wrong. And an approval of a key that was retired or
+    /// proves nothing wrong: an approval and the result of a check without a signature do not
+    /// count there, while an opening and a closing make and end their pull request without
+    /// one, because the fold asks no register for them (an open item of ADR-025); the report
+    /// counts all of them. And an approval of a key that was retired or
     /// revoked since is void, which the recount shows. In the open mode (`register` is `None`)
     /// the actor is a claim and no key is asked.
     ///
@@ -261,6 +271,33 @@ pub(crate) fn disagreement(
     (!agrees).then_some("the statement says something else than the lines of the entry")
 }
 
+/// What an entry says that can only hold a change back, as an unsigned statement made from the
+/// lines of the entry: the closing of a pull request, and a failing run of a check. It stands
+/// in where the statement that the entry names is missing, is damaged, or says something else,
+/// which `op verify` reports. An opening, an approval, and a passing run can let a change
+/// through, so they count only with their statement.
+///
+/// The stand-in carries no signature. A closing was never counted against the register by the
+/// fold, so it ends its pull request in both modes, as the entry `pr-close` did before the
+/// statements. A failing run counts in the open mode and does not count in an enforcing
+/// repository, where a failure without the signature of its writer must not pause `main`
+/// (ADR-019): that is what an entry without its proof did before the statements.
+fn held_back(entry: &Entry, openings: &HashMap<u64, Opened>) -> Option<Statement> {
+    let body = match entry.record() {
+        Record::Pull(pull) if pull.kind() == PullKind::Close => {
+            match openings.get(&pull.pull()?)? {
+                Opened::Named(opening) => Body::Closing(Closing::new(None, *opening)),
+                Opened::Purged => return None,
+            }
+        }
+        Record::Check(check) if check.result() == CheckResult::Fail => Body::Check(
+            Checked::try_new(None, *check.commit(), check.base().copied(), check.result()).ok()?,
+        ),
+        _ => return None,
+    };
+    Some(Statement::unsigned(body))
+}
+
 /// Whether the signature of a statement counts for `actor` at `number`: always in the open mode
 /// (`register` is `None`), where the actor is a claim, and in an enforcing repository if the
 /// register accepts it ([`Register::verify_statement`]). The error is the reason of the
@@ -286,8 +323,9 @@ pub struct StatementsVerified {
     pub statements: usize,
     /// How many of them no entry of the log names. They count for nothing.
     pub unnamed: usize,
-    /// How many entries of an enforcing repository name a statement without a signature. Such
-    /// a statement does not count there. Always 0 in the open mode.
+    /// How many entries of an enforcing repository name a statement without a signature. An
+    /// approval and the result of a check among them do not count there; an opening and a
+    /// closing still make and end their pull request. Always 0 in the open mode.
     pub unsigned: usize,
 }
 
@@ -392,8 +430,8 @@ impl Error for StatementCheckError {
 pub(crate) mod by_hand {
     use super::*;
     use crate::object::CommitId;
-    use crate::oplog::{CheckEntry, CheckResult, OperationName, PullEntry};
-    use crate::protocol::statement::{Approval, Checked};
+    use crate::oplog::{CheckEntry, OperationName, PullEntry};
+    use crate::protocol::statement::Approval;
     use crate::signature::Signer;
     use crate::AllowAll;
 
@@ -474,6 +512,20 @@ pub(crate) mod by_hand {
             .unwrap()
     }
 
+    /// Writes a closing of the pull request `number` as an entry of `actor` and a statement
+    /// that `signer` signed (or nobody).
+    pub(crate) fn close(
+        repository: &Repository,
+        actor: &Actor,
+        number: u64,
+        signer: Option<&dyn Signer>,
+    ) -> Entry {
+        let closing = Closing::new(None, id_of(repository, number));
+        let statement = statement(Body::Closing(closing), signer);
+        let entry = PullEntry::close(super::super::now(), actor.clone(), number).unwrap();
+        pull_naming(repository, actor, entry, &statement)
+    }
+
     /// The name of the pull request `number` of this clone.
     pub(crate) fn id_of(repository: &Repository, number: u64) -> StatementHash {
         let entries = repository.oplog().entries().unwrap();
@@ -503,8 +555,8 @@ pub(crate) mod by_hand {
 mod tests {
     use super::*;
     use crate::object::CommitId;
-    use crate::oplog::{CheckEntry, CheckResult, PullEntry};
-    use crate::protocol::statement::{Checked, Opening};
+    use crate::oplog::{CheckEntry, PullEntry};
+    use crate::protocol::statement::Opening;
     use crate::refs::BranchName;
     use crate::repository::InitOptions;
     use crate::testutil::TempDir;

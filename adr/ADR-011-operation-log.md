@@ -678,7 +678,15 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     proofs before: a retired key for what stands before its retirement, a revoked key never
     for an approval and for every other kind only before its revocation. An opening and a
     closing are not counted against the register by the fold, as an opening had no proof
-    before either; `op verify` reports one that the register does not accept.
+    before either: one without a signature makes or ends its pull request in an enforcing
+    repository too. `op verify` reports a signature that the register does not accept and
+    counts the unsigned ones.
+  - **What only holds a change back stays.** An entry whose statement is missing, damaged, or
+    says something else places nothing, with one exception: a closing and a failing run are
+    placed from the lines of their entry, without a signature. Losing a file of the set
+    therefore never opens a pull request again, and in the open mode never takes a red tip
+    away; in an enforcing repository a failing run without a signature does not count, as
+    one without its proof did not (ADR-019).
   - **The order of writing.** The statement is signed before the lock of the references is
     taken, because a key with a passphrase may ask a person, and the register is asked for the
     signature before anything is written: every refusal comes before the first write. Under
@@ -695,7 +703,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     kind, that says what its lines say. In an enforcing repository the signature of that
     statement is one of a key of the actor of the entry that counts for the number of the
     entry. Three things are no damage: a statement that no entry names, an unsigned statement
-    in an enforcing repository (it does not count), and an approval of a key that was retired
+    in an enforcing repository (an approval and a check result do not count there), and an
+    approval of a key that was retired
     or revoked since (it is void, which the recount shows).
   - **Purge.** The entries are replaced by stubs as before (above). The purge does not touch
     the set: the statement of a stub stays as a statement that no entry names. A closing names

@@ -215,7 +215,7 @@ impl fmt::Display for StatementProblem {
             Self::Reason => write!(
                 f,
                 "the reason is one line of 1 to {MAX_REASON_LEN} bytes, without a control \
-                 character and without a space at its ends"
+                 character or a line separator and without a space at its ends"
             ),
             Self::SignatureForm => {
                 f.write_str("the signature is not `-` or an SSHSIG signature on one line")

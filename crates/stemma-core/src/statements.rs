@@ -62,7 +62,7 @@ impl StatementSet {
 
     /// Puts a statement into the set and returns its hash. A statement that the set holds
     /// already is left as it is. The file is flushed before it gets its name, and the directory
-    /// after it.
+    /// after it, also where the set held the statement already.
     ///
     /// # Errors
     ///
@@ -76,9 +76,6 @@ impl StatementSet {
         if bytes.len() > MAX_STATEMENT_LEN {
             return Err(SetError::TooLarge { hash });
         }
-        if self.get(&hash)?.is_some() {
-            return Ok(hash);
-        }
         let io = |operation: &'static str, path: &Path| {
             let path = path.to_path_buf();
             move |source| SetError::Io {
@@ -87,6 +84,12 @@ impl StatementSet {
                 source,
             }
         };
+        if self.get(&hash)?.is_some() {
+            // An earlier call may have stopped between the rename and the flush, and an entry
+            // is about to name the statement, so the directory is flushed here as well.
+            flush_directory(&self.dir).map_err(io("flush the directory", &self.dir))?;
+            return Ok(hash);
+        }
         for dir in [&self.dir, &self.scratch] {
             std::fs::create_dir_all(dir).map_err(io("create the directory", dir))?;
         }

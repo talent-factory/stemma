@@ -407,16 +407,26 @@ impl Repository {
         trees.sort();
         trees.dedup();
         // The entry `pr-open` of an open pull request stays: it gives the opening its place and
-        // its opener, so the pull request would vanish with it (ADR-004, ADR-011).
-        let open: HashSet<u64> = self
+        // its opener, so the pull request would vanish with it (ADR-004, ADR-011). An opening
+        // counts as open unless the evidence shows that its pull request ended: one whose
+        // statement cannot be read is kept as well, because a stub would hide the damage from
+        // `op verify` for good.
+        let ended: HashSet<u64> = self
             .evidence_of(&log)
             .map_err(statements_unreadable)?
             .pulls
             .iter()
-            .filter(|pull| pull.is_open())
+            .filter(|pull| !pull.is_open())
             .map(PullRequest::number)
             .collect();
-        if let Some(entry) = replaced.iter().find(|entry| open.contains(&entry.number())) {
+        let is_open = |entry: &Entry| {
+            entry.statement().is_some()
+                && entry
+                    .pull()
+                    .is_some_and(|pull| pull.kind() == PullKind::Open)
+                && !ended.contains(&entry.number())
+        };
+        if let Some(entry) = replaced.iter().find(|entry| is_open(entry)) {
             return Err(PurgeError::OpenPullRequest {
                 number: entry.number(),
             });
@@ -1595,6 +1605,29 @@ mod tests {
             counts(&repository),
             (objects, entries),
             "nothing was written"
+        );
+    }
+
+    #[test]
+    fn a_purge_keeps_an_opening_whose_statement_cannot_be_read() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        let number = open_pull(&repository, second);
+        // Without its statement the pull request is not known to the fold. A stub in place of
+        // the entry would hide that from `op verify` for good, so the purge refuses.
+        let set = repository.statement_set();
+        let [hash] = set.hashes().unwrap()[..] else {
+            panic!("one statement")
+        };
+        std::fs::remove_file(set.path_of(&hash)).unwrap();
+        assert!(repository.pull_requests().unwrap().is_empty());
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, PurgeError::OpenPullRequest { number: n } if n == number),
+            "{error:?}"
         );
     }
 

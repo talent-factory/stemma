@@ -3311,8 +3311,8 @@ fn statements_text(verified: StatementsVerified, enforcing: bool) -> String {
     }
     if verified.unsigned > 0 {
         text.push_str(&format!(
-            "{} entries name a statement without a signature, which does not count in an \
-             enforcing repository.\n",
+            "{} entries name a statement without a signature; an approval or a check result \
+             among them does not count in an enforcing repository.\n",
             verified.unsigned
         ));
     }

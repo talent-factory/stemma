@@ -195,7 +195,7 @@ Ein Pull Request ist \type{open}, solange er weder geschlossen noch gemergt ist,
 \type{closed} und \type{merged} sind endgültig; die nächste Änderung eines Branches ist ein neuer
 Pull Request mit neuer Nummer.
 Dieselbe Eröffnung nimmt der Kern kein zweites Mal an, der nächste Pull Request eines Branches
-braucht also einen neuen Kopf.
+braucht also einen neuen Kopf, andere Reviewer oder eine andere Angabe bei \type{repairs}.
 Ob ein offener Pull Request freigegeben ist, ist kein Zustand; es folgt aus den Freigaben
 auf dem aktuellen Kopf (ADR-004, Regel 4).
 Jede Freigabe ist eine eigene Erklärung mit ihrem Eintrag \type{pr-approve}; sie ändert den
@@ -306,6 +306,9 @@ Die Regeln, welche Freigabe und welches Prüfergebnis zählt, sind dieselben wie
 Die Funktion ist tolerant wie jede Lesart der Belege.
 Ein Eintrag, dessen Erklärung fehlt, beschädigt ist oder etwas anderes sagt als seine Zeilen,
 ordnet nichts ein, und was er belegen sollte, zählt nicht; \type{op verify} meldet ihn.
+Ausgenommen ist, was eine Änderung nur aufhält: Ein Schliessen und ein fehlgeschlagener Lauf
+gelten dann aus den Zeilen ihres Eintrags, ohne Signatur.
+Der Verlust einer Datei öffnet so keinen Pull Request wieder.
 Die Kosten sind linear in der Zahl der Einträge, dazu kommt das Lesen einer Datei je Erklärung.
 
 \startinfobox
@@ -313,7 +316,9 @@ Die Kosten sind linear in der Zahl der Einträge, dazu kommt das Lesen einer Dat
 \startitemize
 \item Im offenen Modus gibt es keinen Schlüssel. Die Erklärung trägt dann \type{key -} und
 \type{signature -} und beweist nichts; sie zählt nur dort, wo kein Register gefragt wird.
-In einem durchsetzenden Repository zählt eine unsignierte Erklärung nicht.
+In einem durchsetzenden Repository zählen eine Freigabe und ein Prüfergebnis ohne Signatur nicht.
+Eine Eröffnung und ein Schliessen prüft die Funktion dagegen nie gegen das Register; das meldet
+\type{op verify}, und auf einem Hub prüft es der Hub beim Einreichen.
 \item Ein Repository einer älteren Format-Version bleibt lesbar. Seine Einträge eines Pull
 Requests und einer Prüfung stehen weiter in der Hash-Kette, und \type{op verify} prüft ihre
 Beweisdateien wie bisher. Sie nennen aber keine Erklärung und sind kein Beleg mehr: Ein Pull
@@ -1301,8 +1306,10 @@ entspricht und sagt, was seine Zeilen sagen.
 In einem durchsetzenden Repository muss ihr Schlüssel ausserdem dem Akteur des Eintrags gehören
 und für dessen Nummer zählen.
 Kein Schaden sind eine Erklärung, die kein Eintrag nennt, und eine unsignierte Erklärung in einem
-durchsetzenden Repository; beide zählen nur nicht, und der Befehl nennt ihre Zahl.
-Eine Freigabe, deren Schlüssel seither widerrufen wurde, gilt als ungültig, nicht als Schaden des
+durchsetzenden Repository; der Befehl nennt ihre Zahl.
+Die erste zählt nicht, und von den zweiten zählen Freigaben und Prüfergebnisse nicht.
+Eine Freigabe, deren Schlüssel seither ausgemustert oder widerrufen wurde, gilt als ungültig,
+nicht als Schaden des
 Logs, und \type{op verify} lässt sie durch.
 Ersetzt ein Purge einen Eintrag durch einen Stub, bleibt der Hash des Eintrags erhalten,
 nicht aber Pull Request und Kopf.

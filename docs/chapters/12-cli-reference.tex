@@ -2788,7 +2788,8 @@ Checked 14 signed statements: each is valid, and every entry that names
 (Der Befehl schreibt die Zeile ohne Umbruch.)
 Je eine weitere Zeile nennt die Zahl der Erklärungen, die kein Eintrag nennt
 (\type{N of them are named by no entry and count for nothing.}), und in einem durchsetzenden
-Repository die Zahl der Einträge, deren Erklärung keine Signatur trägt.
+Repository die Zahl der Einträge, deren Erklärung keine Signatur trägt; eine Genehmigung und
+ein Ergebnis einer Prüfung unter ihnen zählen nicht.
 Beides ist kein Fehler: Die erste hinterlässt ein Abbruch zwischen Erklärung und Eintrag oder
 ein Purge, die zweite ein Repository, das vom offenen in den durchsetzenden Modus wechselte.
 Eine Genehmigung, deren Schlüssel seither ausgemustert oder widerrufen wurde, ist ungültig und
@@ -3277,7 +3278,7 @@ Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen ble
 
 {\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
 (Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
-Nach \type{close} öffnet \type{open} denselben Head nicht noch einmal.
+Nach \type{close} öffnet \type{open} dieselbe Öffnung nicht noch einmal.
 \type{approve} lässt sich wiederholen; die Genehmigungen derselben Identität zählen einmal.
 \type{merge} lässt sich nach jedem Fehler und nach einem Absturz wiederholen, solange
 \type{pr-merge} nicht im Log steht; danach
