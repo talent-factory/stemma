@@ -61,9 +61,9 @@ impl Check {
     }
 
     /// Whether the check stands in for one whose statement the holder could not read
-    /// ([`Placed::stand_in`]). Only a failing run does. Its statement carries no signature, and
-    /// it counts as a failure all the same, also where a register is asked: the loss of a file
-    /// must not take a red tip away.
+    /// ([`Placed::stand_in`]). Only a failing run does. Its statement carries no signature.
+    /// Where a register is asked, the gate lets it make its commit red and nothing else: the
+    /// loss of a file must not take a red tip away, and a stand-in must not help a change.
     pub fn is_stand_in(&self) -> bool {
         self.stand_in
     }

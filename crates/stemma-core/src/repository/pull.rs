@@ -2808,6 +2808,7 @@ mod tests {
             .retire(&Identity::of(&ana()), &key(3), opened.number() + 1)
             .unwrap();
         assert_eq!(count(&later), 1, "the opening stands before the retirement");
+        let mut revoked = register.clone();
         register
             .retire(&Identity::of(&ana()), &key(3), opened.number())
             .unwrap();
@@ -2815,6 +2816,16 @@ mod tests {
             count(&register),
             0,
             "the key signed nothing from this entry on"
+        );
+        // A revoked key counts for an opening as for every kind but an approval: before the
+        // bound of its revocation.
+        revoked
+            .revoke(&Identity::of(&ana()), &key(3), opened.number() + 1)
+            .unwrap();
+        assert_eq!(
+            count(&revoked),
+            1,
+            "the opening stands before the revocation"
         );
     }
 

@@ -323,8 +323,14 @@ Die Kosten sind linear in der Zahl der Einträge, dazu kommt das Lesen einer Dat
 In einem durchsetzenden Repository zählen eine Eröffnung, eine Freigabe und ein Prüfergebnis nur
 mit einer Signatur, die das Register für den Akteur des Eintrags annimmt.
 Ein Pull Request, der im offenen Modus eröffnet wurde, wird dort also neu eröffnet.
-Ein Schliessen gilt mit jeder Signatur und auch ohne, denn es kann einen Pull Request nur
-beenden; \type{op verify} meldet eines, das das Register nicht annimmt.
+Ein Schliessen gilt mit jeder Signatur und auch ohne, denn es beendet einen Pull Request;
+\type{op verify} meldet eines, das das Register nicht annimmt.
+Ein solches Schliessen und jeder Ersatz aus den Zeilen eines Eintrags darf aber nur strenger
+machen, denn jeder, der das Log schreiben kann, kann ihn erzeugen: Das Gate behält die
+Reservierung des so beendeten Pull Requests, und ein Ersatz für einen fehlgeschlagenen Lauf
+macht seinen Commit nur rot.
+Er verschiebt keine geprüfte Spitze und öffnet keiner Behebung die Ausnahme; eine Behebung wartet,
+bis die Erklärung wiederhergestellt oder ein signierter Lauf geschrieben ist.
 \item Ein Repository einer älteren Format-Version bleibt lesbar. Seine Einträge eines Pull
 Requests und einer Prüfung stehen weiter in der Hash-Kette, und \type{op verify} prüft ihre
 Beweisdateien wie bisher. Sie nennen aber keine Erklärung und sind kein Beleg mehr: Ein Pull
@@ -571,6 +577,8 @@ das Ergebnis nicht zählen.
 Ausgenommen ist ein fehlgeschlagener Lauf, dessen Erklärung verloren oder beschädigt ist: Er
 gilt aus den Zeilen seines Eintrags weiter, weil sich nicht mehr sagen lässt, ob sie signiert
 war, und eine rote Spitze nicht mit einer Datei verschwinden darf.
+Er macht seinen Commit aber nur rot und lockert keine Schranke (siehe
+\quotation{Erklärungen und Einträge}).
 
 \subsection{Konflikte}
 

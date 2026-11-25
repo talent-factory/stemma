@@ -69,12 +69,13 @@ impl Placed {
         }
     }
 
-    /// Places a statement that stands in for one that the holder names and cannot read: it is
-    /// made from what the holder recorded about the act, and it carries no signature. A clone
-    /// makes one for a closing and for a failing run, which say something against a change, so
-    /// that the loss of a file takes nothing of it away (ADR-011). Whoever counts the evidence
-    /// can tell it from a statement that was made without a signature
-    /// ([`is_stand_in`](Self::is_stand_in)).
+    /// Places a statement that counts without the proof that the holder asks for: one that
+    /// stands in for a statement that the holder names and cannot read, made from what the
+    /// holder recorded about the act, or a closing whose signature the holder does not accept.
+    /// A clone makes one only for a closing and for a failing run, which say something against
+    /// a change, so that neither the loss of a file nor a missing signature takes it away
+    /// (ADR-011). Whoever counts the evidence can tell it from a proven statement
+    /// ([`is_stand_in`](Self::is_stand_in)) and lets it do only what makes things stricter.
     pub fn stand_in(number: u64, time: i64, actor: Actor, statement: Statement) -> Self {
         Self {
             stand_in: true,
@@ -82,7 +83,7 @@ impl Placed {
         }
     }
 
-    /// Whether the statement stands in for one that the holder could not read.
+    /// Whether the statement counts without its proof (see [`stand_in`](Self::stand_in)).
     pub fn is_stand_in(&self) -> bool {
         self.stand_in
     }
@@ -196,6 +197,7 @@ pub fn fold(placed: &[Placed], merges: &[Merge]) -> Evidence {
                             by: placed.actor.clone(),
                             time: placed.time,
                         });
+                        pull.ended_without_proof = placed.stand_in;
                     }
                 }
                 Body::Approval(approval) => {

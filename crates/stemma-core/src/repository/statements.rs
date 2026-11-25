@@ -79,8 +79,10 @@ impl Repository {
     /// lines of the entry where their statement cannot be, as a stand-in
     /// ([`Placed::stand_in`]), so losing a file of the set never opens a pull request again
     /// and never takes a red tip away, in either mode. For the same reason a closing is placed
-    /// whatever its signature: it can only end a pull request, and `op verify` reports one that
-    /// the register does not accept.
+    /// whatever its signature, and one whose signature the register does not accept is a
+    /// stand-in as well; `op verify` reports it. A stand-in does only what makes things
+    /// stricter: the gate keeps the reservation of a pull request that it ended, and a failing
+    /// run that stands in only makes its commit red (ADR-019).
     fn placed(
         &self,
         entries: &[Entry],
@@ -106,10 +108,13 @@ impl Repository {
             let (number, time, actor) = (entry.number(), entry.time(), entry.actor().clone());
             match read {
                 Some(statement) => {
-                    let refused = matches!(statement.body(), Body::Opening(_))
-                        && proof_of(register, &actor, number, &statement).is_err();
-                    if !refused {
-                        placed.push(Placed::new(number, time, actor, statement));
+                    let proven = || proof_of(register, &actor, number, &statement).is_ok();
+                    match statement.body() {
+                        Body::Opening(_) if !proven() => {}
+                        Body::Closing(_) if !proven() => {
+                            placed.push(Placed::stand_in(number, time, actor, statement));
+                        }
+                        _ => placed.push(Placed::new(number, time, actor, statement)),
                     }
                 }
                 None => {
@@ -310,14 +315,13 @@ pub(crate) fn disagreement(
 ///
 /// - A closing ends its pull request in both modes. The fold never counted a closing against
 ///   the register, and the entry `pr-close` had no proof.
-/// - A failing run counts as a failure in both modes. It makes its commit red, and with that
-///   it also moves the verified tip, ends a row of invalidated runs of another change, and
-///   opens the red window that a declared repair needs (ADR-019); the filter of independent
-///   writers still asks for the actor of the entry. In an enforcing repository a failure
-///   counts only with the signature of its writer, and the stand-in is the one exception: its
-///   statement was signed or it was not, which nobody can tell any more, and taking the red
-///   tip away is the worse mistake. Only who can write the files of the repository makes a
-///   stand-in, and such a writer could delete the statement of a real failure as well.
+/// - A failing run makes its commit red in both modes, and with that it pauses a change of
+///   level 2 or 3. That is all it does where a register is asked: it does not move the
+///   verified tip, it ends no row of invalidated runs of another change, and it opens no red
+///   window for a declared repair, because each of those can help a change, and a stand-in
+///   can be made by anyone who writes the log, under any actor. In the open mode, where every
+///   run is a claim, it counts as any failure does. Whether a lost statement was signed
+///   cannot be told any more, and keeping the red tip is the safe side.
 fn held_back(entry: &Entry, openings: &HashMap<u64, Opened>) -> Option<Statement> {
     let body = match entry.record() {
         Record::Pull(pull) if pull.kind() == PullKind::Close => {
@@ -539,6 +543,23 @@ pub(crate) mod by_hand {
         let checked = Checked::try_new(None, commit, base, result).unwrap();
         let statement = statement(Body::Check(checked), signer);
         check_naming(repository, actor, time, run, &statement)
+    }
+
+    /// Writes an entry `check` of `actor` that names a statement which was never put into the
+    /// set: what a writer of the log makes who wants a stand-in (`held_back`).
+    pub(crate) fn check_without_statement(
+        repository: &Repository,
+        actor: &Actor,
+        run: (CommitId, Option<CommitId>, CheckResult),
+    ) -> Entry {
+        let (commit, base, result) = run;
+        let checked = Checked::try_new(None, commit, base, result).unwrap();
+        let hash = Statement::unsigned(Body::Check(checked)).hash();
+        let time = super::super::now();
+        let entry = CheckEntry::new(time, actor.clone(), commit, base, result).with_statement(hash);
+        repository
+            .append_check(&lock(repository, actor), &entry)
+            .unwrap()
     }
 
     /// Writes the result of a check as an entry of `actor` and a statement that `signer` signed

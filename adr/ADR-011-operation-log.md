@@ -680,20 +680,28 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     is asked too, before it is placed: in an enforcing repository an opening without a
     signature, or with the signature of a key that is not the opener's or no longer counts for
     the number of the entry, makes no pull request. A pull request that was opened while the
-    repository was in the open mode is therefore opened again. A closing is the one statement
-    that nobody asks the register for: it can only end a pull request, so it stays whoever
-    wrote it. `op verify` reports a signature that the register does not accept, for every
-    kind, and counts the unsigned ones.
-  - **What only holds a change back stays.** An entry whose statement is missing, damaged, or
-    says something else places nothing, with one exception: a closing and a failing run are
-    placed from the lines of their entry, as a stand-in without a signature. Losing a file of
-    the set therefore never opens a pull request again and never takes a red tip away, in
-    either mode. In an enforcing repository a failing run counts only with the signature of
-    its writer (ADR-019), and the stand-in is the one exception: whether the lost statement
-    was signed cannot be told, and clearing the red tip is the worse mistake. Only who can
-    write the files of the repository makes a stand-in, and such a writer could delete the
-    statement of a real failure as well. A failing run that was made without a signature is
-    no stand-in and does not count there. `op verify` reports the entry of a stand-in.
+    repository was in the open mode is therefore opened again. A closing is placed
+    whatever its signature, because it ends a pull request; one whose signature the register
+    does not accept is a stand-in (below). `op verify` reports a signature that the register
+    does not accept, for every kind, and counts the unsigned ones.
+  - **What speaks against a change stays, and does no more.** An entry whose statement is
+    missing, damaged, or says something else places nothing, with one exception: a closing
+    and a failing run are placed from the lines of their entry, as a stand-in without a
+    signature (`Placed::stand_in`). A closing whose signature the register does not accept is
+    a stand-in as well. Losing a file of the set therefore never opens a pull request again
+    and never takes a red tip away, in either mode. Anyone who writes the log can make a
+    stand-in, under any actor, so in an enforcing repository it does only what makes things
+    stricter (CODING_STANDARDS, "A filter on who wrote a result"):
+    - a closing ends its pull request, and the gate keeps the reservation of that pull
+      request (`PullRequest::ended_without_proof`);
+    - a failing run makes its commit red and pauses a change of level 2 or 3, and nothing
+      else: it moves no verified tip, ends no row of invalidated runs, and opens no red
+      window for a declared repair (ADR-019). A repair of such a commit waits until the
+      statement is restored or a signed run is written.
+
+    A failing run that was made without a signature is no stand-in and does not count there.
+    In the open mode, where every statement is a claim, a stand-in counts as any other.
+    `op verify` reports the entry of every stand-in.
   - **The order of writing.** The statement is signed before the lock of the references is
     taken, because a key with a passphrase may ask a person, and the register is asked for the
     signature before anything is written: every refusal comes before the first write. Under

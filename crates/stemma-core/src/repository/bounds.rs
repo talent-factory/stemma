@@ -115,10 +115,24 @@ impl Repository {
         let tip = subject.tip;
         // Only a run of a writer who is independent of the change counts for its bounds: the
         // opener, the authors, and their sponsors could clear a red tip for their own change.
-        let proven = self.proven_checks(register)?;
+        let with_stand_ins = self.proven_checks(register)?;
+        // A failing run that stands in for a lost statement counts without a signature where a
+        // register is asked, so it may only make the tip red: it moves no verified tip, ends no
+        // row of runs, and opens no red window for a repair (ADR-011, ADR-019). In the open mode
+        // every run is a claim, and a stand-in counts as any other.
+        let proven: Vec<Check> = with_stand_ins
+            .iter()
+            .filter(|check| register.is_none() || !check.is_stand_in())
+            .cloned()
+            .collect();
         let checks = self.independent_checks(&proven, subject.pull, &tip, register, true)?;
         let main = self.main_history(&tip)?;
         let verification = bounds::verification(&checks, &main);
+        let red = bounds::verification(
+            &self.independent_checks(&with_stand_ins, subject.pull, &tip, register, true)?,
+            &main,
+        )
+        .first_red;
         // The exemption of a repair needs more: a red window that the change did not write itself.
         // A failing run of an involved writer still pauses (above), but it cannot open the door.
         let strict = self.independent_checks(&proven, subject.pull, &tip, register, false)?;
@@ -129,7 +143,7 @@ impl Repository {
                 return Ok(None);
             }
         }
-        if let (true, Some(red)) = (subject.level >= RiskLevel::Two, verification.first_red) {
+        if let (true, Some(red)) = (subject.level >= RiskLevel::Two, red) {
             return Ok(Some(Pause::RedTip { red: main[red] }));
         }
         let count = bounds::unverified(&verification, main.len());
@@ -142,10 +156,12 @@ impl Repository {
         };
         let n = policy.reservation_after();
         let mut candidates = Vec::new();
+        // A pull request that a closing without its proof ended keeps its reservation: that
+        // closing may only make things stricter.
         for other in self
             .pull_requests(register)?
             .iter()
-            .filter(|pull| pull.is_open())
+            .filter(|pull| pull.is_open() || (register.is_some() && pull.ended_without_proof()))
         {
             let own = other.number() == subject.pull.number();
             let runs = if own { &checks } else { &proven };

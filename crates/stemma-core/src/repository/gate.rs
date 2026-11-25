@@ -2942,6 +2942,150 @@ mod tests {
     }
 
     #[test]
+    fn an_enforcing_gate_does_not_merge_a_pull_request_whose_opening_is_not_signed() {
+        let f = fixture("zero\n");
+        let register = register();
+        // A second branch at the same head, opened by hand without a signature.
+        set_branch(&f.repository, "unsigned", None, f.head);
+        let unsigned = by_hand::open(
+            &f.repository,
+            &human("mia"),
+            &branch("unsigned"),
+            f.head,
+            None,
+            None,
+        )
+        .number();
+        f.proven(f.head, Some(f.base), CheckResult::Pass);
+        let before = (f.entries(), f.main());
+        let error = f
+            .repository
+            .merge_gate(
+                unsigned,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, GateError::Pull(PullError::NoSuchPull { .. })),
+            "{error}"
+        );
+        assert_eq!((f.entries(), f.main()), before);
+        // The open mode knows the opening, and the signed pull request of the fixture lands.
+        assert!(f.repository.pull_requests(None).unwrap().len() == 2);
+        f.repository
+            .merge_gate(
+                f.number,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stand_in_failure_makes_the_tip_red_and_opens_no_repair() {
+        // Anyone who writes the log can make a stand-in: an entry `check` that names a
+        // statement which is not in the set, under any actor. It keeps a red tip red, and in
+        // an enforcing repository it must not open the exemption of a repair.
+        for signed in [true, false] {
+            let f = fixture("zero\n");
+            let register = register();
+            let red = commit_of(&f.repository, f.base, &[("c.txt", "red\n")], "zoe");
+            set_branch(&f.repository, "main", Some(f.base), red);
+            if signed {
+                f.proven(red, None, CheckResult::Fail);
+            } else {
+                by_hand::check_without_statement(
+                    &f.repository,
+                    &human("ana"),
+                    (red, None, CheckResult::Fail),
+                );
+            }
+            let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
+            f.proven(fix, Some(red), CheckResult::Pass);
+            let gate = |number| {
+                f.repository.merge_gate(
+                    number,
+                    RiskLevel::Two,
+                    Some(&register),
+                    &human("daniel"),
+                    &AllowAll,
+                )
+            };
+            // Every other change of level 2 waits at the red tip in both cases.
+            f.proven(f.head, Some(red), CheckResult::Pass);
+            assert_eq!(
+                paused(gate(f.number).unwrap_err()),
+                Pause::RedTip { red },
+                "signed: {signed}"
+            );
+            if signed {
+                gate(repair).expect("a signed failure opens the repair");
+            } else {
+                assert_eq!(paused(gate(repair).unwrap_err()), Pause::RedTip { red });
+            }
+        }
+    }
+
+    #[test]
+    fn a_closing_without_its_proof_does_not_end_a_reservation() {
+        for proof in [false, true] {
+            let f = fixture("zero\n");
+            let register = register();
+            let tip = land_policy(&f, BOUNDED);
+            let root = f.repository.refs().working_copy().unwrap();
+            for (time, base) in [(now() - 100, root), (now(), f.base)] {
+                by_hand::check_at(
+                    &f.repository,
+                    &human("ana"),
+                    time,
+                    (f.head, Some(base), CheckResult::Pass),
+                    Some(&Seeded::new(2)),
+                );
+            }
+            let other = z_change(&f, tip, BOUNDED);
+            f.proven(tip, None, CheckResult::Pass);
+            let pulls = f.repository.pull_requests(None).unwrap();
+            let z = *pulls
+                .iter()
+                .find(|pull| pull.number() == other)
+                .unwrap()
+                .head();
+            f.proven(z, Some(tip), CheckResult::Pass);
+            // The holder is closed: by hand without a signature, or by its opener with hers.
+            let key = Seeded::new(3);
+            by_hand::close(
+                &f.repository,
+                &human("mia"),
+                f.number,
+                proof.then_some(&key as &dyn Signer),
+            );
+            let pulls = f.repository.pull_requests(Some(&register)).unwrap();
+            let holder = pulls.iter().find(|pull| pull.number() == f.number).unwrap();
+            assert!(!holder.is_open());
+            assert_eq!(holder.ended_without_proof(), !proof);
+
+            let result = by_policy(&f, other, &Mode::Enforcing(register));
+
+            if proof {
+                assert!(result.is_ok(), "the reservation ends: {result:?}");
+            } else {
+                assert!(
+                    matches!(
+                        paused(result.unwrap_err()),
+                        Pause::Reserved { holder, .. } if holder == f.number
+                    ),
+                    "a closing without its proof does not end the reservation"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_red_tip_stays_when_the_statement_of_its_failing_run_is_lost() {
         for enforcing in [false, true] {
             let f = fixture("zero\n");

@@ -76,6 +76,7 @@ pub struct PullRequest {
     reviewers: Vec<Identity>,
     repairs: Option<CommitId>,
     state: PullState,
+    pub(crate) ended_without_proof: bool,
 }
 
 impl PullRequest {
@@ -91,7 +92,17 @@ impl PullRequest {
             reviewers: opening.reviewers().to_vec(),
             repairs: opening.repairs(),
             state: PullState::Open,
+            ended_without_proof: false,
         }
+    }
+
+    /// Whether a closing ended the pull request that counts without its proof
+    /// ([`Placed::stand_in`]): one that stands in for a lost statement, or one whose signature
+    /// the register does not accept. Such a closing ends the pull request, which only makes
+    /// things stricter, and nothing that loosens may follow from it: the gate keeps the
+    /// reservation of such a pull request (ADR-019).
+    pub fn ended_without_proof(&self) -> bool {
+        self.ended_without_proof
     }
 
     /// Ends the pull request.

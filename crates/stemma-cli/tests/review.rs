@@ -513,6 +513,52 @@ fn open_pull_as(dir: &Path, actor: &str, key: &str) -> String {
 }
 
 #[test]
+fn a_pull_request_opened_in_the_open_mode_is_opened_again_after_enforce() {
+    let keys = Dir::new();
+    let Some(owner) = generate_key(keys.path(), "owner") else {
+        return;
+    };
+    let dir = with_feature_branch();
+    let number = open_pull(dir.path());
+    ok(
+        dir.path(),
+        &[
+            "enforce",
+            "--actor",
+            ACTOR,
+            "--owner-key",
+            &format!("{owner}.pub"),
+        ],
+    );
+    track_ok(dir.path(), REGISTER);
+    ok(dir.path(), &["commit", "-m", "register", "--actor", ACTOR]);
+    // The opening carries no signature, so the enforcing repository does not count it.
+    let listed = ok(dir.path(), &["pr", "list"]);
+    assert!(
+        !listed.stdout.contains(&format!("{number} open")),
+        "{}",
+        listed.stdout
+    );
+    // The branch has a new head since the commit of the register, and a signed opening counts.
+    let again = open_pull_as(dir.path(), ACTOR, &owner);
+    assert_ne!(again, number);
+    let listed = ok(dir.path(), &["pr", "list"]);
+    assert!(
+        listed.stdout.contains(&format!("{again} open feat")),
+        "{}",
+        listed.stdout
+    );
+    let verified = ok(dir.path(), &["op", "verify"]);
+    assert!(
+        verified
+            .stdout
+            .contains("1 entries name a statement without a signature"),
+        "{}",
+        verified.stdout
+    );
+}
+
+#[test]
 fn a_key_that_cannot_sign_is_refused_before_the_entry_is_written() {
     let keys = Dir::new();
     let (Some(owner), Some(other)) = (

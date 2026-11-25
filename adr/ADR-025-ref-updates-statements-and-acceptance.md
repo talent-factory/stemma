@@ -329,8 +329,8 @@ owner-override   branch <name>
   and an opening whose opener is one of its reviewers. It lists every approval and every
   check as it is, and where the statement of a closing or of a failing run cannot be read, a
   clone places it from the lines of its entry, because what says something against a change
-  must not vanish with a file; a failing run that is placed so counts in an enforcing
-  repository too (ADR-011). An enforcing clone places an opening only if its register accepts
+  must not vanish with a file. Such a stand-in may only make things stricter where a register
+  is asked (ADR-011). An enforcing clone places an opening only if its register accepts
   the signature for the opener. Which approvals and checks count is
   decided by the rules of phase 4, unchanged, which now ask the register for the signature of
   the statement.
@@ -507,8 +507,10 @@ revocation on `main` takes the effect from the statements of a key.
 - [x] An opening counts in an enforcing clone only with a signature that the register accepts
       for its opener: the clone asks before it places the opening, so the fold stays one
       function without a register (STEMMA-290, ADR-011). A closing is placed whatever its
-      signature, because it can only end a pull request; `op verify` reports one that the
-      register does not accept, and a hub checks every statement when it is submitted.
+      signature, because it ends a pull request; one that the register does not accept is a
+      stand-in, which may only make things stricter, so the gate keeps the reservation of the
+      pull request it ended (ADR-011, ADR-019). `op verify` reports it, and a hub checks every
+      statement when it is submitted.
 - [ ] How commands name a pull request for people (a prefix of the hash, a running number in the
       lines of the hub). It belongs to the command surface.
 - [ ] A policy that names the writers of checks. Possible later without a break, because it only

@@ -170,7 +170,10 @@ fact, the implementation takes the nearest one it has:
   signature of its writer on the statement of the run (ADR-025), a failing one as well: anyone
   can write the entry of a run. One failing run counts without it: the one whose statement is
   lost or damaged and that is read from the lines of its entry, so that the loss of a file
-  never clears a red tip (ADR-011). A failing run
+  never clears a red tip (ADR-011). Such a stand-in makes its commit red and does nothing
+  else: it moves no verified tip, ends no reservation, and opens no exemption of a repair,
+  because anyone who writes the log can make one. Likewise a pull request that a closing
+  without its proof ended keeps its reservation. A failing run
   stays whoever wrote it, since it only holds a merge back. A change whose path has no level holds
   no reservation: the gate refuses it at its own merge, and it must not stop another change.
   The exemption of a repair counts independent runs only, so nobody opens it for their own change

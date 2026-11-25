@@ -290,12 +290,12 @@ impl Repository {
 /// (`register` is `None`), and in an enforcing repository if the register accepts the signature
 /// of its statement for the writer and the number of the entry that names the statement.
 ///
-/// One check counts there without a signature: a failing run that stands in for a statement
-/// that cannot be read ([`Check::is_stand_in`]). Whether that statement was signed cannot be
-/// told any more, and a failure can pause `main` while its loss must not clear a red tip. A
-/// passing run never stands in, so nothing that helps a change counts without its signature.
+/// One check passes here without a signature: a failing run that stands in for a statement
+/// that cannot be read ([`Check::is_stand_in`]), because its loss must not clear a red tip. It
+/// is kept so that the gate can see it; the gate lets it make its commit red and nothing else
+/// (`Repository::pause_of`). A passing run never counts without its signature, stand-in or not.
 fn has_proof(register: Option<&Register>, check: &Check) -> bool {
-    check.is_stand_in()
+    (check.is_stand_in() && !check.passed())
         || proof_of(register, check.writer(), check.number(), check.statement()).is_ok()
 }
 
