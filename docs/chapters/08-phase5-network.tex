@@ -24,7 +24,7 @@ Operationen des Kerns wie lokal (ADR-025).
 \stopitemize
 
 Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs festgehalten,
-umgesetzt ist noch nichts.
+umgesetzt sind erst die ersten Nachrichten des Protokolls und das Bare-Repository.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -52,8 +52,16 @@ Die Nachrichten, auf die sich Klon und Hub einigen müssen, sind Typen des Kerns
 (\type{stemma_core::protocol}), mit einem Schreiber und einem strengen Leser für beide Seiten.
 Jede Nachricht beginnt mit der Zeile \type{stemma-protocol <n>}.
 Diese Protokollversion ist unabhängig von der Version des Repository-Formats (ADR-009) und von
-der Version des Programms; eine Änderung braucht ein ADR und eine neue Nummer.
+der Version des Programms.
 Ein Hub kann mehrere Versionen bedienen, ein Klon spricht eine.
+Die erste Protokollversion ist 1.
+Bis zur ersten Veröffentlichung, die das Protokoll trägt, kommen die Nachrichten und Zeilen der
+Phase zu dieser Version hinzu; danach braucht jede Änderung einer Nachricht ein ADR und eine neue
+Nummer.
+Ein Leser, der eine andere Nummer liest, lehnt mit einem eigenen Fehler ab, was auch immer auf
+die erste Zeile folgt, und die Antwort an den Absender nennt die Versionen, die diese Seite
+spricht.
+Ausgenommen ist nur diese Antwort selbst: Der Leser eines Fehlers liest sie unter jeder Nummer.
 
 Der Hub öffnet jedes Repository als Bare-Repository, also ohne Arbeitskopie, und ruft die
 Operationen des Kerns auf.
@@ -209,8 +217,36 @@ nicht wiederaufnehmen.
 
 Die kleinen Nachrichten sind zeilenweiser Text in fester Reihenfolge, wie die Einträge des
 Operation Log; der Objektstrom ist binär und beginnt mit derselben ersten Zeile.
-Es gibt keine Listen von Fähigkeiten und keine optionalen Felder: Jede Erweiterung ist eine neue
-Protokollversion.
+Es gibt keine Listen von Fähigkeiten und keine optionalen Felder: Nach der ersten Veröffentlichung
+ist jede Änderung einer Nachricht eine neue Protokollversion.
+Gebaut sind die ersten vier Nachrichten: die Liste der Referenzen, die Fetch-Anfrage, der
+Objektstrom und der Fehler.
+Die Liste der Referenzen eines Repositorys mit einem Branch sieht so aus, mit gekürzten Werten:
+
+\starttyping
+stemma-protocol 1
+repository 00112233445566778899aabbccddeeff
+key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIjw...
+ref heads/main b3:94e11db2... b3:a1a1a1a1...
+\stoptyping
+
+Eine Zeile \type{ref} nennt den Namen der Referenz, ihren Commit und den Hash ihres letzten
+Eintrags der Aufzeichnung (\in{Abschnitt}[sec:ref-update]).
+Die Fetch-Anfrage besteht aus Zeilen \type{want <Commit>} und danach \type{have <Commit>}.
+Im Objektstrom folgt auf die erste Zeile je Objekt der Kopf, den es auch im Objektspeicher hat
+(Art, Länge und ein NUL-Byte), und sein Rumpf.
+Ein Fehler nennt in der zweiten Zeile seine Art, zum Beispiel \type{error unsupported-version},
+und darunter die Angaben dazu, hier die Zeile \type{spoken} mit den gesprochenen Versionen.
+Diese eine Nachricht hat unter jeder Protokollversion dieselbe Form, damit auch ein Klon einer
+anderen Version sie lesen kann.
+
+Für jede Nachricht gilt die Regel der strengen Leser (\in{Abschnitt}[sec:strict-readers]):
+Der Leser nimmt nur an, was der Schreiber schreibt.
+Listen stehen deshalb in fester Reihenfolge, die Referenzen nach ihrem Namen und die Commits einer
+Fetch-Anfrage nach ihrer ID, und eine Nachricht hat genau eine Schreibweise.
+Die genauen Formate stehen in ADR-023; die Beispielnachrichten liegen im Kern
+(\type{protocol-examples/}) und sind zugleich die Startwerte des Fuzzers.
+
 Die Adresse eines Remote ist die Adresse des Repositorys,
 \type{<Hub>/<Namespace>/<Repository>}, und alle Endpunkte liegen darunter
 (\in{Tabelle}[tab:hub-requests]).
@@ -402,6 +438,34 @@ Ein Fetch entfernt eine Remote-Referenz, die der Hub nicht mehr führt, im selbe
 Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteht nur durch
 \type{tag} mit eigenem Eintrag.
 Remote-Referenzen sind Wurzeln der Erreichbarkeit.
+
+Gebaut ist davon, was ein Klon ablegt und liest; \type{fetch} und \type{push} folgen.
+Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
+fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
+dem festgehaltenen Schlüssel des Hubs, einer zusätzlichen CA-Datei und der Angabe, ob der Hub
+eine Anmeldung verlangt.
+Der Name eines Remote ist eine einzelne Komponente nach den Regeln eines Branch-Namens.
+Die zweite Zeile einer Remote-Referenz lautet \type{entry} und der Hash des Eintrags.
+Für beide Dateien gilt die Regel der Objekte: Der Leser nimmt an, was der Schreiber schreibt,
+und alles andere ist ein Schaden mit dem Pfad der Datei.
+Mit den neuen Dateien steigt das Repository-Format auf Version 14 (ADR-009), und ein älteres
+Programm lehnt ein solches Repository ab.
+
+Wo ein Befehl eine Revision annimmt, nennt \type{remotes/<Remote>/heads/<Name>} oder
+\type{remotes/<Remote>/tags/<Name>} eine Remote-Referenz.
+Die Form sucht nie nach einem Branch oder Tag weiter, und das Präfix \type{remotes/} ist für neue
+Branch- und Tag-Namen reserviert, wie \type{heads/} und \type{tags/}.
+Die Prüfung der Referenzen prüft auch den Commit jeder Remote-Referenz.
+
+\startinfobox
+{\bf Purge und Remote-Referenzen.}
+Der Plan eines Purge geht von den Remote-Referenzen aus wie von einem Branch.
+Er bewegt und entfernt aber keine: Zeigt eine auf einen Commit, den der Purge umschreiben würde,
+lehnt er ab und nennt jede solche Referenz.
+Die Prüfung läuft unter der Sperre noch einmal und trifft dann auch einen Commit, den der Plan
+nur löscht: Eine Remote-Referenz, die jünger ist als der Plan, kann auf ihn zeigen.
+Was ein Purge am Ende mit ihnen tut, ist offen (\in{Abschnitt}[sec:phase5-open]).
+\stopinfobox
 
 Ein veraltetes Ref-Update beantwortet der Hub mit dem Stand jeder betroffenen Referenz.
 Der Klon meldet das und wiederholt nicht von selbst: Er müsste neu signieren, und zuerst
@@ -775,7 +839,8 @@ und \type{push}, der Befehle für Erklärungen und Anker und der Befehle eines N
 Jeder Teil entsteht mit seiner Umsetzung (\in{Kapitel}[chap:cli]).
 \item Purge auf dem Hub: Die Regel der Annahme steht.
 Offen ist, wie Klone einem \type{main} folgen, das ein Purge auf dem Hub umgeschrieben hat,
-wie ein Purge Remote-Referenzen behandelt
+wie ein Purge Remote-Referenzen behandelt (bis dahin lehnt er ab, wenn eine auf einen Commit
+zeigt, den er umschreiben würde)
 und was aus den Erklärungen eines Klons über entfernte Commits wird (ADR-014).
 \item Messung: Die Schwellen für ein Pack-Format, die Haltezeit der Sperre der Referenzen auf dem
 Hub und die Zahl der Wiederholungen eines Merges wegen \type{Stale} sind nicht gemessen

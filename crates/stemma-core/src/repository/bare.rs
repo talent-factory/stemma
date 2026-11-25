@@ -290,7 +290,7 @@ fn open_bare_names_a_missing_directory_a_file_and_an_unsupported_format() {
     );
     // The reader has the rule of the writer: `init_bare` writes no version before the marker
     // existed, so the marker beside such a version, written by hand, is damage.
-    for version in ["2", "13"] {
+    for version in ["2", "13", "14"] {
         fs::write(
             repository.path().join("format"),
             format!("stemma-repository {version}\n"),
@@ -303,13 +303,6 @@ fn open_bare_names_a_missing_directory_a_file_and_an_unsupported_format() {
         );
         assert_eq!(error.kind(), FailureKind::Damaged);
     }
-    // A version between two that are read is not read.
-    fs::write(repository.path().join("format"), "stemma-repository 14\n").unwrap();
-    let error = Repository::open_bare(repository.path()).unwrap_err();
-    assert!(
-        matches!(&error, OpenError::UnsupportedFormat { found, .. } if found == "14"),
-        "{error}"
-    );
     fs::remove_file(repository.path().join("format")).unwrap();
     let error = Repository::open_bare(repository.path()).unwrap_err();
     assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
@@ -1056,6 +1049,20 @@ fn a_bare_repository_that_cannot_be_installed_leaves_no_temporary_directory() {
 }
 
 #[test]
+fn a_bare_repository_has_no_remotes_and_no_remote_references() {
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    let before = listing(repository.path());
+
+    assert!(repository.remotes().unwrap().is_empty());
+    assert!(repository.refs().remote_refs().unwrap().is_empty());
+    let origin = crate::remote::RemoteName::try_new("origin").unwrap();
+    assert!(repository.remote(&origin).unwrap().is_none());
+
+    assert_eq!(listing(repository.path()), before);
+}
+
+#[test]
 fn discover_finds_no_repository_in_a_bare_one() {
     // The directory is the metadata directory itself; `discover` looks for a `.stemma`.
     let dir = TempDir::new();
@@ -1205,7 +1212,7 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
 
 /// The public methods of `Repository` that run on a bare repository, or that make or open a
 /// repository. Every other public method starts with the check of the bare repository.
-const WITHOUT_CHECK: [&str; 17] = [
+const WITHOUT_CHECK: [&str; 19] = [
     "init",
     "init_bare",
     "open",
@@ -1223,6 +1230,8 @@ const WITHOUT_CHECK: [&str; 17] = [
     "taken_over",
     "policy_of",
     "level_of_change",
+    "remote",
+    "remotes",
 ];
 
 /// The public methods of the `impl Repository` blocks in `source`, each with the first statement

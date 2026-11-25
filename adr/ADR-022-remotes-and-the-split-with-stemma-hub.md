@@ -37,8 +37,9 @@ sealed).
   `stemma-remote` nor in stemma-hub.
 - The version is a number of its own, `stemma-protocol <n>`, a constant in the core. It is
   independent of the crate version and of `stemma-repository` (ADR-009).
-- This repository owns the number: a change needs an ADR and a new number, as ADR-009 demands for
-  the formats, and the hub never defines protocol. A hub may serve several versions, a client
+- This repository owns the number: from the first release that carries the protocol on, a change
+  of a message needs an ADR and a new number (ADR-023), as ADR-009 demands for the formats, and
+  the hub never defines protocol. A hub may serve several versions, a client
   speaks one; a hub that does not know the version refuses and names the versions it speaks.
 - The protocol is public because the code is. What it encodes is decided in ADR-023.
 

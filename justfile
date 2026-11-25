@@ -146,7 +146,7 @@ stray-files:
 ci: format-check lint doc-check doc-lines stray-files test
 
 # Fuzz one strict reader, or the line merge, for SECONDS seconds: tree, commit, commit2, actor, index,
-# entry, journal, policy, or merge_lines.
+# entry, journal, policy, protocol, or merge_lines.
 # Needs nightly and cargo-fuzz (rustup toolchain install nightly; cargo install cargo-fuzz
 # --locked), so it is not part of `ci`. New inputs go to fuzz/corpus/TARGET, a finding to
 # fuzz/artifacts/TARGET; fuzz/seeds/TARGET holds the inputs that the fuzzer starts from.
@@ -165,7 +165,7 @@ fuzz-all seconds="60":
     set -uo pipefail
     trap 'exit 130' INT
     failed=()
-    for target in tree commit commit2 actor index entry journal policy merge_lines; do
+    for target in tree commit commit2 actor index entry journal policy protocol merge_lines; do
         "{{just_executable()}}" fuzz "$target" {{seconds}} || failed+=("$target")
     done
     if (( ${#failed[@]} > 0 )); then

@@ -432,12 +432,14 @@ _Avoid_: Server (for the role), origin
 
 **Remote**:
 A repository on a hub as a clone knows it: a name, the address, the repository ID, and the pinned
-key of the hub. A remote is always a hub: a clone never accepts a push and is never the authority
+key of the hub, kept in one file per remote, `.stemma/remotes/<name>` (ADR-009). A remote is
+always a hub: a clone never accepts a push and is never the authority
 over a shared branch. (Remote)
 
 **Remote reference**:
 The state of a branch or a tag on a hub as the clone last saw it: the commit and the record entry.
-Only `fetch` and `push` move it (ADR-008). (Remote-Referenz)
+Only `fetch` and `push` move it (ADR-008). Its qualified name is `remotes/<remote>/heads/<name>`
+or `remotes/<remote>/tags/<name>`. (Remote-Referenz)
 _Avoid_: Remote-tracking branch
 
 **Bare repository**:
@@ -451,8 +453,8 @@ HTTP client in `stemma-remote` and an in-memory variant for tests implement it (
 
 **Protocol version**:
 The number `stemma-protocol <n>`, the first line of every message between a clone and a hub. It is
-independent of the repository format, and every extension is a new number (ADR-023).
-(Protokollversion)
+independent of the repository format. The first number is 1, and from the first release that
+carries the protocol on, every change of a message is a new number (ADR-023). (Protokollversion)
 
 **Object stream**:
 The body of a fetch or an upload: whole objects in the encoding of the store, ancestors first,

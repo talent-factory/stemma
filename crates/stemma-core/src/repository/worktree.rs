@@ -53,7 +53,7 @@ pub enum WorktreeBranch {
     /// An existing branch that no worktree has checked out.
     Existing(BranchName),
     /// A new branch (`-b`), made at the commit that HEAD of the calling worktree leads to. The
-    /// name must not start with `heads/` or `tags/` (ADR-008).
+    /// name must not start with a reserved prefix (ADR-008).
     Create(BranchName),
 }
 
@@ -491,7 +491,7 @@ impl Repository {
     /// # Errors
     ///
     /// Before the entry: [`WorktreeError::Update`] for a refusal of the question or for a new
-    /// branch whose name starts with `heads/` or `tags/` ([`UpdateError::ReservedName`]),
+    /// branch whose name starts with a reserved prefix ([`UpdateError::ReservedName`]),
     /// [`WorktreeError::PathNotUtf8`],
     /// [`WorktreeError::PathInUse`], [`WorktreeError::Nested`], [`WorktreeError::NoSuchBranch`],
     /// [`WorktreeError::NoStart`], [`WorktreeError::Refs`] (among them [`RefError::CheckedOut`]
@@ -1220,8 +1220,8 @@ pub(super) fn open_linked(path: &Path, owned: bool) -> Result<Repository, OpenEr
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WorktreeError {
-    /// The authorizer refused `worktree-add`, the name of a new branch starts with `heads/` or
-    /// `tags/` ([`UpdateError::ReservedName`]), or the entry could not be written. An entry that is
+    /// The authorizer refused `worktree-add`, the name of a new branch starts with a reserved
+    /// prefix ([`UpdateError::ReservedName`]), or the entry could not be written. An entry that is
     /// not known to be flushed stays in the log ([`WorktreeError::entry`]).
     Update(UpdateError),
     /// The references could not be read, a lock is held, or the branch is in the way, exists, or

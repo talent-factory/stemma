@@ -647,7 +647,7 @@ Es wird angelegt, wenn es nicht existiert. Standard ist das aktuelle.
 \item {\bf \type{--initial-branch} NAME:} Der Branch, auf den HEAD zeigt.
 Standard ist \type{main}. Der Branch selbst entsteht erst mit dem ersten Commit.
 Ein ungültiger Name ist ein Aufruffehler (Exit-Code 2) und legt nichts an.
-Ein Name, der mit \type{heads/} oder \type{tags/} beginnt, ist reserviert
+Ein Name, der mit \type{heads/}, \type{tags/} oder \type{remotes/} beginnt, ist reserviert
 (ADR-008): Er endet mit Exit-Code 1 und legt nichts an,
 denn ein solcher Branch liesse sich unter seinem einfachen Namen nicht erreichen.
 \item {\bf \type{--owner-key} DATEI:} Die Datei eines öffentlichen Ed25519-Schlüssels
@@ -1039,9 +1039,12 @@ stemma switch --detach REVISION [-C VERZEICHNIS] --actor AKTEUR [--take-over]
 \startitemize
 \item {\bf NAME:} Ohne Option der Branch, zu dem HEAD wechselt; er muss bestehen.
 Mit \type{-c} der Name des neuen Branchs, der noch nicht bestehen darf
-und nicht mit \type{heads/} oder \type{tags/} beginnen darf (Exit-Code 1).
+und nicht mit \type{heads/}, \type{tags/} oder \type{remotes/} beginnen darf (Exit-Code 1).
+Ein Text mit \type{remotes/}, der nicht die Form einer Remote-Referenz hat
+(\type{remotes/REMOTE/heads/NAME} oder \type{remotes/REMOTE/tags/NAME}),
+ist schon beim Lesen ein Aufruffehler (Exit-Code 2).
 Ohne \type{-c} sind eine Commit-ID (\type{b3:} und 64 Hexadezimalziffern) und ein Tag
-(\type{tags/NAME}) kein Name und ein Aufruffehler (Exit-Code 2);
+(\type{tags/NAME}) kein Name und ein Aufruffehler (Exit-Code 2), ebenso eine Remote-Referenz;
 \type{heads/NAME} nennt dann den Branch \type{NAME}.
 \item {\bf START:} Nur mit \type{-c}. Ein Branch, ein Tag oder ein Commit (\type{b3:} und 64
 Hexadezimalziffern), auf dem der neue Branch beginnt. START folgt derselben Regel für Namen wie
@@ -1058,7 +1061,12 @@ blosser Name. Einen blossen Namen sucht der Befehl als Branch und als Tag: Gibt 
 gilt er; gibt es keinen, ist der Name unbekannt; gibt es beide, bricht der Befehl ab und verlangt
 \type{heads/NAME} oder \type{tags/NAME} (ADR-008). Er wählt keinen aus und warnt nicht nur.
 Die beiden Formen mit Präfix suchen nicht weiter: Fehlt der Branch oder der Tag, ist der Name
-unbekannt. Mit \type{-c} zusammen ist es ein Aufruffehler (Exit-Code 2).
+unbekannt.
+Eine Remote-Referenz heisst \type{remotes/REMOTE/heads/NAME} oder
+\type{remotes/REMOTE/tags/NAME} (\in{Kapitel}[chap:phase5]) und sucht ebenfalls nicht weiter;
+ein anderer Text, der mit \type{remotes/} beginnt, ist ein Aufruffehler (Exit-Code 2).
+Dieselben Formen gelten für START und für das Ziel von \type{rebase}.
+Mit \type{-c} zusammen ist es ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories:
 das, welches \type{.stemma} enthält, oder eines darunter. Standard ist das aktuelle.
 \item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt. Der Snapshot und der
@@ -1162,7 +1170,8 @@ für eine zurückgebliebene Arbeitskopie beginnt er mit
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem unbekannten Branch (die Meldung nennt
 \type{switch -c}), bei einem bestehenden Namen mit \type{-c}, bei einem Namen mit \type{-c},
-der mit \type{heads/} oder \type{tags/} beginnt, bei einem Namen mit \type{--detach}, der weder
+der mit \type{heads/}, \type{tags/} oder \type{remotes/} beginnt,
+bei einem Namen mit \type{--detach}, der weder
 Branch noch Tag ist, bei einem Namen, der Branch und Tag ist (die Meldung nennt beide Formen), bei
 einem \type{tags/NAME} ohne Tag (auch als START), bei einem Commit,
 den der Objektspeicher nicht hat, bei einem Branch von HEAD ohne Commit,
@@ -1278,7 +1287,8 @@ nennt die Pfade, bis ein Snapshot sie aufgelöst hat.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl bei einem HEAD, der einen Commit nennt,
 bei einem Branch ohne Commit, bei einem unbekannten Namen, einem \type{heads/NAME} ohne Branch,
-einem \type{tags/NAME} ohne Tag, einem Namen, der Branch und Tag ist,
+einem \type{tags/NAME} ohne Tag, einer Remote-Referenz, die der Klon nicht hat,
+einem Namen, der Branch und Tag ist,
 oder einem Commit, den der Objektspeicher nicht hat, und bei einem offenen Purge.
 Ebenso endet er, wenn Spitze und Ziel keinen gemeinsamen Commit haben,
 wenn sie mehrere beste gemeinsame Vorfahren haben (ein Criss-Cross-Merge)
@@ -1982,7 +1992,8 @@ stemma tag [-C VERZEICHNIS] [--json]
 
 \startitemize
 \item {\bf NAME:} Der Name des Tags, nach den Regeln eines Branch-Namens. Ein neuer Tag darf nicht
-mit \type{heads/} oder \type{tags/} beginnen (Exit-Code 1, ADR-008); einen solchen Tag, den es
+mit \type{heads/}, \type{tags/} oder \type{remotes/} beginnen (Exit-Code 1, ADR-008);
+einen solchen Tag, den es
 schon gibt, löscht \type{--delete}. Ohne den Namen listet der Befehl die Tags.
 \item {\bf COMMIT:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern. Ohne sie nimmt der
 Befehl den Commit, zu dem HEAD führt: die Spitze des Branches von HEAD, bei einem abgekoppelten
@@ -2087,8 +2098,8 @@ stemma branch [-C VERZEICHNIS]
 
 \startitemize
 \item {\bf NAME:} Der Name des neuen Branches, nach den Regeln eines Branch-Namens. Er darf nicht
-mit \type{heads/} oder \type{tags/} beginnen (Exit-Code 1, ADR-008); das gilt auch für NEU bei
-\type{-m}. Ohne Name und ohne Option listet der Befehl die Branches.
+mit \type{heads/}, \type{tags/} oder \type{remotes/} beginnen (Exit-Code 1, ADR-008);
+das gilt auch für NEU bei \type{-m}. Ohne Name und ohne Option listet der Befehl die Branches.
 Der neue Branch ist nicht ausgecheckt: HEAD,
 Arbeitsverzeichnis und Working-Copy-Commit bleiben, wie sie sind.
 \item {\bf START:} Die ID des Commits, \type{b3:} und 64 Hexadezimalziffern, an dem der Branch
@@ -2196,7 +2207,7 @@ der kein UTF-8 ist, lehnt der Befehl ihn ab.
 Worktree beginnt auf seiner Spitze.
 \item {\bf \type{-b}, \type{--branch} NEU:} Legt den Branch NEU an der Spitze an, zu der HEAD des
 aufrufenden Worktrees führt, und checkt ihn aus. Besteht NEU, ist es ein Fehler, und ein Name,
-der mit \type{heads/} oder \type{tags/} beginnt, ebenso. Genau eines von
+der mit \type{heads/}, \type{tags/} oder \type{remotes/} beginnt, ebenso. Genau eines von
 BRANCH und \type{-b} ist nötig: Fehlt beides oder stehen beide da, ist es ein Aufruffehler
 (Exit-Code 2). Einen abgekoppelten Worktree legt der Befehl nicht an.
 \item {\bf \type{--owner} AKTEUR:} Der Eigentümer der neuen Arbeitskopie, in der Form der Option
@@ -3099,7 +3110,9 @@ Head des Pull Requests.
 \item {\bf \type{--reviewer} AKTEUR:} Ein Reviewer, als Akteurszeile; die Option darf mehrfach
 stehen. Ein Reviewer ist eine Identität des Registers und nicht der Öffner.
 \item {\bf \type{--repairs} COMMIT:} Der Commit, den der Pull Request repariert: eine
-Commit-ID, ein Branch oder ein Tag.
+Commit-ID, ein Branch, ein Tag oder eine Remote-Referenz
+(\type{remotes/REMOTE/heads/NAME}, \type{remotes/REMOTE/tags/NAME}).
+Ein anderer Text, der mit \type{remotes/} beginnt, ist ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Akteurs für
 \type{ssh-keygen -Y sign}: der private Schlüssel, oder der öffentliche, wenn \type{ssh-agent} ihn
 hält. In einem durchsetzenden Repository ist die Option Pflicht, in einem offenen wird sie nicht
@@ -3247,9 +3260,11 @@ stemma check list [-C VERZEICHNIS]
 \startitemize
 \item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
 Standard ist das aktuelle.
-\item {\bf COMMIT:} Der getestete Commit: eine Commit-ID, ein Branch oder ein Tag. Trägt ein
-Name einen Branch und ein Tag, lehnt der Befehl ihn ab; \type{heads/NAME} oder \type{tags/NAME}
-entscheidet.
+\item {\bf COMMIT:} Der getestete Commit: eine Commit-ID, ein Branch, ein Tag oder eine
+Remote-Referenz (\type{remotes/REMOTE/heads/NAME}, \type{remotes/REMOTE/tags/NAME}).
+Ein anderer Text, der mit \type{remotes/} beginnt, ist ein Aufruffehler (Exit-Code 2).
+Trägt ein Name einen Branch und ein Tag, lehnt der Befehl ihn ab;
+\type{heads/NAME} oder \type{tags/NAME} entscheidet.
 \item {\bf \type{--result} ERGEBNIS:} \type{pass} oder \type{fail}.
 \item {\bf \type{--base} COMMIT:} Die Spitze von \type{main}, auf die der Commit für den Lauf
 gemerged wurde. Ohne die Option lief der Test auf dem Commit, wie er ist. Ein Lauf gegen eine

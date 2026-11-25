@@ -2667,10 +2667,12 @@ Eingaben prüfen. Golden Vectors und Property-Tests laufen in \type{just ci}.
 
 Der Generator sieht aber nicht, welche Zweige eines Lesers er erreicht. Das tut ein Fuzzer,
 der der Abdeckung folgt: \type{cargo fuzz} mit libFuzzer verändert die Eingaben so, dass sie
-neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür acht Ziele, eines je Leser und
-eines für den Zeilen-Merge:
+neue Zweige erreichen. Im Verzeichnis \type{fuzz/} gibt es dafür zehn Ziele, neun für die Leser
+und eines für den Zeilen-Merge:
 \type{tree}, \type{commit}, \type{commit2}, \type{actor}, \type{index}, \type{entry},
-\type{journal} und \type{merge_lines}.
+\type{journal}, \type{policy}, \type{protocol} und \type{merge_lines}.
+Das Ziel \type{protocol} prüft die Leser der Nachrichten zwischen Klon und Hub gemeinsam
+(\in{Kapitel}[chap:phase5]).
 Die Leser von HEAD und einer Branch-Datei lesen nur eine Zeile; für sie genügen die
 Property-Tests. Die Ziele beginnen bei gültigen Kodierungen in \type{fuzz/seeds/}.
 libFuzzer braucht die Nightly-Version von Rust, deshalb gehört das Fuzzing nicht zu

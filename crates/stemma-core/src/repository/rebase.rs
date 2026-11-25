@@ -588,7 +588,8 @@ pub enum RebaseError {
     NoCommits(BranchName),
     /// `heads/<name>` names no branch.
     NoSuchBranch(BranchName),
-    /// The target is a tag that does not exist, neither a branch nor a tag, or both (ADR-008).
+    /// The target is a tag that does not exist, a remote reference that the clone does not hold,
+    /// neither a branch nor a tag, or both (ADR-008).
     Name(NameError),
     /// The store has no commit with the ID.
     NoSuchCommit(ObjectId),

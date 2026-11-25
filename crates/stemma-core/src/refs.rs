@@ -10,6 +10,8 @@
 //! <root>/HEAD                    branch main\n   or   commit b3:<64 hex digits>\n
 //! <root>/refs/heads/<name>       b3:<64 hex digits>\n
 //! <root>/refs/tags/<name>        b3:<64 hex digits>\n   (created once, never moved, deleted at its commit)
+//! <root>/refs/remotes/<remote>/heads/<name>   b3:<64 hex digits>\nentry b3:<64 hex digits>\n
+//! <root>/refs/remotes/<remote>/tags/<name>    the same two lines (see [`crate::remote`])
 //! <root>/refs.lock               exists while a command writes (ADR-014)
 //! <root>/refs.lock.guard         stays; its holder holds a lock of the system on it (ADR-008)
 //! ```
@@ -22,6 +24,11 @@
 //! new commit is a commit that the object store has, so that no caller can point a branch at an
 //! object that is missing, or at a tree. The check, the comparison, and the write happen while one
 //! lock file exists, so two processes cannot overtake each other.
+//!
+//! A remote reference is the state of a branch or a tag on a hub as the clone last saw it
+//! (ADR-008). The store reads them ([`RefStore::remote_ref`], [`RefStore::remote_refs`]) and
+//! [`FsRefStore::verify`] checks them; only `fetch` and `push` move one, each with its entry in
+//! the operation log (ADR-011).
 
 use std::error::Error;
 use std::fmt;
@@ -36,6 +43,7 @@ use crate::actor::ActorParseError;
 use crate::fault;
 use crate::object::{CommitId, Kind, ObjectId, ObjectIdParseError};
 use crate::oplog::Pointer;
+use crate::remote::{RemoteName, RemoteNameError, RemoteRef, RemoteRefName, REMOTES_DIR};
 use crate::store::{
     create_dirs_synced, create_temp, flush_directory, remove_scratch, unique_temp_name,
     ObjectStore, StoreError,
@@ -218,6 +226,11 @@ pub enum RefMalformed {
     /// The name of a state directory below `worktrees` is none that a worktree can have: the
     /// operation log and the journal of a purge could not name the worktree.
     WorktreeName,
+    /// The file of a remote reference does not have exactly two lines, the commit and
+    /// `entry <hash>`.
+    RemoteShape,
+    /// An entry below the directory of a remote is neither `heads` nor `tags`.
+    RemoteNamespace,
 }
 
 impl fmt::Display for RefMalformed {
@@ -232,6 +245,13 @@ impl fmt::Display for RefMalformed {
                 "the name of the state directory is none that a worktree can have (1 to 255 \
                  letters, digits, `-`, `_`, and `.` but not first, and not `main`); remove the \
                  directory by hand"
+            }
+            Self::RemoteShape => {
+                "expected two lines, the commit and `entry <hash of the record entry>`"
+            }
+            Self::RemoteNamespace => {
+                "the directory of a remote holds the directories `heads` and `tags` and nothing \
+                 else"
             }
         })
     }
@@ -255,6 +275,10 @@ pub enum RefParseError {
     InvalidBranchName(BranchNameError),
     /// The owner in the file `working-copy` is not a valid actor.
     InvalidOwner(ActorParseError),
+    /// The hash of the record entry in the file of a remote reference is not in canonical form.
+    InvalidRecordHash(ObjectIdParseError),
+    /// The name of an entry below `refs/remotes` is no name of a remote.
+    InvalidRemoteName(RemoteNameError),
 }
 
 impl fmt::Display for RefParseError {
@@ -267,6 +291,10 @@ impl fmt::Display for RefParseError {
             Self::InvalidObjectId(source) => write!(f, "invalid object ID: {source}"),
             Self::InvalidBranchName(source) => write!(f, "{source}"),
             Self::InvalidOwner(source) => write!(f, "invalid owner: {source}"),
+            Self::InvalidRecordHash(source) => {
+                write!(f, "invalid hash of the record entry: {source}")
+            }
+            Self::InvalidRemoteName(source) => write!(f, "{source}"),
         }
     }
 }
@@ -278,6 +306,8 @@ impl Error for RefParseError {
             Self::InvalidObjectId(source) => source.source(),
             Self::InvalidBranchName(source) => source.source(),
             Self::InvalidOwner(source) => source.source(),
+            Self::InvalidRecordHash(source) => source.source(),
+            Self::InvalidRemoteName(source) => source.source(),
             Self::NotUtf8 { .. } | Self::Malformed(_) => None,
         }
     }
@@ -625,8 +655,9 @@ pub enum LockHolder {
     },
 }
 
-/// The kind of a reference that is created or deleted: a branch or a tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The kind of a reference: a branch or a tag, of the repository or of a remote. A branch comes
+/// before a tag in the order, which [`RemoteRefName`] relies on for its listing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum RefKind {
     /// A branch, below `refs/heads`.
@@ -637,8 +668,9 @@ pub enum RefKind {
 
 impl RefKind {
     /// The directory below `refs` that holds the references of this kind. Branches and tags use
-    /// the same names, the same files, and the same checks, each in its own directory.
-    fn directory(self) -> &'static str {
+    /// the same names, the same files, and the same checks, each in its own directory. A remote
+    /// has the same two directories below its own (`refs/remotes/<remote>`).
+    pub(crate) fn directory(self) -> &'static str {
         match self {
             Self::Branch => "heads",
             Self::Tag => "tags",
@@ -1137,6 +1169,31 @@ pub trait RefStore: crate::store::sealed::Sealed {
         allowed: &Allowed,
     ) -> Result<(), RefError>;
 
+    /// Returns what a remote reference holds, the commit and the record entry, or `None` if there
+    /// is no remote reference with exactly this name: the names of the remote and of the
+    /// reference are compared as stored, as for [`branch`](Self::branch).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Corrupt`] if the file is not in canonical form, and [`RefError::Io`] if
+    /// the storage fails or a file stands where `refs/remotes`, the directory of the remote, or
+    /// its `heads` or `tags` belongs: that is the error of [`remote_refs`](Self::remote_refs),
+    /// and no missing reference.
+    fn remote_ref(&self, name: &RemoteRefName) -> Result<Option<RemoteRef>, RefError>;
+
+    /// Returns all remote references, sorted by the remote, then the branches before the tags,
+    /// then the name (see [`RemoteRefName`]). Entries whose name starts with `.` are skipped, as
+    /// in [`branches`](Self::branches), and the listing reads without the lock. A repository
+    /// without `refs/remotes` has none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Corrupt`] for a file that is not a valid remote reference, for an
+    /// entry below `refs/remotes` whose name is no name of a remote, for an entry below a
+    /// remote that is neither `heads` nor `tags`, and for a name below those that is no branch
+    /// name; and [`RefError::Io`] if the storage fails or a file stands where a directory belongs.
+    fn remote_refs(&self) -> Result<Vec<(RemoteRefName, RemoteRef)>, RefError>;
+
     /// Returns the commit that HEAD leads to: the commit of its branch, `None` if that branch does
     /// not exist yet, or the commit that it names. This is two reads without a lock, so HEAD can
     /// change between them; a caller that changes a branch uses [`head`](Self::head) and
@@ -1581,10 +1638,19 @@ impl FsRefStore {
     /// `None` if the file is gone since: a reader without the lock may see another change delete
     /// it in between, and the reference then does not exist.
     fn listed_branch(&self, path: PathBuf) -> Result<Option<CommitId>, RefError> {
+        self.listed(path, &parse_branch)
+    }
+
+    /// [`listed_branch`](Self::listed_branch) for any reference file: what `parse` reads from it.
+    fn listed<T>(
+        &self,
+        path: PathBuf,
+        parse: &dyn Fn(&[u8]) -> Result<T, RefParseError>,
+    ) -> Result<Option<T>, RefError> {
         let Some(bytes) = self.read_reference(&path)? else {
             return Ok(None);
         };
-        parse_branch(&bytes)
+        parse(&bytes)
             .map(Some)
             .map_err(|source| RefError::Corrupt { path, source })
     }
@@ -2035,21 +2101,20 @@ impl FsRefStore {
     /// the place of a directory is damage and not "no references". A repository from before the
     /// tags has no `refs/tags`, which is no tags.
     fn namespace_exists(&self, namespace: RefKind) -> Result<bool, RefError> {
-        for dir in [self.root.join("refs"), self.namespace_dir(namespace)] {
-            match fs::symlink_metadata(&dir) {
-                Ok(metadata) if metadata.is_dir() => {}
-                Ok(_) => {
-                    return Err(RefError::Io {
-                        operation: "list the references in",
-                        path: dir,
-                        source: io::Error::new(io::ErrorKind::InvalidInput, "not a directory"),
-                    })
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-                Err(error) => return Err(io_error("inspect the directory", &dir)(error)),
-            }
-        }
-        Ok(true)
+        self.directories_exist(namespace.directory())
+    }
+
+    /// Whether `refs` and the directory `below` it exist; see
+    /// [`namespace_exists`](Self::namespace_exists). `refs/remotes` is checked the same way: a
+    /// repository that holds no remote reference need not have the directory.
+    fn directories_exist(&self, below: &str) -> Result<bool, RefError> {
+        let refs = self.root.join("refs");
+        Ok(is_directory(&refs)? && is_directory(&refs.join(below))?)
+    }
+
+    /// The directory of the remote references, `refs/remotes`.
+    fn remotes_dir(&self) -> PathBuf {
+        self.root.join("refs").join(REMOTES_DIR)
     }
 
     /// Finds out what the name is in the file system, comparing every component **exactly**. On a
@@ -2062,11 +2127,18 @@ impl FsRefStore {
             return Ok(Lookup::Absent);
         }
         let components: Vec<&str> = name.as_str().split('/').collect();
-        let mut dir = self.namespace_dir(namespace);
+        Self::lookup_below(self.namespace_dir(namespace), &components)
+    }
+
+    /// [`lookup`](Self::lookup) for the components of a name below `dir`, which exists. A remote
+    /// reference is looked up below `refs/remotes` with the name of the remote and `heads` or
+    /// `tags` as the first two components, so the name of the remote is compared exactly too.
+    fn lookup_below(mut dir: PathBuf, components: &[&str]) -> Result<Lookup, RefError> {
         let mut relative = String::new();
         for (index, component) in components.iter().enumerate() {
             // Every directory but the first was seen to be a directory, and the first has to be
-            // one if it exists: `refs` or `heads` as a file is damage and not "no branches".
+            // one if it exists: the caller saw it (`refs/heads`, `refs/tags`, or `refs/remotes`),
+            // and a file in its place is damage and not "no references".
             let entries = match settled(|| fault::read_dir(&dir)) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Lookup::Absent),
@@ -2168,11 +2240,28 @@ impl FsRefStore {
     }
 }
 
-/// What a name is in the file system of its namespace, the branches or the tags.
+/// Whether the path is a directory: `false` if nothing is there, and an error if something else
+/// is, because a file in the place of a directory of references is damage and not "no
+/// references". A link is not followed.
+fn is_directory(dir: &Path) -> Result<bool, RefError> {
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(RefError::Io {
+            operation: "list the references in",
+            path: dir.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, "not a directory"),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error("inspect the directory", dir)(error)),
+    }
+}
+
+/// What a name is in the file system of its namespace: the branches, the tags, or the remote
+/// references.
 enum Lookup {
     /// Nothing is there, and nothing is in the way.
     Absent,
-    /// The file of the branch or tag.
+    /// The file of the reference.
     Branch(PathBuf),
     /// A directory without any file below it holds the name. It is no branch and in nobody's way:
     /// it is what a change leaves behind that stopped. A change removes it.
@@ -2833,9 +2922,10 @@ impl FsRefStore {
     }
 
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
-    /// working-copy commit, every branch, and every tag. The store of a bare repository
-    /// (ADR-009) has no HEAD and no working-copy commit, so it checks the branches and the
-    /// tags, and a missing HEAD is no error there. A write checks the commit already
+    /// working-copy commit, every branch, every tag, and every remote reference (its commit; the
+    /// record entry names nothing in the store). The store of a bare repository (ADR-009) has no
+    /// HEAD and no working-copy commit, so it checks the rest, and a missing HEAD is no error
+    /// there. A write checks the commit already
     /// (ADR-008), so a
     /// problem here comes from outside the module: an object that was removed or damaged, or a
     /// reference file that was edited by hand. HEAD that names a branch is not checked itself; the
@@ -2843,8 +2933,9 @@ impl FsRefStore {
     /// repository.
     ///
     /// The result has one error for each reference that fails, in the order HEAD, the
-    /// working-copy commit, the branches, and then the tags, each in the byte order of their
-    /// names; it is empty if all hold. A commit that is missing is [`VerifyError::Missing`]; one that is another kind of
+    /// working-copy commit, the branches, the tags, and then the remote references, each in the
+    /// order of their listing; it is empty if all hold. A commit that is missing is
+    /// [`VerifyError::Missing`]; one that is another kind of
     /// object ([`StoreError::KindMismatch`]), is damaged ([`StoreError::Corrupt`]), or cannot be
     /// read ([`StoreError::Io`]) is [`VerifyError::Store`]. Each commit is read and hashed
     /// completely, but it is not parsed, and its tree and parents are not followed.
@@ -2861,7 +2952,8 @@ impl FsRefStore {
     /// Returns [`RefError::PurgePending`] if the journal of a purge exists, before the check and
     /// after it, since a pointer may be between its old and its new commit then (ADR-014).
     /// Returns the errors of reading the references, as [`head`](RefStore::head),
-    /// [`working_copy`](Self::working_copy), and [`branches`](RefStore::branches) do: a missing
+    /// [`working_copy`](Self::working_copy), [`branches`](RefStore::branches),
+    /// [`tags`](RefStore::tags), and [`remote_refs`](RefStore::remote_refs) do: a missing
     /// HEAD or working-copy file, or a reference file that is not in canonical form, is a problem
     /// of the references themselves. All references are read before the first commit is looked
     /// up, so such an error comes without any failure of a commit.
@@ -2882,6 +2974,9 @@ impl FsRefStore {
         }
         for (name, commit) in self.tags()? {
             pointers.push((Pointer::Tag(name), commit));
+        }
+        for (name, reference) in self.remote_refs()? {
+            pointers.push((Pointer::Remote(name), reference.commit));
         }
         let mut errors = Vec::new();
         for (pointer, commit) in pointers {
@@ -2924,6 +3019,7 @@ impl FsRefStore {
             Pointer::WorkingCopy => self.working_copy().map(Some),
             Pointer::Branch(name) => self.branch(name),
             Pointer::Tag(name) => self.tag(name),
+            Pointer::Remote(name) => Ok(self.remote_ref(name)?.map(|found| found.commit)),
         }
     }
 
@@ -3734,8 +3830,18 @@ impl FsRefStore {
         if !self.namespace_exists(namespace)? {
             return Ok(Vec::new());
         }
+        self.list_below(self.namespace_dir(namespace), &parse_branch)
+    }
+
+    /// The reference files below `top` with what `parse` reads from each, sorted by name: the
+    /// branches or the tags of the repository, or those of a remote.
+    fn list_below<T>(
+        &self,
+        top: PathBuf,
+        parse: &dyn Fn(&[u8]) -> Result<T, RefParseError>,
+    ) -> Result<Vec<(BranchName, T)>, RefError> {
         let mut found = Vec::new();
-        let mut pending = vec![(self.namespace_dir(namespace), String::new())];
+        let mut pending = vec![(top, String::new())];
         while let Some((dir, prefix)) = pending.pop() {
             let Some(entries) = list_directory(&dir)? else {
                 continue;
@@ -3767,14 +3873,76 @@ impl FsRefStore {
                     pending.push((path, name.as_str().to_owned()));
                     continue;
                 }
-                if let Some(commit) = self.listed_branch(path)? {
-                    found.push((name, commit));
+                if let Some(value) = self.listed(path, parse)? {
+                    found.push((name, value));
                 }
             }
         }
-        found.sort();
+        found.sort_by(|(a, _), (b, _)| a.cmp(b));
         Ok(found)
     }
+
+    /// The remote references, sorted by name; see [`RefStore::remote_refs`].
+    fn list_remotes(&self) -> Result<Vec<(RemoteRefName, RemoteRef)>, RefError> {
+        if !self.directories_exist(REMOTES_DIR)? {
+            return Ok(Vec::new());
+        }
+        let corrupt = |path: &Path, source| RefError::Corrupt {
+            path: path.to_path_buf(),
+            source,
+        };
+        let mut found = Vec::new();
+        for (remote_dir, file_name) in visible_entries(&self.remotes_dir())? {
+            let remote = RemoteName::try_new(file_name)
+                .map_err(|error| corrupt(&remote_dir, RefParseError::InvalidRemoteName(error)))?;
+            // A directory that is gone since the listing holds nothing; a file in its place is
+            // an error of the file system, as for `refs/heads`.
+            if !is_directory(&remote_dir)? {
+                continue;
+            }
+            for (kind_dir, file_name) in visible_entries(&remote_dir)? {
+                let kind = [RefKind::Branch, RefKind::Tag]
+                    .into_iter()
+                    .find(|kind| kind.directory() == file_name)
+                    .ok_or_else(|| {
+                        corrupt(
+                            &kind_dir,
+                            RefParseError::Malformed(RefMalformed::RemoteNamespace),
+                        )
+                    })?;
+                if !is_directory(&kind_dir)? {
+                    continue;
+                }
+                for (name, reference) in self.list_below(kind_dir, &RemoteRef::parse)? {
+                    let name = RemoteRefName {
+                        remote: remote.clone(),
+                        kind,
+                        name,
+                    };
+                    found.push((name, reference));
+                }
+            }
+        }
+        found.sort_by(|(a, _), (b, _)| a.cmp(b));
+        Ok(found)
+    }
+}
+
+/// The entries of a directory with their names, without those whose name starts with a dot,
+/// which file managers leave. A directory that is gone has none.
+fn visible_entries(dir: &Path) -> Result<Vec<(PathBuf, String)>, RefError> {
+    let Some(entries) = list_directory(dir)? else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(io_error("list the references in", dir))?;
+        let file_name = entry.file_name().to_string_lossy().into_owned();
+        if !file_name.starts_with('.') {
+            found.push((entry.path(), file_name));
+        }
+    }
+    Ok(found)
 }
 
 impl RefStore for FsRefStore {
@@ -3848,6 +4016,33 @@ impl RefStore for FsRefStore {
     fn tags(&self) -> Result<Vec<(BranchName, CommitId)>, RefError> {
         self.require_root()?;
         self.list_namespace(RefKind::Tag)
+    }
+
+    fn remote_ref(&self, name: &RemoteRefName) -> Result<Option<RemoteRef>, RefError> {
+        self.require_root()?;
+        if !self.directories_exist(REMOTES_DIR)? {
+            return Ok(None);
+        }
+        let mut components = vec![name.remote.as_str(), name.kind.directory()];
+        components.extend(name.name.as_str().split('/'));
+        match Self::lookup_below(self.remotes_dir(), &components)? {
+            Lookup::Branch(path) => self.listed(path, &RemoteRef::parse),
+            // What is in the way of a name is the business of the change that writes it. A file
+            // in the place of the directory of the remote, or of its `heads` or `tags`, is not
+            // such a name: it is the error that the listing reports, and no missing reference.
+            Lookup::Absent | Lookup::EmptyDirectory(_) | Lookup::Conflict(..) => {
+                let remote = self.remotes_dir().join(name.remote.as_str());
+                if is_directory(&remote)? {
+                    is_directory(&remote.join(name.kind.directory()))?;
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    fn remote_refs(&self) -> Result<Vec<(RemoteRefName, RemoteRef)>, RefError> {
+        self.require_root()?;
+        self.list_remotes()
     }
 
     fn create_tag(
@@ -4586,6 +4781,274 @@ mod tests {
             [&Pointer::Branch(name("b")), &Pointer::Tag(name("v2"))]
         );
         assert!(errors[1].to_string().contains("the tag `v2`"));
+    }
+
+    // ---- remote references
+
+    const ENTRY: &str = "b3:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    fn remote_name(remote: &str, kind: RefKind, reference: &str) -> RemoteRefName {
+        RemoteRefName {
+            remote: remote.parse().unwrap(),
+            kind,
+            name: name(reference),
+        }
+    }
+
+    /// Writes a remote reference as a fetch will; `relative` is the path below `refs/remotes`.
+    fn write_remote(dir: &TempDir, relative: &str, commit: CommitId) {
+        write_reference(
+            dir,
+            &format!("refs/remotes/{relative}"),
+            &format!("{commit}\nentry {ENTRY}\n"),
+        );
+    }
+
+    #[test]
+    fn without_remote_references_there_are_none() {
+        let (dir, _objects, refs) = setup();
+        let main = remote_name("origin", RefKind::Branch, "main");
+        // Neither `refs` nor `refs/remotes` exists, and then `refs/remotes` is empty.
+        assert!(refs.remote_refs().unwrap().is_empty());
+        assert_eq!(refs.remote_ref(&main).unwrap(), None);
+        fs::create_dir_all(dir.path().join("refs/remotes/origin/heads")).unwrap();
+        assert!(refs.remote_refs().unwrap().is_empty());
+        assert_eq!(refs.remote_ref(&main).unwrap(), None);
+    }
+
+    #[test]
+    fn remote_references_are_read_back_and_listed_by_remote_kind_and_name() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "first");
+        let second = commit(&objects, "second");
+        write_remote(&dir, "origin/tags/v1", first);
+        write_remote(&dir, "origin/heads/main", second);
+        write_remote(&dir, "origin/heads/feat/x", first);
+        write_remote(&dir, "hub/tags/main", second);
+        write_reference(&dir, "refs/remotes/.DS_Store", "left by a file manager");
+        write_reference(
+            &dir,
+            "refs/remotes/origin/.DS_Store",
+            "left by a file manager",
+        );
+
+        let listed = refs.remote_refs().unwrap();
+        let names: Vec<String> = listed.iter().map(|(name, _)| name.to_string()).collect();
+        assert_eq!(
+            names,
+            [
+                "remotes/hub/tags/main",
+                "remotes/origin/heads/feat/x",
+                "remotes/origin/heads/main",
+                "remotes/origin/tags/v1",
+            ]
+        );
+        let entry: crate::remote::RecordHash = ENTRY.parse().unwrap();
+        assert!(listed.iter().all(|(_, found)| found.entry == entry));
+        assert_eq!(listed[1].1.commit, first);
+
+        let main = remote_name("origin", RefKind::Branch, "main");
+        assert_eq!(
+            refs.remote_ref(&main).unwrap(),
+            Some(RemoteRef {
+                commit: second,
+                entry
+            })
+        );
+        // A remote reference is neither a branch nor a tag of the repository, and a branch of
+        // a remote is not its tag.
+        assert_eq!(refs.branch(&name("main")).unwrap(), None);
+        assert!(refs.branches().unwrap().is_empty() && refs.tags().unwrap().is_empty());
+        for absent in [
+            remote_name("origin", RefKind::Tag, "main"),
+            remote_name("origin", RefKind::Branch, "feat"),
+            remote_name("origin", RefKind::Branch, "Main"),
+            remote_name("Origin", RefKind::Branch, "main"),
+            remote_name("other", RefKind::Branch, "main"),
+        ] {
+            assert_eq!(refs.remote_ref(&absent).unwrap(), None, "{absent}");
+        }
+    }
+
+    #[test]
+    fn a_remote_reference_that_is_not_canonical_is_corrupt_with_its_path() {
+        let (dir, objects, refs) = setup();
+        let first = commit(&objects, "first");
+        write_reference(&dir, "HEAD", "branch main\n");
+        write_reference(&dir, "working-copy", &format!("{first}\n"));
+        let main = remote_name("origin", RefKind::Branch, "main");
+        let path = dir.path().join("refs/remotes/origin/heads/main");
+        for (content, expected) in [
+            // The file of a branch is no remote reference.
+            (
+                format!("{first}\n"),
+                RefParseError::Malformed(RefMalformed::RemoteShape),
+            ),
+            (
+                format!("{first}\nentry {ENTRY}"),
+                RefParseError::Malformed(RefMalformed::CutOff),
+            ),
+            (
+                format!("{first}\nentry {ENTRY}\nmore\n"),
+                RefParseError::Malformed(RefMalformed::RemoteShape),
+            ),
+        ] {
+            write_reference(&dir, "refs/remotes/origin/heads/main", &content);
+            for error in [
+                refs.remote_ref(&main).unwrap_err(),
+                refs.remote_refs().unwrap_err(),
+                refs.verify(&objects).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, RefError::Corrupt { path: found, source }
+                        if found == &path && source == &expected),
+                    "{content:?}: {error}"
+                );
+            }
+        }
+        write_reference(
+            &dir,
+            "refs/remotes/origin/heads/main",
+            &format!("{first}\nentry b3:12\n"),
+        );
+        let error = refs.remote_ref(&main).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Corrupt {
+                    source: RefParseError::InvalidRecordHash(_),
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("invalid hash of the record entry"),
+            "{error}"
+        );
+        assert_eq!(
+            RefMalformed::RemoteShape.to_string(),
+            "expected two lines, the commit and `entry <hash of the record entry>`"
+        );
+    }
+
+    #[test]
+    fn the_listing_of_remote_references_is_strict_about_every_level() {
+        let first = |objects: &FsObjectStore| commit(objects, "first");
+        // A directory that no remote can have.
+        let (dir, objects, refs) = setup();
+        write_remote(&dir, "origin~/heads/main", first(&objects));
+        let error = refs.remote_refs().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Corrupt { path, source: RefParseError::InvalidRemoteName(_) }
+                    if path == &dir.path().join("refs/remotes/origin~")
+            ),
+            "{error}"
+        );
+
+        // Below a remote only `heads` and `tags` exist.
+        let (dir, objects, refs) = setup();
+        write_remote(&dir, "origin/branches/main", first(&objects));
+        let error = refs.remote_refs().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Corrupt { path, source: RefParseError::Malformed(RefMalformed::RemoteNamespace) }
+                    if path == &dir.path().join("refs/remotes/origin/branches")
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("`heads` and `tags`"), "{error}");
+
+        // A name below `heads` follows the rule of a branch name.
+        let (dir, objects, refs) = setup();
+        write_remote(&dir, "origin/heads/main~", first(&objects));
+        let error = refs.remote_refs().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                RefError::Corrupt {
+                    source: RefParseError::InvalidBranchName(_),
+                    ..
+                }
+            ),
+            "{error}"
+        );
+
+        // A file in the place of a directory is an error of the file system, at every level.
+        for relative in [
+            "refs/remotes",
+            "refs/remotes/origin",
+            "refs/remotes/origin/heads",
+        ] {
+            let (dir, _objects, refs) = setup();
+            write_reference(&dir, relative, "a file\n");
+            // The lookup of one reference agrees with the listing: it is no missing reference.
+            let main = remote_name("origin", RefKind::Branch, "main");
+            for error in [
+                refs.remote_refs().unwrap_err(),
+                refs.remote_ref(&main).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(&error, RefError::Io { path, .. } if path == &dir.path().join(relative)),
+                    "{relative}: {error}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_references_are_checked_by_verify_after_the_tags() {
+        let (dir, objects, refs) = setup();
+        let kept = commit(&objects, "kept");
+        let removed = commit(&objects, "removed");
+        write_reference(&dir, "HEAD", "branch main\n");
+        write_reference(&dir, "working-copy", &format!("{kept}\n"));
+        write_reference(&dir, "refs/tags/v2", &format!("{removed}\n"));
+        write_remote(&dir, "origin/heads/main", kept);
+        write_remote(&dir, "origin/heads/gone", removed);
+        write_remote(&dir, "origin/tags/v1", removed);
+        assert!(refs.verify(&objects).unwrap().is_empty());
+
+        fs::remove_file(objects.object_path(&removed.object_id())).unwrap();
+        let errors = refs.verify(&objects).unwrap();
+        let places: Vec<&Pointer> = errors.iter().map(VerifyError::at).collect();
+        assert_eq!(
+            places,
+            [
+                &Pointer::Tag(name("v2")),
+                &Pointer::Remote(remote_name("origin", RefKind::Branch, "gone")),
+                &Pointer::Remote(remote_name("origin", RefKind::Tag, "v1")),
+            ]
+        );
+        assert!(
+            errors[1]
+                .to_string()
+                .contains("the remote reference `remotes/origin/heads/gone`"),
+            "{}",
+            errors[1]
+        );
+        assert!(
+            matches!(&errors[2], VerifyError::Missing { id, .. } if *id == removed.object_id())
+        );
+    }
+
+    #[test]
+    fn the_record_entry_of_a_remote_reference_names_nothing_in_the_store() {
+        // The hash of the record entry is no object: a store without it verifies.
+        let (dir, objects, refs) = setup();
+        let kept = commit(&objects, "kept");
+        write_reference(&dir, "HEAD", "branch main\n");
+        write_reference(&dir, "working-copy", &format!("{kept}\n"));
+        write_remote(&dir, "origin/heads/main", kept);
+        let entry: ObjectId = ENTRY.parse().unwrap();
+        assert!(!objects.contains(&entry).unwrap());
+        assert!(refs.verify(&objects).unwrap().is_empty());
     }
 
     // ---- branches

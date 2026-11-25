@@ -1,6 +1,7 @@
 //! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each of the strict readers of
 //! a tree, a commit, an actor line, the index, an entry of the log, the journal of a purge, and the
 //! policy file (whose check is a fixed point, see [`policy`]),
+//! one for the readers of the protocol messages together ([`protocol`]),
 //! and one for the merge of the lines of a file ([`merge_lines`]), which is no reader.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
 //! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
@@ -144,6 +145,130 @@ pub fn policy(input: &[u8]) {
     }
 }
 
+/// The longest body of an object that the check of [`protocol`] lets the reader of a stream
+/// accept, so that the fuzzer reaches the refusal of a larger one.
+const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
+
+/// The messages of the protocol (ADR-023): the list of references, the fetch request, the error,
+/// and the object stream (`stemma_core::protocol`). The input is given to each of the four
+/// readers, because a message does not name its type and each reader must refuse the messages of
+/// the others. A reader that accepts the input writes it back unchanged, and for a small message
+/// the value it read is one that the constructors build. A refusal is answered with an error
+/// message that is read back, where there is an answer, and a reader of a stream that refused
+/// stays failed.
+pub fn protocol(input: &[u8]) {
+    use crate::protocol::{
+        ErrorMessage, FetchRequest, FormerKey, ObjectStreamReader, ObjectStreamWriter, ParseError,
+        Reason, RefList, Spoken, StreamError,
+    };
+    // A refusal is answered with a message that the reader of the error accepts.
+    let check_refusal = |error: &ParseError| {
+        check_rejection(error);
+        let answer = ErrorMessage::from(error);
+        assert_eq!(
+            ErrorMessage::parse(&answer.encode()).as_ref(),
+            Ok(&answer),
+            "the answer to a refusal is not read"
+        );
+    };
+    // An accepted message is also what the constructors accept: the reader builds its values
+    // itself, so the round trip alone would not see a reader that takes an order, a range, or a
+    // reason that the writer refuses.
+    match RefList::parse(input) {
+        Ok(list) => {
+            assert_eq!(list.encode(), input, "a second spelling was accepted");
+            let former = list
+                .former()
+                .iter()
+                .map(|key| FormerKey::try_new(key.first(), key.last(), key.key().clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .expect("the reader took a range that the writer refuses");
+            let rebuilt = RefList::try_new(
+                list.repository(),
+                list.key().clone(),
+                former,
+                list.references().to_vec(),
+            );
+            assert_eq!(
+                rebuilt.as_ref(),
+                Ok(&list),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
+    }
+    match FetchRequest::parse(input) {
+        Ok(request) => {
+            assert_eq!(request.encode(), input, "a second spelling was accepted");
+            let rebuilt = FetchRequest::try_new(
+                request.want().iter().copied(),
+                request.have().iter().copied(),
+            );
+            assert_eq!(
+                rebuilt.as_ref(),
+                Ok(&request),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
+    }
+    match ErrorMessage::parse(input) {
+        Ok(message) => {
+            assert_eq!(message.encode(), input, "a second spelling was accepted");
+            let rebuilt = match &message {
+                ErrorMessage::UnsupportedVersion(spoken) => {
+                    Spoken::try_new(spoken.versions().iter().copied())
+                        .map(ErrorMessage::UnsupportedVersion)
+                }
+                ErrorMessage::Malformed(reason) => {
+                    Reason::try_new(reason.as_str()).map(ErrorMessage::Malformed)
+                }
+            };
+            assert_eq!(
+                rebuilt.as_ref(),
+                Ok(&message),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
+    }
+    let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
+        let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
+        loop {
+            match reader.next_object() {
+                Ok(Some(object)) => {
+                    assert!(object.body.len() as u64 <= PROTOCOL_MAX_OBJECT_LEN);
+                    writer
+                        .write(object.kind, &object.body)
+                        .expect("a vector takes every byte");
+                }
+                Ok(None) => return Ok(writer.finish()),
+                Err(error) => {
+                    assert!(
+                        matches!(reader.next_object(), Err(StreamError::Failed)),
+                        "the reader went on after a refusal"
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    });
+    match stream {
+        Ok(written) => assert_eq!(written, input, "a second spelling was accepted"),
+        Err(error) => {
+            assert!(error.io_error().is_none(), "a slice does not fail");
+            check_rejection(&error);
+            if let Some(answer) = error.answer() {
+                assert_eq!(
+                    ErrorMessage::parse(&answer.encode()).as_ref(),
+                    Ok(&answer),
+                    "the answer to a refusal is not read"
+                );
+            }
+        }
+    }
+}
+
 /// The byte that separates the three texts of an input of [`merge_lines`].
 pub const MERGE_SEPARATOR: u8 = 0x1e;
 
@@ -206,7 +331,7 @@ pub fn merge_lines(input: &[u8]) {
 
 /// A rejection has a message, and its chain of causes ends without an empty link and without a
 /// link that repeats the message of the next one (crate documentation).
-fn check_rejection(error: &dyn Error) {
+pub(crate) fn check_rejection(error: &dyn Error) {
     assert!(!error.to_string().is_empty(), "empty message");
     let mut link = error;
     for _ in 0..8 {
@@ -252,7 +377,7 @@ pub(crate) mod tests {
     fn every_seed_is_read_and_the_checks_hold_for_it_and_its_prefixes() {
         type Check = fn(&[u8]);
         type Accepts = fn(&[u8]) -> bool;
-        let targets: [(&str, Check, Accepts); 7] = [
+        let targets: [(&str, Check, Accepts); 8] = [
             ("tree", super::tree, |b| {
                 crate::object::Tree::parse(b).is_ok()
             }),
@@ -274,6 +399,18 @@ pub(crate) mod tests {
             ("policy", super::policy, |b| {
                 crate::policy::Policy::parse(b).is_ok()
             }),
+            ("protocol", super::protocol, |b| {
+                use crate::protocol::{ErrorMessage, FetchRequest, ObjectStreamReader, RefList};
+                RefList::parse(b).is_ok()
+                    || FetchRequest::parse(b).is_ok()
+                    || ErrorMessage::parse(b).is_ok()
+                    || ObjectStreamReader::new(b, u64::MAX).is_ok_and(|mut reader| loop {
+                        match reader.next_object() {
+                            Ok(Some(_)) => {}
+                            last => break last.is_ok(),
+                        }
+                    })
+            }),
         ];
         for (target, check, accepts) in targets {
             for (name, seed) in seeds(target) {
@@ -283,6 +420,21 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// The seeds of the protocol messages are the checked-in example messages, so the fuzzer starts
+    /// from every message that the examples show.
+    #[test]
+    fn the_seeds_of_the_protocol_are_the_example_messages() {
+        let seeds = seeds("protocol");
+        for example in crate::protocol::examples::ALL {
+            assert!(
+                seeds.iter().any(|(_, seed)| seed == example.bytes),
+                "the example {} is no seed",
+                example.name
+            );
+        }
+        assert_eq!(seeds.len(), crate::protocol::examples::ALL.len());
     }
 
     /// Every seed of the line merge is three texts that merge, and the check holds for it and for

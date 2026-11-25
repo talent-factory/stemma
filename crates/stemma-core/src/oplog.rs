@@ -167,6 +167,7 @@ use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::register::Identity;
+use crate::remote::RemoteRefName;
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError, ActorRef};
 
@@ -407,6 +408,9 @@ pub enum Pointer {
     Branch(BranchName),
     /// A tag (ADR-008).
     Tag(BranchName),
+    /// A remote reference (ADR-008), as `verify` names it; the entries of `fetch` and `push`
+    /// name it too.
+    Remote(RemoteRefName),
 }
 
 impl fmt::Display for Pointer {
@@ -416,6 +420,7 @@ impl fmt::Display for Pointer {
             Self::WorkingCopy => f.write_str("the working-copy commit"),
             Self::Branch(name) => write!(f, "the branch `{name}`"),
             Self::Tag(name) => write!(f, "the tag `{name}`"),
+            Self::Remote(name) => write!(f, "the remote reference `{name}`"),
         }
     }
 }

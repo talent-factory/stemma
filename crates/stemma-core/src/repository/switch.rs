@@ -41,7 +41,7 @@ pub enum SwitchTarget {
     /// `switch <name>`: HEAD names the existing branch.
     Existing(BranchName),
     /// `switch -c <name> [<start>]`: the branch is made at `start` (by default the commit that HEAD
-    /// leads to) and HEAD names it. The name must not start with `heads/` or `tags/` (ADR-008).
+    /// leads to) and HEAD names it. The name must not start with a reserved prefix (ADR-008).
     Create {
         /// The name of the new branch.
         name: BranchName,
@@ -231,7 +231,7 @@ impl Repository {
     /// # Errors
     ///
     /// Before the snapshot: [`SwitchError::Update`] for a refusal of the question `switch` or for
-    /// a new branch whose name starts with `heads/` or `tags/` ([`UpdateError::ReservedName`]),
+    /// a new branch whose name starts with a reserved prefix ([`UpdateError::ReservedName`]),
     /// [`SwitchError::NoSuchBranch`], [`SwitchError::NoSuchCommit`], [`SwitchError::BranchExists`],
     /// [`SwitchError::NoStart`], [`SwitchError::Refs`], [`SwitchError::Store`],
     /// [`SwitchError::Stopped`] for a working copy that stayed behind its branch while a command
@@ -903,7 +903,7 @@ fn target_name(target: &SwitchTarget) -> String {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SwitchError {
-    /// The authorizer refused `switch`, the name of a new branch starts with `heads/` or `tags/`
+    /// The authorizer refused `switch`, the name of a new branch starts with a reserved prefix
     /// ([`UpdateError::ReservedName`]), or the entry could not be written (see
     /// [`UpdateError::Log`]). No pointer moved and no file was written.
     Update(UpdateError),
@@ -926,7 +926,8 @@ pub enum SwitchError {
     Checkout(CheckoutError),
     /// There is no branch with the name (`switch -c` makes one).
     NoSuchBranch(BranchName),
-    /// The name of a revision is a tag that does not exist, neither a branch nor a tag, or both
+    /// The name of a revision is a tag that does not exist, a remote reference that the clone does
+    /// not hold, neither a branch nor a tag, or both
     /// (ADR-008).
     Name(NameError),
     /// The store has no commit with the ID.
@@ -1529,6 +1530,43 @@ mod tests {
     }
 
     #[test]
+    fn the_qualified_form_of_a_remote_reference_leads_to_its_commit() {
+        use crate::testutil::write_remote_ref;
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let (first, second) = branches_and_tags(&dir, &repository);
+        let root = repository.metadata_dir();
+        write_remote_ref(&root, "origin/heads/main", first);
+        write_remote_ref(&root, "origin/tags/main", second);
+        write_remote_ref(&root, "origin/heads/feat/x", second);
+
+        // The branch `main` is at `second` and the tag `main` at `first`: the remote references
+        // are a namespace of their own.
+        let at = |text| detached_at(&repository, text).unwrap();
+        assert_eq!(at("remotes/origin/heads/main"), first);
+        assert_eq!(at("remotes/origin/tags/main"), second);
+        assert_eq!(at("remotes/origin/heads/feat/x"), second);
+
+        // It never falls through to a branch or a tag, and another remote is another name.
+        for text in [
+            "remotes/origin/heads/feature",
+            "remotes/origin/tags/release",
+            "remotes/Origin/heads/main",
+            "remotes/hub/heads/main",
+        ] {
+            let error = detached_at(&repository, text).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    SwitchError::Name(NameError::NoSuchRemoteReference(name))
+                        if name.to_string() == text
+                ),
+                "{text}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn a_qualified_form_never_falls_through_to_the_other_kind() {
         let dir = TempDir::new();
         let repository = repository(&dir);
@@ -2054,7 +2092,7 @@ mod tests {
         two_branches(&dir, &repository);
         let head = repository.refs().head().unwrap();
         let before = repository.oplog().entries().unwrap().len();
-        for text in ["heads/x", "tags/x"] {
+        for text in ["heads/x", "tags/x", "remotes/x"] {
             let target = SwitchTarget::Create {
                 name: name(text),
                 start: None,
