@@ -322,7 +322,10 @@ fn protocol_record(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseE
             match RefUpdate::parse(input) {
                 Ok(verified) => assert_eq!(verified, update),
                 Err(error) => {
-                    only_a_signature(&error, &[RecordProblem::ActorSignature]);
+                    only_a_signature(
+                        &error,
+                        &[RecordProblem::ActorKey, RecordProblem::ActorSignature],
+                    );
                     check_refusal(&error);
                 }
             }
@@ -341,7 +344,11 @@ fn protocol_record(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseE
                 Err(error) => {
                     only_a_signature(
                         &error,
-                        &[RecordProblem::ActorSignature, RecordProblem::HubSignature],
+                        &[
+                            RecordProblem::ActorKey,
+                            RecordProblem::ActorSignature,
+                            RecordProblem::HubSignature,
+                        ],
                     );
                     check_refusal(&error);
                 }

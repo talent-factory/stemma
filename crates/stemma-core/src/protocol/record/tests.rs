@@ -169,7 +169,7 @@ fn acceptance(fast_forward: &[&str]) -> Acceptance {
 /// Appends an update to a chain and a record, signed by the hub of these tests.
 fn append(chain: &mut Chain, record: &mut Vec<u8>, update: RefUpdate) -> RecordEntry {
     chain
-        .append(update, acceptance(&[]), &hub(), record)
+        .append(&update, acceptance(&[]), &hub(), record)
         .unwrap()
 }
 
@@ -366,7 +366,7 @@ fn a_b_a_does_not_make_an_old_update_count_again() {
     assert_eq!(chain.check(&to_b), Err(expected.clone()));
     let before = (chain.clone(), record.clone());
     let refused = chain
-        .append(to_b.clone(), acceptance(&[]), &hub(), &mut record)
+        .append(&to_b, acceptance(&[]), &hub(), &mut record)
         .unwrap_err();
     assert!(matches!(&refused, WriteError::Chain(error) if error == &expected));
     assert_eq!(
@@ -466,7 +466,7 @@ fn two_entries_with_one_number_and_different_hashes_are_detected() {
     // An entry that another key signed proves nothing about the hub.
     let foreign = Chain::new(repository())
         .append(
-            update(vec![moved(main, None, None, Some(commit(2)))]),
+            &update(vec![moved(main, None, None, Some(commit(2)))]),
             acceptance(&[]),
             &Seeded::new(9),
             &mut Vec::new(),
@@ -492,7 +492,7 @@ fn two_entries_with_one_number_and_different_hashes_are_detected() {
     let elsewhere: RepositoryId = "ffeeddccbbaa99887766554433221100".parse().unwrap();
     let there = Chain::new(elsewhere)
         .append(
-            update_for(elsewhere, vec![moved(main, None, None, Some(commit(2)))]),
+            &update_for(elsewhere, vec![moved(main, None, None, Some(commit(2)))]),
             acceptance(&[]),
             &hub(),
             &mut Vec::new(),
@@ -584,7 +584,7 @@ fn record_at(register: CommitId) -> Vec<RecordEntry> {
             register,
             ..acceptance(&[])
         };
-        chain.append(update, stated, &hub(), &mut record).unwrap()
+        chain.append(&update, stated, &hub(), &mut record).unwrap()
     };
     let first = write(update(vec![moved(
         "heads/main",
@@ -738,6 +738,40 @@ fn an_actor_that_the_register_does_not_hold_does_not_stand() {
         Standing::NoLongerCheckable
     );
 
+    // A commit with an open conflict never was a tip of `main`, so no hub read its register.
+    let tree = |name: &str| {
+        let blob = Blob::new(name);
+        store.put_blob(&blob).unwrap();
+        let entry = TreeEntry::file(name, FileMode::File, blob.id()).unwrap();
+        store
+            .put_tree(&Tree::try_new(vec![entry]).unwrap())
+            .unwrap()
+    };
+    let conflict = crate::object::Commit2::try_new(
+        vec![tree("a"), tree("b"), tree("c")],
+        Vec::new(),
+        sample_change(),
+        Actor::human("daniel").unwrap(),
+        1_795_000_000,
+        "A conflict\n",
+    )
+    .unwrap();
+    let conflict = CommitId::new(
+        store
+            .put_raw(crate::object::Kind::Commit2, &conflict.encode())
+            .unwrap(),
+    );
+    let error = record_at(conflict)[0].standing(&store).unwrap_err();
+    assert!(matches!(error, StandingError::Conflict), "{error}");
+    check_rejection(&error);
+    // The same commit in a store that lost it is no longer checkable, as every commit is.
+    assert_eq!(
+        record_at(conflict)[0]
+            .standing(&TempDir::new().store())
+            .unwrap(),
+        Standing::NoLongerCheckable
+    );
+
     // The commit is there and holds no register.
     let entries = record_at(register_commit(&store, None));
     let error = entries[0].standing(&store).unwrap_err();
@@ -877,7 +911,36 @@ fn a_signature_of_another_type_or_key_is_refused() {
     let message = text.replacen(&own, &signature_to_line(&foreign), 1);
     assert_eq!(
         RefUpdate::parse(message.as_bytes()),
+        Err(problem(9, RecordProblem::ActorKey))
+    );
+    // The key of the update signed, but not this payload as a ref update.
+    let as_log_entry =
+        signature::sign(&daniel(), PayloadKind::LogEntry, &update.payload().encode()).unwrap();
+    let message = text.replacen(&own, &signature_to_line(&as_log_entry), 1);
+    assert_eq!(
+        RefUpdate::parse(message.as_bytes()),
         Err(problem(9, RecordProblem::ActorSignature))
+    );
+    // A `key` line that was changed to another key is told apart from a changed payload, in
+    // a ref update and in an entry of the record.
+    let other_key = text.replacen(
+        &daniel().public().to_string(),
+        &Seeded::new(9).public().to_string(),
+        1,
+    );
+    assert_eq!(
+        RefUpdate::parse(other_key.as_bytes()),
+        Err(problem(9, RecordProblem::ActorKey))
+    );
+    let receipt = String::from_utf8(example_receipt().encode()).unwrap();
+    let other_key = receipt.replacen(
+        &daniel().public().to_string(),
+        &Seeded::new(9).public().to_string(),
+        1,
+    );
+    assert_eq!(
+        RecordEntry::parse(other_key.as_bytes()),
+        Err(problem(9, RecordProblem::ActorKey))
     );
     assert!(RefUpdate::parse_unverified(message.as_bytes()).is_ok());
 
@@ -1014,7 +1077,7 @@ fn changed_update(from: &str, to: &str) -> Result<RefUpdate, ParseError> {
             assert!(matches!(
                 error,
                 ParseError::Record {
-                    reason: RecordProblem::ActorSignature,
+                    reason: RecordProblem::ActorSignature | RecordProblem::ActorKey,
                     ..
                 }
             ))
@@ -1414,7 +1477,7 @@ fn the_reader_of_the_chain_refuses_what_the_writer_does_not_write() {
     };
     assert_eq!(chain.accept(&entry), Err(expected.clone()));
     assert!(matches!(
-        chain.append(foreign, acceptance(&[]), &hub(), &mut record),
+        chain.append(&foreign, acceptance(&[]), &hub(), &mut record),
         Err(WriteError::Chain(error)) if error == expected
     ));
     // An `old` that is not the commit that the last entry left, with the right `previous`.
@@ -1478,7 +1541,7 @@ fn the_reader_of_the_chain_refuses_what_the_writer_does_not_write() {
     // A chain that began in the middle reads only: the writer must know every name.
     let update = update(vec![moved("heads/x", None, None, Some(commit(1)))]);
     let mut record = Vec::new();
-    let refused = partial.append(update.clone(), acceptance(&[]), &hub(), &mut record);
+    let refused = partial.append(&update, acceptance(&[]), &hub(), &mut record);
     assert!(matches!(
         refused,
         Err(WriteError::Chain(ChainError::NotWhole))
@@ -1513,7 +1576,7 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
     // A fast-forward of a reference that the update does not list, and of one that it creates.
     for reference in ["heads/other", "tags/v1"] {
         let error = chain
-            .append(next(), acceptance(&[reference]), &hub(), &mut record)
+            .append(&next(), acceptance(&[reference]), &hub(), &mut record)
             .unwrap_err();
         assert!(
             matches!(&error, WriteError::FastForward(found) if found == &name(reference)),
@@ -1524,7 +1587,7 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
     // A deletion is no fast-forward either, for the writer and for the reader.
     let deletion = || update(vec![moved(main, Some(first.hash()), Some(commit(1)), None)]);
     let error = chain
-        .append(deletion(), acceptance(&[main]), &hub(), &mut record)
+        .append(&deletion(), acceptance(&[main]), &hub(), &mut record)
         .unwrap_err();
     assert!(matches!(error, WriteError::FastForward(_)), "{error}");
     let lines = hub_lines(2, Some(first.hash()), &[(main, "yes")]);
@@ -1534,12 +1597,12 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
     );
     // A signer that fails, and one that signs something else.
     let error = chain
-        .append(next(), acceptance(&[main]), &Broken, &mut record)
+        .append(&next(), acceptance(&[main]), &Broken, &mut record)
         .unwrap_err();
     assert!(matches!(error, WriteError::Sign(_)), "{error}");
     check_rejection(&error);
     let error = chain
-        .append(next(), acceptance(&[main]), &Liar(hub()), &mut record)
+        .append(&next(), acceptance(&[main]), &Liar(hub()), &mut record)
         .unwrap_err();
     assert!(
         matches!(error, WriteError::Signature(VerifyError::Invalid)),
@@ -1548,10 +1611,21 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
     assert!(error.io_error().is_none());
     check_rejection(&error);
     assert_eq!((chain.clone(), record.clone()), before);
+    // The writer borrows the update, so a refused update is still the caller's to write again.
+    let kept = next();
+    assert!(chain
+        .append(&kept, acceptance(&[main]), &Broken, &mut record)
+        .is_err());
+    let mut retried = (chain.clone(), record.clone());
+    let entry = retried
+        .0
+        .append(&kept, acceptance(&[main]), &hub(), &mut retried.1)
+        .unwrap();
+    assert_eq!(entry.update(), &kept);
 
     // A destination that fails: the chain stays, and the update can be written again.
     let error = chain
-        .append(next(), acceptance(&[main]), &hub(), &mut Full)
+        .append(&next(), acceptance(&[main]), &hub(), &mut Full)
         .unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -1562,12 +1636,12 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
     assert_eq!(chain, before.0);
     // So does a destination that takes the bytes and cannot flush them.
     let error = chain
-        .append(next(), acceptance(&[main]), &hub(), &mut Unflushed)
+        .append(&next(), acceptance(&[main]), &hub(), &mut Unflushed)
         .unwrap_err();
     assert!(matches!(error, WriteError::Io(_)), "{error}");
     assert_eq!(chain, before.0);
     let second = chain
-        .append(next(), acceptance(&[main]), &hub(), &mut record)
+        .append(&next(), acceptance(&[main]), &hub(), &mut record)
         .unwrap();
     assert_eq!(second.number(), 2);
     assert_eq!(second.previous(), Some(first.hash()));
@@ -1638,6 +1712,7 @@ fn every_problem_has_a_message_of_its_own() {
         RecordProblem::NoReference,
         RecordProblem::DuplicateReference,
         RecordProblem::SignatureForm,
+        RecordProblem::ActorKey,
         RecordProblem::ActorSignature,
         RecordProblem::HubSignature,
         RecordProblem::Time,

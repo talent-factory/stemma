@@ -160,13 +160,17 @@ hub-signature <SSHSIG signature on one line>
 
 The readers hold the rule of ADR-005 and check the signatures as well: the signature of the actor
 against the key of the payload, and the signature of the hub against the key that it names. A
+signature of the actor that names another key than the `key` line is refused as such, apart from
+one that names that key and does not verify, so a sender can tell a wrong key from a changed
+payload. A
 value of either type therefore carries signatures that verify. Whether the keys are the right
 ones is asked apart: the key of the hub against the key that the clone pinned and the former keys
 with their ranges (ADR-026), and the key of the actor against the register of the register
 commit. That last check answers "no longer checkable" where the commit, its tree, a tree on the
 path of the register or the register file itself is gone. It refuses where the commit is there
-and holds no register, where the register does not hold the key as an active key of the actor,
-and where it cannot be read. A store cannot tell an object that was removed from one that never
+and records an open conflict, which `main` never holds (ADR-019), where it holds no register,
+where the register does not hold the key as an active key of the actor, and where it cannot be
+read. A store cannot tell an object that was removed from one that never
 was there, so "no longer checkable" leaves the actor a statement of the hub alone.
 
 The chains have one rule in one place (`Chain`). It holds the number and the hash of the last

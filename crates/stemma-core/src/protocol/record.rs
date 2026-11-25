@@ -70,6 +70,7 @@ use super::{
     first_line, malformed, parse_commit, parse_key, parse_positive, FormerKey, Lines, Malformed,
     ParseError, QualifiedName, RecordHash, RefListError, RepositoryId, VERSION,
 };
+use crate::conflict::AnyCommit;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError};
 use crate::refs::RefKind;
 use crate::register::{signature_from_line, signature_to_line, Identity, ModeError, Register};
@@ -118,7 +119,11 @@ pub enum RecordProblem {
     /// A signature is not an SSHSIG signature of an Ed25519 key for the namespace of the proofs,
     /// written on one line.
     SignatureForm,
-    /// The signature of the actor does not verify for the key and the payload of the update.
+    /// The signature of the actor names another key than the `key` line of the update: another
+    /// key signed, or the `key` line was changed.
+    ActorKey,
+    /// The signature of the actor names the key of the update and does not verify for it and
+    /// the payload: the payload was changed, or the signature is not one of a ref update.
     ActorSignature,
     /// The signature of the hub does not verify for the key that it names and the hash of the
     /// entry.
@@ -152,6 +157,9 @@ impl fmt::Display for RecordProblem {
             Self::DuplicateReference => "a reference is named twice",
             Self::SignatureForm => {
                 "the signature is not an SSHSIG signature of an Ed25519 key on one line"
+            }
+            Self::ActorKey => {
+                "the signature was made by another key than the key of the ref update"
             }
             Self::ActorSignature => {
                 "the signature does not verify for the key and the payload of the ref update"
@@ -517,9 +525,10 @@ impl RefUpdate {
     /// repository ID, a name, a hash, a commit, or a key that is not in canonical form, a
     /// reference that does not come after the one before it in the order of the qualified names,
     /// a move that [`Move::try_new`] refuses, and a signature that is not in its one-line form.
-    /// The first problem is reported, with its line. A message whose form is right and whose
-    /// signature does not verify is refused last, as [`RecordProblem::ActorSignature`] at the
-    /// `signature` line.
+    /// The first problem is reported, with its line. A message whose form is right is refused
+    /// last for its signature, at the `signature` line: as [`RecordProblem::ActorKey`] if the
+    /// signature names another key than the `key` line, and as
+    /// [`RecordProblem::ActorSignature`] if it names that key and does not verify.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let mut lines = Lines::open(bytes)?;
         let update = read_update(&mut lines)?;
@@ -550,7 +559,7 @@ impl UnverifiedUpdate {
     /// The update, if its signature verifies.
     fn verified(self) -> Result<RefUpdate, ParseError> {
         RefUpdate::try_new(self.payload, self.signature)
-            .map_err(|_| problem(self.line, RecordProblem::ActorSignature))
+            .map_err(|error| problem(self.line, actor_problem(error)))
     }
 
     /// The update without the check of its signature: for an entry whose reader checks it
@@ -560,6 +569,14 @@ impl UnverifiedUpdate {
             payload: self.payload,
             signature: self.signature,
         }
+    }
+}
+
+/// Why the signature of an actor is refused: for its key, or for what it signs.
+fn actor_problem(error: VerifyError) -> RecordProblem {
+    match error {
+        VerifyError::WrongKey => RecordProblem::ActorKey,
+        _ => RecordProblem::ActorSignature,
     }
 }
 
@@ -798,8 +815,8 @@ impl RecordEntry {
     /// deleted, a first entry that names a previous entry or a later entry that names none, a
     /// signature that is not in its one-line form, and anything after the `hub-signature` line.
     /// An entry whose form is right is refused last for a signature of the actor
-    /// ([`RecordProblem::ActorSignature`]) or of the hub ([`RecordProblem::HubSignature`]) that
-    /// does not verify, in this order.
+    /// ([`RecordProblem::ActorKey`], [`RecordProblem::ActorSignature`]) or of the hub
+    /// ([`RecordProblem::HubSignature`]) that does not verify, in this order.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         read_entry(bytes)
     }
@@ -842,11 +859,20 @@ impl RecordEntry {
     ///
     /// # Errors
     ///
-    /// [`StandingError::NoRegister`] if the commit is there and holds no register,
+    /// [`StandingError::Conflict`] if the commit is there and records an open conflict, which
+    /// `main` never holds (ADR-019), [`StandingError::NoRegister`] if it holds no register,
     /// [`StandingError::NotActive`] if its register does not hold the key as an active key of
     /// the actor, and [`StandingError::Unreadable`] if the store fails or the register cannot be
     /// read.
     pub fn standing(&self, store: &dyn ObjectStore) -> Result<Standing, StandingError> {
+        // A commit with a list of trees has no one tree to read a register from, and it never
+        // was a tip of `main`: the entry names a commit that the hub cannot have used.
+        match store.get_any_commit(&self.register) {
+            Ok(Some(AnyCommit::Commit2(_))) => return Err(StandingError::Conflict),
+            Ok(Some(AnyCommit::Commit(_))) => {}
+            Ok(None) => return Ok(Standing::NoLongerCheckable),
+            Err(error) => return Err(StandingError::Unreadable(ModeError::Store(error))),
+        }
         let register = match Register::at_commit(store, &self.register) {
             Err(ModeError::Missing) => return Ok(Standing::NoLongerCheckable),
             Err(error) => return Err(StandingError::Unreadable(error)),
@@ -947,7 +973,7 @@ fn read_entry(bytes: &[u8]) -> Result<RecordEntry, ParseError> {
     let Unverified(entry, actor_line, hub_line) = read_entry_form(bytes)?;
     let RefUpdate { payload, signature } = &entry.update;
     RefUpdate::try_new(payload.clone(), signature.clone())
-        .map_err(|_| problem(actor_line, RecordProblem::ActorSignature))?;
+        .map_err(|error| problem(actor_line, actor_problem(error)))?;
     verify_hub(entry.hash(), &entry.signature)
         .map_err(|_| problem(hub_line, RecordProblem::HubSignature))?;
     Ok(entry)
@@ -1061,6 +1087,9 @@ pub enum Standing {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum StandingError {
+    /// The register commit is in the store and records an open conflict. `main` never holds
+    /// such a commit (ADR-019), so no hub read a register from it.
+    Conflict,
     /// The register commit is in the store and holds no register.
     NoRegister,
     /// The register of the commit does not hold the key of the update as an active key of the
@@ -1073,6 +1102,9 @@ pub enum StandingError {
 impl fmt::Display for StandingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Conflict => f.write_str(
+                "the register commit records an open conflict, which `main` never holds",
+            ),
             Self::NoRegister => f.write_str("the register commit holds no register"),
             Self::NotActive => f.write_str(
                 "the register of the register commit does not hold the key of the ref update as \
@@ -1378,10 +1410,11 @@ impl Chain {
     /// This is the writer of the record: the entry carries the next number and the hash of the
     /// last entry, the signer of the hub signs its hash, and the bytes of
     /// [`RecordEntry::encode`] are written in one call and flushed. The returned entry is the
-    /// receipt. A flush is no promise that the bytes survive a crash: the caller makes the
-    /// destination durable (for a file, a sync) before the receipt leaves the hub and before a
-    /// reference moves, or a clone can hold a receipt for a number that the record gives to
-    /// another entry later.
+    /// receipt. The update is borrowed, so the caller still holds it after a refusal, to answer
+    /// the client or to write again. A flush is no promise that the bytes survive a crash: the
+    /// caller makes the destination durable (for a file, a sync) before the receipt leaves the
+    /// hub and before a reference moves, or a clone can hold a receipt for a number that the
+    /// record gives to another entry later.
     ///
     /// The core never knows the key of the hub (ADR-026): `signer` is given the bytes to sign
     /// and returns the signature. Whether the update may be accepted (the register, the role,
@@ -1408,7 +1441,7 @@ impl Chain {
     /// entry, and [`WriteError::Io`] if the destination fails.
     pub fn append(
         &mut self,
-        update: RefUpdate,
+        update: &RefUpdate,
         acceptance: Acceptance,
         signer: &dyn Signer,
         destination: &mut dyn Write,
@@ -1416,7 +1449,7 @@ impl Chain {
         if !self.whole {
             return Err(WriteError::Chain(ChainError::NotWhole));
         }
-        self.check(&update).map_err(WriteError::Chain)?;
+        self.check(update).map_err(WriteError::Chain)?;
         let number = self.next_number().map_err(WriteError::Chain)?;
         let moves = &update.payload.moves;
         if let Some(name) = acceptance.fast_forward.iter().find(|name| {
@@ -1434,7 +1467,7 @@ impl Chain {
         // of the actor in its place, which the hash does not cover, hashed, and completed.
         let mut entry = RecordEntry {
             signature: update.signature.clone(),
-            update,
+            update: update.clone(),
             number,
             time: acceptance.time,
             register: acceptance.register,
