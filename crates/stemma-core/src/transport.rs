@@ -9,13 +9,12 @@
 //! without a socket.
 //!
 //! The trait has one method per request of the protocol (ADR-023). This version has the list of
-//! references, the fetch, and the two requests of the sign-in (ADR-024); the slices that add a
-//! request add its method. The sign-in is the one place where a transport reads a message: the
+//! references, the fetch, the two requests of the sign-in (ADR-024), and the ref update, which is
+//! answered with its receipt ([`record`](crate::protocol::record), ADR-025); the slices that add
+//! a request add its method. The sign-in is the one place where a transport reads a message: the
 //! token answer holds the token, which stays inside the transport
-//! ([`Transport::answer_challenge`]). The procedure of the client is [`sign_in`]. The ref update
-//! and its receipt exist as messages
-//! already ([`record`](crate::protocol::record), ADR-025); their request comes with the slice
-//! of `push`, which builds the operation that answers it.
+//! ([`Transport::answer_challenge`]). The procedure of the client is [`sign_in`]. The upload of
+//! the objects that a ref update names comes with the slice of `push`.
 //!
 //! The trait names nothing of a carrier: no address, no path, no status, no header, and no
 //! compression. They belong to the implementation, as TLS and the token do (ADR-023): no method
@@ -32,6 +31,7 @@ use std::fmt;
 use std::io::{self, BufRead, Cursor, Read, Write};
 use std::time::Duration;
 
+use crate::protocol::record::{RecordEntry, RefUpdate};
 use crate::protocol::sign_in::{Challenge, SignedChallenge, Token, TokenAnswer};
 use crate::protocol::{ErrorMessage, FetchRequest, RefList};
 
@@ -97,6 +97,22 @@ pub trait Transport {
     /// the carrier fails, and [`TransportError::NoAnswer`] if what comes back is no answer of the
     /// other side.
     fn fetch(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError>;
+
+    // The ref update (ADR-025).
+
+    /// Sends a ref update, which `request` holds as [`RefUpdate::encode`] writes it. The message
+    /// of the answer is the receipt, one record entry ([`RecordEntry`]), which the caller checks
+    /// before it moves a remote reference ([`RecordEntry::check_receipt`]). An update that is
+    /// stale or refused is answered with an error ([`ErrorMessage::Stale`],
+    /// [`ErrorMessage::Refused`]), and no reference of the update moved on the other side.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Request`] if `request` cannot be read, [`TransportError::Carrier`] if
+    /// the carrier fails, and [`TransportError::NoAnswer`] if what comes back is no answer of the
+    /// other side. After a failure of the carrier the caller does not know whether the update
+    /// was accepted; the list of references says it.
+    fn ref_update(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError>;
 
     // The sign-in (ADR-024): the two requests of one step, which [`sign_in`] runs.
 
@@ -206,9 +222,12 @@ impl Error for TransportError {
 /// a request before it asks. A small answer is returned as a value, which the transport encodes;
 /// an object stream is written by this side itself, and the transport passes its bytes on as
 /// they are. The answering operation of the core for `refs` and `fetch` is the implementation
-/// [`Answering`](crate::serve::Answering), for the tests that fetch from a repository; the
-/// accepting operation follows with the requests of a push. A test may implement the trait
-/// itself to answer what a correct side never answers.
+/// [`Answering`](crate::serve::Answering), for the tests that fetch from a repository. A side
+/// answers a ref update by calling the accepting operation
+/// ([`Repository::accept_ref_update`](crate::repository::Repository::accept_ref_update)) with
+/// its record and its signer, as the side of the tests of that operation does; this module holds
+/// no such side. A test may implement the trait itself to answer what a correct side never
+/// answers.
 pub trait OtherSide {
     /// Answers the list of references.
     ///
@@ -225,6 +244,23 @@ pub trait OtherSide {
     /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
     /// answering. What was written to `stream` before is discarded.
     fn fetch(&self, request: &FetchRequest, stream: &mut dyn Write) -> Result<(), Refusal>;
+
+    // The ref update (ADR-025).
+
+    /// Answers a ref update with its receipt, the record entry that was written for it. A side
+    /// that accepts none need not implement the method: it fails, as a hub that does not know
+    /// the request does.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers ([`ErrorMessage::Stale`],
+    /// [`ErrorMessage::Refused`]), or the failure that kept it from answering.
+    fn ref_update(&self, update: &RefUpdate) -> Result<RecordEntry, Refusal> {
+        let _ = update;
+        Err(Refusal::Failed(
+            "this side accepts no ref update".to_owned(),
+        ))
+    }
 
     // The sign-in (ADR-024).
 
@@ -293,7 +329,8 @@ impl From<ErrorMessage> for Refusal {
 /// process, with no socket and no second server (ADR-022).
 ///
 /// Between the two sides travel bytes, as over a network. A request is read to its end and
-/// parsed by the strict reader of the protocol, as a hub parses it. A list of references and an
+/// parsed by the strict reader of the protocol, as a hub parses it, which for a ref update
+/// includes the check of its signature. A list of references, a receipt, and an
 /// error are encoded by their writers; an object stream is passed on as the other side wrote it,
 /// unread. So the caller reads an answer with the reader that it uses for every transport. A
 /// request that the reader refuses is answered with the error of the protocol
@@ -359,6 +396,18 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
         };
         let mut stream = Vec::new();
         answer(self.side.fetch(&request, &mut stream).map(|()| stream))
+    }
+
+    fn ref_update(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let mut bytes = Vec::new();
+        request
+            .read_to_end(&mut bytes)
+            .map_err(TransportError::Request)?;
+        let update = match RefUpdate::parse(&bytes) {
+            Ok(update) => update,
+            Err(error) => return answer(Err(ErrorMessage::from(&error).into())),
+        };
+        answer(self.side.ref_update(&update).map(|entry| entry.encode()))
     }
 
     // The sign-in (ADR-024).

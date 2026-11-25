@@ -12,7 +12,8 @@
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
 //! fetch request ([`FetchRequest`]), the error ([`ErrorMessage`]), and, in the module [`record`],
 //! the ref update and the record entry that answers it as a receipt (ADR-025), and, in the
-//! module [`sign_in`], the three messages of the sign-in (ADR-024). The object stream
+//! module [`sign_in`], the three messages of the sign-in (ADR-024); the module [`refusal`] holds
+//! the reasons for which a ref update is not accepted. The object stream
 //! is binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
 //! There are no capabilities and no optional fields: from the first release that carries the
 //! protocol on, every change of a message is a new number (see [`VERSION`]).
@@ -824,10 +825,11 @@ impl Error for ErrorMessageError {}
 /// first line, then the kind of the error with its facts. The kind decides what the receiver
 /// does; a status code of the transport names the coarse class only.
 ///
-/// This version knows the two kinds that the reading of a message gives, and the refusal of a
-/// fetch request ([`UnknownWant`](Self::UnknownWant)). The refusals of a ref update and of a
-/// statement come with the slices that build them, and the refusal of a bound with the slice
-/// that carries an upload over a transport: the bounds themselves are set by the receiver
+/// This version knows the two kinds that the reading of a message gives, the refusal of a
+/// fetch request ([`UnknownWant`](Self::UnknownWant)), and the two answers to a ref update that
+/// is not accepted, whose lines are those of the module [`refusal`]. The refusal of a statement
+/// comes with the slice that builds it, and the refusal of a bound with the slice that carries an
+/// upload over a transport: the bounds themselves are set by the receiver
 /// ([`crate::receive::Bounds`]).
 ///
 /// ```text
@@ -858,6 +860,12 @@ pub enum ErrorMessage {
     /// commit that the store does not hold and for one that it holds unnamed, so it does not
     /// say whether an object exists. The ID is a claim, as in the request.
     UnknownWant(CommitId),
+    /// A ref update does not continue the chains of its names (ADR-025). Carries every reference
+    /// that does not match, with its state on the hub.
+    Stale(record::Stale),
+    /// A ref update is refused by the register, the policy, the write ownership, or the gate
+    /// (ADR-025). Carries the typed reason.
+    Refused(refusal::Refused),
 }
 
 impl ErrorMessage {
@@ -878,6 +886,16 @@ impl ErrorMessage {
             Self::UnknownWant(commit) => {
                 format!("{}error unknown-want\nwant {commit}\n", first_line(VERSION))
             }
+            Self::Stale(stale) => format!(
+                "{}error stale\n{}",
+                first_line(VERSION),
+                refusal::encode_stale(stale)
+            ),
+            Self::Refused(refused) => format!(
+                "{}error refused\n{}",
+                first_line(VERSION),
+                refusal::encode_refused(refused)
+            ),
         }
         .into_bytes()
     }
@@ -903,6 +921,12 @@ impl ErrorMessage {
     ///
     /// `malformed` also refuses a reason that is empty or holds a control character or a line or
     /// paragraph separator, and `unknown-want` an object ID that is not in canonical form.
+    ///
+    /// `stale` and `refused` also refuse a `ref` line that does not come after the one before it
+    /// in the order of the qualified names, a name, a hash, a commit, an address, a repository
+    /// ID, an actor, or a time that is not in canonical form, a reference of a `stale` that names
+    /// a commit and no entry, and a reason of a `refused` that this version does not know or
+    /// that does not fit its reference.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let (version, rest) = read_version(bytes)?;
         // Under another number only the second line of an `unsupported-version` is known, so
@@ -949,6 +973,8 @@ impl ErrorMessage {
                 lines.end()?;
                 Ok(Self::UnknownWant(commit))
             }
+            Some((_, "stale")) => refusal::read_stale(&mut lines).map(Self::Stale),
+            Some((_, "refused")) => refusal::read_refused(&mut lines).map(Self::Refused),
             Some((line, _)) => Err(malformed(line, Malformed::UnknownError)),
             None => Err(malformed(lines.line, Malformed::Expected("error"))),
         }
@@ -973,6 +999,8 @@ impl fmt::Display for ErrorMessage {
                 f,
                 "the other side has no branch and no tag that reaches the wanted commit {commit}"
             ),
+            Self::Stale(stale) => stale.fmt(f),
+            Self::Refused(refused) => refused.fmt(f),
         }
     }
 }
@@ -1748,10 +1776,14 @@ pub mod examples {
         example!("challenge", Challenge),
         example!("signed-challenge", SignedChallenge),
         example!("token", TokenAnswer),
+        example!("error-stale", Error),
+        example!("error-refused", Error),
+        example!("error-refused-update", Error),
     ];
 }
 
 pub mod record;
+pub mod refusal;
 
 // The signed statements of ADR-025 (STEMMA-290).
 pub mod statement;

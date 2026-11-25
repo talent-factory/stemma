@@ -1457,6 +1457,23 @@ pub(crate) struct WriteLock {
     _lock: Lock,
 }
 
+/// The lock of the references while an operation holds it and has not yet shown that it may
+/// write (ADR-002, ADR-025). No function that changes a pointer takes this value: the holder
+/// reads under it, and it becomes a [`WriteLock`] only with the answer of the authorizer
+/// ([`into_writer`](Self::into_writer)). The accepting operation of a hub holds it, because the
+/// question to the authorizer depends on state that it may only read under the lock.
+#[must_use]
+pub(crate) struct HeldLock {
+    lock: Lock,
+}
+
+impl HeldLock {
+    /// The lock for a writer, with the proof that the authorizer allowed the operation.
+    pub(crate) fn into_writer(self, _allowed: &Allowed) -> WriteLock {
+        WriteLock { _lock: self.lock }
+    }
+}
+
 /// The lock of the references while a purge holds it, from its plan to its end (ADR-014). The
 /// lock is not re-entrant, so the purge moves the pointers through
 /// [`FsRefStore::purge_moves`], which takes this value as the proof that the lock is held.
@@ -1836,6 +1853,20 @@ impl FsRefStore {
     pub(crate) fn lock_writer(&self, _allowed: &Allowed) -> Result<WriteLock, RefError> {
         self.require_root()?;
         self.lock().map(|lock| WriteLock { _lock: lock })
+    }
+
+    /// Takes the lock for an operation that must read under it before it can ask the
+    /// authorizer: as [`lock`](Self::lock), so a journal of a purge refuses it, and the scratch
+    /// in `tmp/` that no writer owns any more is removed. The value opens no write; see
+    /// [`HeldLock`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] or [`RefError::PurgePending`], and [`RefError::Io`] if the
+    /// lock file cannot be made.
+    pub(crate) fn lock_held(&self) -> Result<HeldLock, RefError> {
+        self.require_root()?;
+        self.lock().map(|lock| HeldLock { lock })
     }
 
     /// Takes the lock for a purge that starts: as [`lock`](Self::lock), and a journal that exists
@@ -2611,6 +2642,83 @@ impl FsRefStore {
             Err(error) => Err(error),
         };
         Ok(Self::after_move(done, deleted))
+    }
+
+    /// What a branch or a tag is for the accepting operation of a bare repository (ADR-025):
+    /// its commit, or `None` if it does not exist. The caller holds the lock of the references
+    /// ([`HeldLock`] or [`WriteLock`]), so the answer holds until it releases it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Conflict`] if the name is held by another entry, so that the
+    /// reference cannot be created, and the errors of reading it.
+    pub(crate) fn recorded(
+        &self,
+        kind: RefKind,
+        name: &BranchName,
+    ) -> Result<Option<CommitId>, RefError> {
+        self.require_root()?;
+        let current = self.current(kind, name)?;
+        match current.in_the_way {
+            Some((with, conflict)) => Err(RefError::Conflict {
+                reference: kind,
+                name: name.clone(),
+                with,
+                kind: conflict,
+            }),
+            None => Ok(current.commit),
+        }
+    }
+
+    /// Sets a branch or a tag to what an entry of the record of ref updates says (ADR-025):
+    /// `new`, or no reference for `None`. The entry was written before, so there is no step, no
+    /// `expected`, and no rule of `HEAD`: the record is the order, and the call makes the
+    /// reference agree with it, whatever it was. It is the move of an accepted update and the
+    /// completion of one that stopped after its entry. Returns whether the reference changed.
+    ///
+    /// The caller holds the lock of the references for a writer (`_lock`) and has checked
+    /// before the entry was written that the name can be taken ([`recorded`](Self::recorded)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] if `new` is no commit of
+    /// `objects`, [`RefError::Conflict`] if the name is held by another entry and `new` is a
+    /// commit (a name that is to be deleted and is held by another entry is gone already),
+    /// [`RefError::Io`] if the storage fails, and [`RefError::NotFlushed`] if the reference
+    /// changed and the directory could not be flushed.
+    pub(crate) fn set_recorded(
+        &self,
+        _lock: &WriteLock,
+        kind: RefKind,
+        name: &BranchName,
+        new: Option<CommitId>,
+        objects: &dyn ObjectStore,
+    ) -> Result<bool, RefError> {
+        if let Some(new) = &new {
+            Self::require_commit(new, objects)?;
+        }
+        let current = match self.recorded(kind, name) {
+            Ok(current) => current,
+            // What holds the name is in the way of a reference only: nothing is there to delete.
+            Err(RefError::Conflict { .. }) if new.is_none() => None,
+            Err(error) => return Err(error),
+        };
+        if current == new {
+            return Ok(false);
+        }
+        let Some(new) = new else {
+            return self.delete_reference_file(kind, name);
+        };
+        if let Some(empty) = &self.current(kind, name)?.empty_directory {
+            // Nothing is below it, and the lock is held, so no reference is lost.
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        self.write_replacing(
+            &self.reference_path(kind, name),
+            &encode_branch(&new),
+            &self.namespace_dir(kind),
+        )?;
+        Ok(true)
     }
 
     /// Deletes the branch `name` if it is at `expected`, and runs `step` after the checks and

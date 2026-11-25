@@ -219,6 +219,10 @@ impl Transport for Scripted {
         unreachable!("the sign-in asks for no objects")
     }
 
+    fn ref_update(&mut self, _request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        unreachable!("the sign-in sends no ref update")
+    }
+
     fn challenge(&mut self) -> Result<Answer<'_>, TransportError> {
         Ok(match &self.challenge {
             Script::Message(bytes) => Answer::Message(Script::body(bytes)),

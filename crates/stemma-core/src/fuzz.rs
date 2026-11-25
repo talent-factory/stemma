@@ -162,6 +162,7 @@ const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 /// message that is read back, where there is an answer, and a reader of a stream that refused
 /// stays failed.
 pub fn protocol(input: &[u8]) {
+    use crate::protocol::record::Stale;
     use crate::protocol::{
         ErrorMessage, FetchRequest, FormerKey, ObjectStreamReader, ObjectStreamWriter, ParseError,
         Reason, RefList, Spoken, StreamError,
@@ -229,6 +230,12 @@ pub fn protocol(input: &[u8]) {
                     Reason::try_new(reason.as_str()).map(ErrorMessage::Malformed)
                 }
                 ErrorMessage::UnknownWant(commit) => Ok(ErrorMessage::UnknownWant(*commit)),
+                ErrorMessage::Stale(stale) => Ok(Stale::try_new(stale.references().to_vec())
+                    .map(ErrorMessage::Stale)
+                    .expect("the reader took a stale answer that the writer refuses")),
+                ErrorMessage::Refused(refused) => {
+                    Ok(ErrorMessage::Refused(rebuilt_refusal(refused)))
+                }
             };
             assert_eq!(
                 rebuilt.as_ref(),
@@ -275,6 +282,55 @@ pub fn protocol(input: &[u8]) {
                 );
             }
         }
+    }
+}
+
+/// The part of [`protocol`] for a refused ref update (ADR-025): the value that the constructors
+/// build from the parts of the one that the reader of the error read.
+fn rebuilt_refusal(
+    refused: &crate::protocol::refusal::Refused,
+) -> crate::protocol::refusal::Refused {
+    use crate::protocol::record::HubAddress;
+    use crate::protocol::refusal::{RefusalReason, Refused, RefusedReference, RefusedReferences};
+    use crate::protocol::Reason;
+    use crate::refs::BranchName;
+    let text = |reason: &Reason| {
+        Reason::try_new(reason.as_str()).expect("the reader took a reason that the writer refuses")
+    };
+    match refused {
+        Refused::Hub { called } => Refused::Hub {
+            called: HubAddress::try_new(called.as_str())
+                .expect("the reader took an address that the writer refuses"),
+        },
+        Refused::References(references) => {
+            let references = references
+                .references()
+                .iter()
+                .map(|refused| {
+                    let reason = match refused.reason() {
+                        RefusalReason::BadRegister(reason) => {
+                            RefusalReason::BadRegister(text(reason))
+                        }
+                        RefusalReason::Conflict(with) => RefusalReason::Conflict(
+                            BranchName::try_new(with.as_str())
+                                .expect("the reader took a name that the writer refuses"),
+                        ),
+                        RefusalReason::Incomplete(reason) => {
+                            RefusalReason::Incomplete(text(reason))
+                        }
+                        RefusalReason::Policy(reason) => RefusalReason::Policy(text(reason)),
+                        other => other.clone(),
+                    };
+                    RefusedReference::try_new(refused.name().clone(), reason)
+                        .expect("the reader took a reason that does not fit its reference")
+                })
+                .collect();
+            Refused::References(
+                RefusedReferences::try_new(references)
+                    .expect("the reader took references that the writer refuses"),
+            )
+        }
+        other => other.clone(),
     }
 }
 

@@ -89,6 +89,7 @@ use std::str::FromStr;
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
 use crate::oplog::{Entry, PullKind, Record, StubKind};
+use crate::protocol::record::RefUpdate;
 use crate::protocol::statement::Statement;
 use crate::pull;
 use crate::repository::Repository;
@@ -1072,6 +1073,36 @@ impl Register {
         Ok(Verified {
             actor: actor.clone(),
             key,
+        })
+    }
+
+    /// The actor that a ref update speaks for (ADR-024, ADR-025): the entry that holds the key
+    /// of the update as an active key. The signature of the update was checked when the value
+    /// was made ([`RefUpdate`]), and a key stands once in a register, so the key alone names the
+    /// identity. `None` if no entry holds the key, or if the key is retired or revoked: such a
+    /// key signs nothing new.
+    ///
+    /// The payload of a ref update names no actor. The model and the session of an agent, which
+    /// are descriptive and no part of the identity, are therefore `-` in the result; the sponsor
+    /// is the one of the entry.
+    pub fn verify_ref_update(&self, update: &RefUpdate) -> Option<Verified> {
+        let key = update.payload().key();
+        let entry = self.entries.iter().find(|entry| {
+            entry
+                .keys
+                .iter()
+                .any(|held| &held.key == key && held.state == KeyState::Active)
+        })?;
+        let id = entry.identity.id();
+        let actor = match (entry.identity.kind(), &entry.sponsor) {
+            (IdentityKind::Human, _) => Actor::human(id),
+            (IdentityKind::Agent, Some(sponsor)) => Actor::agent(id, "-", "-", sponsor.id()),
+            // An agent without a sponsor is no entry that the reader of a register accepts.
+            (IdentityKind::Agent, None) => return None,
+        };
+        Some(Verified {
+            actor: actor.ok()?,
+            key: key.clone(),
         })
     }
 
@@ -2651,6 +2682,55 @@ mod tests {
             .add_agent(bot(), Role::Member, mia(), Seeded::new(3).public(), cosign)
             .unwrap();
         register
+    }
+
+    /// A ref update that the key of `seed` signs.
+    fn ref_update(seed: u8) -> RefUpdate {
+        use crate::protocol::record::{HubAddress, Move, RefUpdatePayload};
+        let signer = Seeded::new(seed);
+        let commit =
+            crate::object::CommitId::new(format!("b3:{}", "11".repeat(32)).parse().unwrap());
+        let moved = Move::try_new(
+            "heads/topic".parse().unwrap(),
+            None,
+            None,
+            Some(commit),
+            None,
+        )
+        .unwrap();
+        RefUpdatePayload::try_new(
+            HubAddress::try_new("https://hub.example").unwrap(),
+            "00112233445566778899aabbccddeeff".parse().unwrap(),
+            vec![moved],
+            signer.public(),
+        )
+        .unwrap()
+        .sign(&signer)
+        .unwrap()
+    }
+
+    #[test]
+    fn a_ref_update_speaks_for_the_entry_that_holds_its_key_as_an_active_key() {
+        let mut register = with_bot();
+        let human = register.verify_ref_update(&ref_update(1)).unwrap();
+        assert_eq!(human.actor(), &daniel());
+        assert_eq!(human.key(), &Seeded::new(1).public());
+        // The payload names no model and no session; the sponsor is the one of the entry.
+        let agent = register.verify_ref_update(&ref_update(3)).unwrap();
+        assert_eq!(
+            agent.actor(),
+            &Actor::agent("bot", "-", "-", "mia").unwrap()
+        );
+        assert_eq!(Identity::of(agent.actor()), bot());
+        // A key that no entry holds, and a key that signs nothing new.
+        assert_eq!(register.verify_ref_update(&ref_update(9)), None);
+        let second = Seeded::new(7).public();
+        register.add_key(&mia(), second).unwrap();
+        register
+            .retire(&mia(), &Seeded::new(2).public(), 5)
+            .unwrap();
+        assert_eq!(register.verify_ref_update(&ref_update(2)), None);
+        assert!(register.verify_ref_update(&ref_update(7)).is_some());
     }
 
     #[test]

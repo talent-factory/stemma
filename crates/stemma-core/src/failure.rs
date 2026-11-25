@@ -378,6 +378,45 @@ impl Classify for crate::receive::ConnectivityError {
     }
 }
 
+impl Classify for crate::repository::AcceptError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // The record does not read, does not chain, or does not agree with the references.
+            Self::Record(_) | Self::Chain(_) | Self::Diverged { .. } => FailureKind::Damaged,
+            Self::Refs(error) => error.kind(),
+            Self::NotCompleted { source, .. } => source.kind(),
+            Self::Connectivity(error) => error.kind(),
+            Self::History(error) => error.kind(),
+            // The policy could not be read; one that is not valid is a refusal.
+            Self::Policy { damaged: true, .. } => FailureKind::Damaged,
+            Self::Policy { damaged: false, .. } => FailureKind::Other,
+            // An entry that the operation did not write.
+            Self::LastEntry { .. } => FailureKind::Damaged,
+            // A register of `main` that does not parse, or a `main` without one, is no state
+            // that an accepted update left.
+            Self::Register(error) => match &**error {
+                crate::register::ModeError::RegisterMissing
+                | crate::register::ModeError::Parse(_)
+                | crate::register::ModeError::Missing
+                | crate::register::ModeError::NotRegisterFile => FailureKind::Damaged,
+                // A body that is not canonical has no error of the store, and is damage.
+                crate::register::ModeError::Store(error) => error
+                    .store_error()
+                    .map_or(FailureKind::Damaged, Classify::kind),
+                crate::register::ModeError::Head(_) | crate::register::ModeError::Io(_) => {
+                    FailureKind::Other
+                }
+            },
+            // An answer to the sender, a wrong argument, the destination, or the signer.
+            Self::NotBare { .. }
+            | Self::Stale(_)
+            | Self::Refused(_)
+            | Self::RecordIo { .. }
+            | Self::Write(_) => FailureKind::Other,
+        }
+    }
+}
+
 impl Classify for crate::receive::FetchJournalError {
     fn kind(&self) -> FailureKind {
         match self {

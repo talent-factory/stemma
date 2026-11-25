@@ -4,7 +4,8 @@
 for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-56, STEMMA-273,
 STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
-"The first number is 1") and with the ref update and its receipt (STEMMA-291, ADR-025), and the
+"The first number is 1"), with the ref update and its receipt (STEMMA-291, ADR-025) and with the
+two errors that answer a ref update (STEMMA-296), and the
 receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
 receiving side"), and the answering side of the list of references and of a fetch exists in
 `stemma_core::serve` (STEMMA-288, see "The answering side"); nothing else of it is implemented
@@ -87,8 +88,8 @@ regularly sends too much).
    confirms once they are durable. The request is idempotent; the client may split a large push
    at commit boundaries into several requests and continues after an interruption at the first
    piece that was not confirmed.
-2. A small ref update follows (ADR-025). Only here the hub checks connectivity, calls the
-   accepting operation and performs the compare-and-swap.
+2. A small ref update follows (ADR-025). Only here the hub calls the accepting operation, which
+   checks connectivity under the lock and performs the compare-and-swap.
 
 A stale remote reference shows as `Stale` in the compare-and-swap (ADR-008), and the client
 fetches first. The client sends too much when the hub has objects by a way the client does not
@@ -399,8 +400,9 @@ want <commit>
   them. A reason is one line that is not empty and holds no control character and no line or
   paragraph separator. `unknown-want` answers a fetch request with a `want` that no branch and
   no tag of the repository reaches, with one line `want <commit>` for the first such commit in the
-  order of the IDs (STEMMA-288, see "The answering side"). The refusals of a ref update, of a
-  statement and of the bounds add their kinds with their slices.
+  order of the IDs (STEMMA-288, see "The answering side"). A ref update that is not accepted is
+  answered with `stale` or with `refused`; their lines stand in ADR-025 ("The accepting operation
+  as built"). The refusals of a statement and of the bounds add their kinds with their slices.
 - **Ref update and receipt.** The ref update and the record entry that answers it are messages
   of number 1 as well; their lines and rules stand in ADR-025 ("The formats as built").
 - **Sign-in.** The challenge, the signed challenge and the token answer are messages of number
@@ -456,7 +458,7 @@ Status codes are the coarse class only:
 | 409 | A ref update that is `Stale` |
 | 413 | An object, a request or a quota exceeded |
 | 415 | An unknown content encoding |
-| 422 | A ref update whose objects are missing or not connected; the client uploads once more |
+| 422 | A ref update whose objects are missing or not connected; the client uploads once more. The body is an `error refused` with a reference that is `incomplete` |
 | 429 with `Retry-After` | The limit on requests without a valid token |
 | 503 with `Retry-After` | The hub is busy; the client retries a bounded number of times |
 

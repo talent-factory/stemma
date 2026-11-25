@@ -37,9 +37,9 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
 
 - It has one synchronous method per request of the protocol (ADR-023). The first two are `refs`
   and `fetch`; a slice that adds a request adds its method. The sign-in is the two methods
-  `challenge` and `answer_challenge` (ADR-024, see "The sign-in" below). The ref update and its
-  receipt exist as messages (ADR-025); their request comes
-  with the slice of `push`, which builds the operation that answers it.
+  `challenge` and `answer_challenge` (ADR-024, see "The sign-in" below). The ref update is the
+  method `ref_update`, which is answered with its receipt or with a typed error (STEMMA-296,
+  ADR-025).
 - Every body is a stream. A request body is read from a reader, and the body of an answer is a
   reader that borrows the transport, so one request runs at a time and an object stream never
   has to lie in memory as a whole.
@@ -152,13 +152,15 @@ dependency.
 - The in-memory `Transport` (`MemoryTransport`, STEMMA-287) passes bytes as a network does: it
   parses a request with the strict reader, answers a request that the reader refuses with the
   error message of the protocol, and encodes a list of references and an error with their
-  writers. The other side is a trait of two methods (`OtherSide`) that take the values of the
+  writers. The other side is a trait (`OtherSide`) whose methods take the values of the
   protocol: it returns a small answer as a value, and it writes an object stream itself, which
-  the transport passes on unread. Its implementation is the answering operation of the core
-  (`stemma_core::serve::Answering`, STEMMA-288, ADR-023), and the accepting operation follows
-  with the requests of a push. The tests of the transport itself still answer from a stand-in
-  of their own, so that they test the carrier alone. A test may also implement the trait to
-  answer what a correct side never answers.
+  the transport passes on unread. Its implementation for `refs` and `fetch` is the answering
+  operation of the core (`stemma_core::serve::Answering`, STEMMA-288, ADR-023). The tests of the
+  transport itself still answer from a stand-in of their own, so that they test the carrier
+  alone. A side answers `ref_update` by calling the accepting operation with its record and its
+  signer, as the side of the tests of that operation does (STEMMA-296); a side that does not
+  implement the method fails. A test may also implement the trait to answer what a correct side
+  never answers.
 - The end-to-end tests with real HTTP live in stemma-hub and use `stemma-remote` and the CLI of
   the pinned commit.
 - A scheduled job of the hub builds and tests against the tip of stemma `main` instead of the

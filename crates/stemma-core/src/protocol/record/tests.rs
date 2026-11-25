@@ -1780,3 +1780,55 @@ fn every_problem_has_a_message_of_its_own() {
     assert_eq!(PayloadKind::RefUpdate.name(), "ref-update");
     assert_eq!(PayloadKind::RecordEntry.name(), "record-entry");
 }
+
+#[test]
+fn the_time_of_the_hub_does_not_step_back_for_the_writer_and_for_the_reader() {
+    let main = "heads/main";
+    let mut chain = Chain::new(repository());
+    let mut record = Vec::new();
+    let first = append(
+        &mut chain,
+        &mut record,
+        update(vec![moved(main, None, None, Some(commit(1)))]),
+    );
+    let before = (chain.clone(), record.clone());
+    let next = update(vec![moved(
+        main,
+        Some(first.hash()),
+        Some(commit(1)),
+        Some(commit(2)),
+    )]);
+    let at = |time| Acceptance {
+        time,
+        ..acceptance(&[])
+    };
+    let expected = ChainError::Time {
+        last: first.time(),
+        found: first.time() - 1,
+    };
+
+    // The writer refuses before it writes.
+    let error = chain
+        .append(&next, at(first.time() - 1), &hub(), &mut record)
+        .unwrap_err();
+    assert!(
+        matches!(&error, WriteError::Chain(found) if found == &expected),
+        "{error}"
+    );
+    check_rejection(&error);
+    assert_eq!((chain.clone(), record.clone()), before);
+
+    // The reader refuses an entry that was written past the writer.
+    let lines = hub_lines(2, Some(first.hash()), &[(main, "yes")])
+        .replace("time 1795000100", &format!("time {}", first.time() - 1));
+    let earlier = RecordEntry::parse(&forged(&next, &lines, &hub())).unwrap();
+    assert_eq!(chain.accept(&earlier), Err(expected));
+    assert_eq!(chain, before.0);
+
+    // The same second is no step back, and a chain that began in the middle knows no time.
+    chain
+        .append(&next, at(first.time()), &hub(), &mut record)
+        .unwrap();
+    let mut middle = Chain::after(repository(), 1, first.hash());
+    assert_eq!(middle.accept(&earlier), Ok(()));
+}

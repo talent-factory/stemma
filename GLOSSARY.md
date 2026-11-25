@@ -381,7 +381,8 @@ _Avoid_: Lock (for a branch)
 
 **Write owner**:
 The one actor that holds the lease of a branch and may write to it. On a hub it is the actor of
-the last record entry of that branch name (ADR-025). (Schreibinhaber)
+the last record entry of that branch name, with a lease that runs from the time of the hub in
+that entry; a branch that was deleted has none (ADR-025). (Schreibinhaber)
 _Avoid_: Owner of a branch
 
 **Owner override**:
@@ -540,7 +541,9 @@ record number (ADR-026). (Ordnung des Hubs)
 
 **Accepting operation**:
 The operation of the core that judges a ref update or a statement on a bare repository and fixes
-the order of the checks, so that a hub composes none itself (ADR-025). (annehmende Operation)
+the order of the checks, so that a hub composes none itself (ADR-025). For a ref update it writes
+the record entry, moves the references, all or none, and returns the receipt or a typed refusal.
+(annehmende Operation)
 
 **Key of the hub**:
 The one Ed25519 key of a hub instance. It signs only what the hub itself says (record entries,
