@@ -1212,7 +1212,7 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
 
 /// The public methods of `Repository` that run on a bare repository, or that make or open a
 /// repository. Every other public method starts with the check of the bare repository.
-const WITHOUT_CHECK: [&str; 19] = [
+const WITHOUT_CHECK: [&str; 22] = [
     "init",
     "init_bare",
     "open",
@@ -1232,6 +1232,9 @@ const WITHOUT_CHECK: [&str; 19] = [
     "level_of_change",
     "remote",
     "remotes",
+    "receive_objects",
+    "check_connectivity",
+    "remove_receive_leftovers",
 ];
 
 /// The public methods of the `impl Repository` blocks in `source`, each with the first statement

@@ -363,9 +363,12 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   goes ahead; a failure of a cleanup must not stop a move, and it must not leave an entry that
   names a move that was never made. A name that stays costs only space until the next writer.
 - **The writer that holds the lock empties `tmp/`** *(confirmed, STEMMA-31, 2026-10-22)*. Every
-  writer of `tmp/` holds the lock of the references while it writes there: the commands that write
-  from before their first object (ADR-014), the moves of `Repository`, and the purge with its
-  resume and abort. Whoever takes the lock is therefore the only writer (but see the advisory lock
+  writer of files in `tmp/` holds the lock of the references while it writes there: the commands
+  that write from before their first object (ADR-014), the moves of `Repository`, and the purge
+  with its resume and abort. The one writer without the lock, the receiving side of an object
+  stream, writes into a directory of its own below `tmp/` and no file into `tmp/` itself (see
+  "The log and a hub", STEMMA-289).
+  Whoever takes the lock is therefore the only writer (but see the advisory lock
   below), and every file in `tmp/` is left over from a write that failed or was interrupted. Right
   after the lock is taken and no journal of a purge is found (or `--resume` or `--abort` took the
   lock over), every name in `tmp/` that is not a directory is removed, without following a link,
@@ -648,8 +651,17 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     log that wrote it; the register names the ID of that log from now on. In every other log the
     bound is the `fetch` entry that brought the register commit, and across clones the order is
     the order of the hub (ADR-026).
-  - **An upload on a hub writes outside the lock**, into a subdirectory of its own in `tmp/`,
-    which the cleanup above leaves, because it removes files and not directories (ADR-007).
+  - **A receiving operation writes outside the lock**, the upload on a hub and the receiving
+    side of a fetch alike (STEMMA-289). Its temporary files lie in a subdirectory of its own,
+    `tmp/receive-<pid>-<n>-<random>/`, which the cleanup above leaves, because it removes files
+    and not directories (ADR-007). The cleanup of such a directory is not the business of the
+    lock holder: the receiving operation removes its directory at its end, and one that a
+    crashed operation left is removed by the next receiving operation, which tells it from a
+    directory in use by a lock of the system on the file `guard` in it (ADR-023; a directory
+    without a guard goes only while it is empty). Here too a
+    lock decides and not an age. The operation needs no lock of the references because it
+    names nothing: its objects stay unnamed until a ref update or the move of a remote
+    reference names them, and those moves hold the lock.
   - **A purge leaves a confirmed anchor valid**, because a stub keeps the hash of the entry it
     replaces. The purge sends nothing; its entry is anchored with the next push or by the
     command (ADR-026).

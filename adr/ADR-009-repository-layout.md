@@ -7,8 +7,9 @@ the bundle of the stores were confirmed by the author on 2026-10-19, the other d
 repositories to Phase 5; the other open items stay open, among them `worktree repair`,
 `--json` for `worktree list`, and the undo of `worktree remove`. The additions of Phase 5 to the
 layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"). Of them, the
-configuration of the remotes and the remote references (STEMMA-285, format 14) and the bare
-repository (STEMMA-284, format 15) are implemented; the others are not yet.
+configuration of the remotes and the remote references (STEMMA-285, format 14), the bare
+repository (STEMMA-284, format 15), and the journal of a running fetch with the directory of a
+receiving operation in `tmp/` (STEMMA-289) are implemented; the others are not yet.
 
 ## Context
 
@@ -34,9 +35,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   "The layout in Phase 5"), `refs.lock` (while a command
   writes), and `refs.lock.guard` (the guard of the
   lock, which stays; ADR-008), `purge-pending` (the journal of a purge, only while one runs or after
-  it stopped, ADR-014), `derived/` (the cache of derived data, optional, ADR-017), `worktrees/`
+  it stopped, ADR-014), `fetch-pending` (the journal of a fetch, only while one runs or after it
+  stopped, ADR-023), `derived/` (the cache of derived data, optional, ADR-017), `worktrees/`
   (one state directory for each linked worktree, made by the first `worktree add`; see below),
-  and `tmp/` (the temporary files of the object store, the references, the log, and the purge).
+  and `tmp/` (the temporary files of the object store, the references, the log, and the purge,
+  and one directory `receive-<pid>-<n>-<random>/` for each receiving operation that runs,
+  ADR-023).
 - **Linked worktrees** (STEMMA-175). The shared store (`objects/`, `refs/`, `oplog/`, `tmp/`, the
   lock, the journal of a purge, and `format`) stays in the `.stemma/` of the main worktree. A
   linked worktree adds only the pointers that belong to a working copy: its state directory
@@ -208,7 +212,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   - The set of statements: the signed statements that the clone made and those that a fetch
     brought (ADR-025).
   - The journal of a running fetch, which records the commits that arrived completely, as
-    `purge-pending` does for a purge (ADR-023).
+    `purge-pending` does for a purge (ADR-023): the file `fetch-pending` (STEMMA-289). It lies
+    in the metadata directory that the worktrees share, and a fetch holds a lock of the system
+    on it. Unlike `purge-pending` it stops no other command and raises no version of the
+    format: it names objects that no reference and no entry names, an older program does not
+    read it, and a fetch that finds none starts from its references.
   - The namespace policy that the clone last fetched (ADR-027), and the last confirmation of an
     anchor (ADR-026); where they are kept is left to their slices.
 - **A bare repository** *(decided in STEMMA-269 and STEMMA-272; implemented in STEMMA-284)*. A
@@ -217,12 +225,14 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     is no `.stemma/` inside it and no directory of a working copy around it. `discover` therefore
     never finds one, and no command of the command line works in one by accident.
   - **What it contains.** `format`, the marker `bare`, `objects/` (ADR-007), `refs/heads/`, and
-    `tmp/`. `refs/tags/` (made by the first tag, ADR-008) and `refs.lock` with
+    `tmp/`, with one directory `receive-<pid>-<n>-<random>/` in it for each upload that runs
+    (ADR-023). `refs/tags/` (made by the first tag, ADR-008) and `refs.lock` with
     `refs.lock.guard` (while a writer holds the lock, and the guard stays) come with the first
     writer of a reference, which is the accepting operation of ADR-025; nothing that is built
     yet makes them. It has no `HEAD`, no `working-copy`
     (so no index, which is the tree of the working-copy commit, ADR-010), no `oplog/` and
-    `oplog-tip` (ADR-011), no `leases/`, no `worktrees/`, no `purge-pending`, and no `derived/`.
+    `oplog-tip` (ADR-011), no `leases/`, no `worktrees/`, no `purge-pending`, no
+    `fetch-pending`, and no `derived/`.
     `tmp/` and `objects/` lie on one file system (ADR-007).
   - **The marker.** The file `bare` holds `stemma-bare` and a newline, and nothing else. It says
     which of the two layouts a metadata directory has, so that a missing `HEAD` is never the
@@ -466,11 +476,13 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - [x] Bare repositories (no working copy) for a hub (phase 5): `init_bare`, `open_bare`, the
       marker `bare`, version 15 of the format, and the typed refusal `RefError::Bare`
       (STEMMA-284), see "A bare repository".
-- [ ] A writer that takes the lock of the references removes every file in `tmp/` that is not a
+- [x] A writer that takes the lock of the references removes every file in `tmp/` that is not a
       directory (ADR-011), and a caller that stores objects without the lock is not protected.
-      On a hub the upload runs without the lock (ADR-007, ADR-025), so the slice that builds
-      the upload or the accepting operation has to keep the two apart, for example with a
-      directory of its own for the temporary files of an upload.
+      On a hub the upload runs without the lock (ADR-007, ADR-025). The two are kept apart
+      (STEMMA-289): a receiving operation writes its temporary files into a directory of its
+      own in `tmp/`, which the cleanup under the lock leaves, and a directory that a crashed
+      operation left is told from one in use by the lock of the system on its file `guard`
+      (ADR-023, "The receiving side").
 - [ ] A process that is killed during `init_bare` leaves its `.stemma-bare-…` directory next to
       the place of the repository. No writer removes it, as one does for `init`, because the
       directory above a bare repository belongs to the one who holds it; a hub removes it.

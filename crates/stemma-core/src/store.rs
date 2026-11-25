@@ -794,7 +794,7 @@ impl FsObjectStore {
                 return Ok(id);
             }
         }
-        let (file, temp) = self.write_temp(kind, body)?;
+        let (file, temp) = self.write_temp(&self.root.join("tmp"), kind, body)?;
         let fan_out = self.place(&id, file, temp)?;
         sync_directory(&fan_out)?;
         self.sync_ancestors(&fan_out)?;
@@ -811,10 +811,20 @@ impl FsObjectStore {
             .try_for_each(|dir| sync_directory(&dir))
     }
 
-    /// Starts a [`Batch`]: objects that are flushed together when it is finished.
+    /// Starts a [`Batch`]: objects that are flushed together when it is finished. Its temporary
+    /// files lie in `tmp/`, so the caller holds the lock of the references.
     pub(crate) fn batch(&self) -> Batch<'_> {
+        self.batch_in(self.root.join("tmp"))
+    }
+
+    /// Starts a [`Batch`] whose temporary files lie in `scratch`, a directory below `tmp/` that
+    /// belongs to the caller alone. The cleanup of `tmp/` removes files and leaves directories
+    /// (ADR-011), so such a batch runs without the lock of the references: the receiving side of
+    /// an object stream uses it (ADR-023, [`crate::receive`]).
+    pub(crate) fn batch_in(&self, scratch: PathBuf) -> Batch<'_> {
         Batch {
             store: self,
+            scratch,
             pending: RefCell::new(HashMap::new()),
             present: RefCell::new(BTreeSet::new()),
         }
@@ -836,12 +846,17 @@ impl FsObjectStore {
         }
     }
 
-    /// Writes the file of an object (header and body) to a new temporary file below
-    /// `<root>/tmp/`, without a flush. The file is removed when the guard is dropped.
-    fn write_temp(&self, kind: Kind, body: &[u8]) -> Result<(File, TempFile), StoreError> {
-        let temp_dir = self.root.join("tmp");
-        create_dirs_synced(&self.root, &temp_dir)?;
-        let (mut file, temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
+    /// Writes the file of an object (header and body) to a new temporary file in `temp_dir`,
+    /// which is `<root>/tmp/` or a directory below it, without a flush. The file is removed when
+    /// the guard is dropped.
+    fn write_temp(
+        &self,
+        temp_dir: &Path,
+        kind: Kind,
+        body: &[u8],
+    ) -> Result<(File, TempFile), StoreError> {
+        create_dirs_synced(&self.root, temp_dir)?;
+        let (mut file, temp) = create_temp(temp_dir, &mut unique_temp_name)?;
         file.write_all(kind.header(body.len()).as_bytes())
             .and_then(|()| file.write_all(body))
             .map_err(io_error("write the temporary file", &temp.path))?;
@@ -1044,9 +1059,15 @@ impl ObjectStore for FsObjectStore {
 /// The caller holds the lock of the references, as every writer of `tmp/` does, so that the
 /// cleanup of `tmp/` cannot remove a file of the batch. A purge takes the same lock before it
 /// removes an object (ADR-014), so no object that the batch found can be removed before `finish`.
+/// The one writer without the lock is the receiving side of an object stream: its batch
+/// ([`FsObjectStore::batch_in`]) writes into a directory of its own below `tmp/`, which the
+/// cleanup leaves, and names no object, so an object that a purge removes under it is one that
+/// its connectivity check reports as missing (ADR-023).
 #[must_use = "the objects of a batch are not durable until `finish` succeeds"]
 pub(crate) struct Batch<'a> {
     store: &'a FsObjectStore,
+    /// The directory of the temporary files: `tmp/`, or a directory of the caller below it.
+    scratch: PathBuf,
     /// The temporary file of each object that is not in place yet.
     pending: RefCell<HashMap<ObjectId, TempFile>>,
     /// The directories of the objects that the store had already, to be flushed by `finish`.
@@ -1070,7 +1091,7 @@ impl Batch<'_> {
                 .insert(self.store.fan_out_path(&id)?);
             return Ok(id);
         }
-        let (file, temp) = self.store.write_temp(kind, body)?;
+        let (file, temp) = self.store.write_temp(&self.scratch, kind, body)?;
         drop(file);
         self.pending.borrow_mut().insert(id, temp);
         Ok(id)
@@ -1088,7 +1109,8 @@ impl Batch<'_> {
     /// cannot be created or flushed. If the directory of an object that the store had already has
     /// vanished since the object was added, the error is the failed flush (`NotFound`); unlike
     /// [`FsObjectStore::put_raw`], the batch does not write the object again. The lock of the
-    /// references rules that out in practice.
+    /// references rules that out in practice; a batch of the receiving side, which holds none
+    /// ([`FsObjectStore::batch_in`]), fails so beside a purge, and its transfer is repeated.
     pub(crate) fn finish(self) -> Result<(), StoreError> {
         self.finish_with(true)
     }
@@ -1230,17 +1252,19 @@ pub(crate) fn create_temp(
 /// Removes the scratch that writers left behind (ADR-011): every name in `<root>/tmp/` that is not
 /// a directory, and, if `root` is named [`METADATA_DIR`], every directory next to it whose name is
 /// exactly one that `init` gives its temporary directory (ADR-009, [`is_init_staging_name`]). The
-/// caller holds the lock of the references, and every writer of `tmp/` in this crate holds that
-/// lock while it writes, so no name there belongs to a write in progress. A caller of the library
-/// that stores objects through `Repository::objects()` without the lock is not protected. An
+/// caller holds the lock of the references, and every writer of a file in `tmp/` itself holds
+/// that lock while it writes, so no such name belongs to a write in progress. A caller of the
+/// library that stores objects through `Repository::objects()` without the lock is not
+/// protected. An
 /// `init` that still builds its directory next to an existing `.stemma` fails, at the latest at
 /// its rename.
 ///
 /// It is best effort: a name that cannot be removed stays, and the next writer tries again, as a
 /// cleanup must not stop a change; [`scratch_left`] lists what stayed. An entry is never followed:
-/// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory in
-/// `tmp/`, which no writer makes, stays. A directory of the working copy whose name only starts
-/// like the one of `init` is content and stays.
+/// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory
+/// in `tmp/` stays: the receiving side of an object stream, which holds no lock, makes one for
+/// its temporary files and removes it itself (`receive-…`, ADR-023). A directory of the working
+/// copy whose name only starts like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
     if let Ok(entries) = fault::read_dir(&root.join("tmp")) {
         for entry in entries.flatten() {
@@ -1326,7 +1350,7 @@ pub(crate) fn is_checkout_temp_name(name: &str) -> bool {
 
 /// Whether `name` is `prefix` followed by a name of [`unique_temp_name`]: a decimal process ID, a
 /// decimal counter, and 16 lowercase hexadecimal digits, separated by `-`.
-fn is_scratch_name(name: &str, prefix: &str) -> bool {
+pub(crate) fn is_scratch_name(name: &str, prefix: &str) -> bool {
     let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
     let Some(rest) = name.strip_prefix(prefix) else {
         return false;

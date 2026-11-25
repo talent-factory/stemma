@@ -1311,6 +1311,9 @@ Ein Verzeichnis des Projekts wie \type{.stemma-init-notes} gehört zum Inhalt un
 das übernehmen \type{purge --resume} und \type{--abort}.
 \item Das Aufräumen geschieht nach bestem Bemühen:
 Was sich nicht entfernen lässt, bleibt, und der nächste Schreiber versucht es wieder.
+\item Ein Verzeichnis in \type{tmp/} bleibt.
+Darin schreibt der Empfang eines Objektstroms, der einzige Schreiber ohne die Sperre
+(\in{Abschnitt}[sec:transfer]).
 \stopitemize
 \stopinfobox
 
