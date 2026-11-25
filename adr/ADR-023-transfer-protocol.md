@@ -4,8 +4,9 @@
 for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-56, STEMMA-273,
 STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
-"The first number is 1"); nothing else of it is implemented yet. The numbers under "Basis" give a
-direction, not a threshold.
+"The first number is 1"), and the receiving side of an object stream exists in
+`stemma_core::receive` (STEMMA-289, see "The receiving side"); nothing else of it is implemented
+yet. The numbers under "Basis" give a direction, not a threshold.
 
 ## Context
 
@@ -57,8 +58,8 @@ object ID).
 ### A fetch is the list of references and one round with `want` and `have`
 
 1. The client reads the references in one request: the whole list, without a prefix filter.
-2. It sends the commits it wants and the commits it has (the tips of its branches and of its
-   remote references) in one request. The hub ignores a `have` it does not know, walks the graph
+2. It sends the commits it wants and the commits it has (the tips of its branches, its tags and
+   its remote references) in one request. The hub ignores a `have` it does not know, walks the graph
    and answers with the stream of all objects that are reachable from the `want` commits and not
    from the known `have` commits.
 
@@ -124,7 +125,7 @@ its remote references, and only then does the hub call the accepting operation.
 - An object that the walk does not reach stays in the store unnamed and is no error (ADR-007,
   ADR-011).
 - The receiver sets upper bounds for the size of an object and of a request and refuses with a
-  typed error. The values come from the slice.
+  typed error. The values are named under "The receiving side".
 - The connectivity check does not presuppose that every object comes from the sender: a commit
   whose trees lie in the store already is accepted (ADR-015).
 
@@ -152,6 +153,86 @@ Known limit: a single commit that is larger than a connection carries cannot be 
 
 Rejected: discard and start again, keep without resumption, and a response cut into pieces of a
 bounded size (thousands of requests in a row for a large clone).
+
+### The receiving side
+
+The receiving side is built (STEMMA-289) in `stemma_core::receive`: `Repository::receive_objects`
+for the upload on a hub, `Repository::check_connectivity` for the check of a ref update, and
+`Repository::begin_fetch` with the type `Fetch` for the client.
+
+- **The bounds.** The body of an object has at most 1 GiB (`MAX_OBJECT_LEN`), because the store
+  holds an object in memory (ADR-007), and a stream has at most 16 GiB (`MAX_REQUEST_LEN`),
+  because a clone is one stream and a history has up to a few gigabytes (ADR-015). Both are the
+  defaults of `Bounds`, and a caller, such as a hub with a quota, names other ones. They count
+  the bytes that the messages carry, after the compression of the transport is taken off, so a
+  small compressed body cannot pass a long stream. A longer object is refused before its body is
+  read (`StreamError::TooLarge`) and a longer stream at the bound
+  (`ReceiveError::RequestTooLarge`). What arrived whole before the refusal stays in the store
+  unnamed.
+- **The walk.** The own references are the branches, the tags and the remote references. A commit
+  that one of them reaches is taken as complete and is not checked. The history below the
+  references is read only until a commit is found in it, so a commit that a reference names
+  costs nothing; the answer that a new commit is not part of it needs all of that history, one
+  read of every commit below the own references per check (see the open items). For every other
+  commit the walk reads the commit, then its parents, then its trees, and descends only into an
+  entry that no tree of a parent has with the same ID at the same path. A parent or a tree of a parent
+  that cannot be read prunes nothing. Of a blob the walk reads the header of the file and not
+  the body: a blob has no strict reader, an object of a stream was hashed on arrival, and a body
+  that no longer matches its ID is the matter of a full read, as in the scan of a purge
+  (ADR-014).
+- **Durable in batches.** The objects of a stream are written to temporary files. At a commit of
+  the stream, once 1024 objects or 64 MiB have gathered, and at the end of the stream they are
+  flushed and moved into place as one batch of the store (ADR-007). A fetch checks the commits
+  of a batch only after that. When the stream is cut off, the same is done for everything that
+  was read whole before the error is reported.
+- **No lock, and a directory of its own in `tmp/`.** A receiving operation names no object and
+  holds no lock of the references. Its temporary files lie in
+  `tmp/receive-<pid>-<n>-<random>/`, which the writer that takes the lock leaves, because it
+  removes files and not directories (ADR-011). The operation holds a lock of the system on the
+  file `guard` in that directory while it runs and removes the directory at its end. A directory
+  whose guard is free was left by a process that ended: every receiving operation removes such
+  directories at its start, and `Repository::remove_receive_leftovers` does it on request, for a
+  hub that starts. The lock decides and not an age, as for `refs.lock` (ADR-008). On a file
+  system without locks of files the directory is used without one, and a cleanup that cannot
+  lock or open a guard leaves the directory. A directory without a guard is removed only while
+  it is empty: its operation ended before it made the guard.
+- **The journal `fetch-pending`.** The file lies in the metadata directory (ADR-009) and has the
+  first line `stemma-fetch 1` and one line `commit <id>` per commit that arrived completely, in
+  the order of arrival. A fetch holds a lock of the system on it, so a second fetch in the same
+  repository is refused while the first runs. A fetch that ends removes the name of the journal
+  while it holds the lock; a lock on a file whose name no longer leads to it does not count, and
+  the journal is opened again, at most 16 times in all, after which the fetch runs on the file
+  without a name, and its lines are lost with it. The name is compared by the device and the number of the file on Unix and by its
+  existence elsewhere, so outside Unix the race is narrowed and not closed (see the open
+  items). On a file system without locks of files two fetches run at once: they may lose lines
+  of each other or remove the journal of the other, which costs a second transfer of those
+  commits, and a line that they tear makes the next fetch refuse the journal until the file is
+  removed by hand.
+  A commit that a reference reaches, or that this fetch found complete already (at its start
+  from the journal, or since), gets no line; a recorded commit that did not hold at the start
+  gets a second line when it arrives again. A line is written, and the file flushed, only
+  after the objects of the commit are durable and the commit passed the check. The journal is a
+  hint and no proof: the next fetch checks every recorded commit again and sends as `have` those
+  that still hold and that no other of them has as a parent. A recorded commit that lost an
+  object since, as after a purge, or that reaches an object whose file is damaged, is fetched
+  again. A last line without a line feed that is the beginning of a line a fetch writes was
+  left by a process that ended while it wrote, and is cut off when the journal is opened;
+  every other content, also in a last line without a line feed, is refused with the number of
+  its line. The journal is removed after the remote references have moved.
+- **`have`.** A fetch sends the commits of its branches, its tags and its remote references, and
+  the commits of the journal that still hold and that no other of them has as a parent. The
+  tags were added to the decision above by this slice, because the walk takes them as complete
+  too.
+- **The check and the lock.** `Fetch::check` does not read a commit again that the fetch found
+  complete before, at its start from the journal or while it received, without the lock of the
+  references. A purge between that read
+  and the move of a remote reference is not seen by it; the slice that moves the references
+  under the lock decides whether it checks once more there.
+
+Known limit: a process that is killed loses the objects that were not yet flushed. A batch is
+closed only at a commit, so that is fewer than 1024 objects and less than 64 MiB, and on top
+every object of the commit at which a threshold is reached, however large that commit is. They
+arrive again with the next fetch.
 
 ### One number covers every message
 
@@ -398,8 +479,22 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       and the count of repetitions of a merge because of `Stale` (ADR-015, ADR-025). Its numbers
       give the thresholds of the pack triggers.
 - [ ] The level and the window of the compression, the bound that a receiver names for the window
-      and how the sender learns it, the media types, and the bounds for the size of an object and
-      of a request. Left to the slices.
+      and how the sender learns it, and the media types. Left to the slices.
+- [x] The bounds for the size of an object and of a request: 1 GiB and 16 GiB as the defaults of
+      the receiver (STEMMA-289), see "The receiving side".
+- [ ] The cost of the connectivity check for a new commit: one read of every commit below the own
+      references per check, on a hub once per ref update. A walk that descends from the new tips
+      first and asks only at the commits it reaches, or a cache of the commits that are known
+      to be reachable, would avoid it; the measurement above says whether it is needed.
+- [ ] The journal of a fetch outside Unix: a fetch that locks the file of a fetch that ended,
+      after a third one made a new journal under the name, runs beside the third and removes
+      its journal when it ends, because only the existence of the name is checked there. Both
+      cost a second transfer. Closing it needs the identity of the file on
+      Windows (`GetFileInformationByHandle`), or a journal that is emptied in place of being
+      removed, so that its file never changes.
+- [ ] The kind of the error message for a bound that was exceeded (see "Error"). The receiver
+      refuses with a typed error of the core; the message on the wire comes with the slice that
+      carries an upload over a transport, and until then `StreamError::answer` has none for it.
 - [ ] Whether `push` reads the references first to report a stale state early. It belongs to the
       command surface.
 - [ ] The list of references carries the former keys without the signature of the current key

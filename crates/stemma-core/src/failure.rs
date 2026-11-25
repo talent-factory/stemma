@@ -19,7 +19,7 @@ use crate::repository::{
     MergeBranchError, OpenError, PurgeError, PurgeFailure, RebaseError, RestoreError, RewriteError,
     SnapshotError, StatusError, SwitchError, TrackError, UpdateError, WorktreeError,
 };
-use crate::store::StoreError;
+use crate::store::{ReadError, StoreError};
 use crate::verify::VerifyError;
 
 /// The kind of a failure, as far as a caller acts on it.
@@ -351,6 +351,53 @@ impl Classify for HistoryError {
                     FailureKind::Damaged
                 }
             },
+        }
+    }
+}
+
+impl Classify for crate::receive::ConnectivityError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // What a sender delivered does not hold together. The repository is as it was, and
+            // a second transfer can succeed.
+            Self::Missing { .. } | Self::WrongKind { .. } => FailureKind::Other,
+            Self::Unreadable { source, .. } => match &**source {
+                // A body that the strict reader refuses came from the sender.
+                ReadError::Tree { .. } | ReadError::Commit { .. } => FailureKind::Other,
+                // A value with another ID than the one it was read by: a defect of the reader,
+                // which the caller cannot tell from damage (see `HistoryError`).
+                ReadError::IdMismatch { .. } => FailureKind::Damaged,
+                // The check keeps an error of the store apart (`Store`), so this arm only
+                // classifies a value that other code built.
+                ReadError::Store(error) => error.kind(),
+            },
+            Self::Store(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
+            Self::Own(error) => error.kind(),
+        }
+    }
+}
+
+impl Classify for crate::receive::FetchJournalError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Malformed { .. } => FailureKind::Damaged,
+            // Another fetch holds the journal, and a later call can succeed.
+            Self::Running { .. } => FailureKind::Locked,
+            Self::Io { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for crate::receive::ReceiveError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // The stream or its carrier, not the repository.
+            Self::Stream(_) | Self::RequestTooLarge { .. } => FailureKind::Other,
+            Self::Store(error) => error.kind(),
+            Self::Connectivity(error) => error.kind(),
+            Self::Journal(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
         }
     }
 }

@@ -300,7 +300,9 @@ An operation that removes a blob from every commit that holds it and from the op
 _Avoid_: Delete, scrub
 
 **Journal**:
-The record of a purge in progress, from which it resumes or aborts. (Journal)
+The record of a purge in progress, from which it resumes or aborts, and the record of a fetch in
+progress, which names the commits that arrived completely so that the next fetch resumes.
+(Journal)
 _Avoid_: Operation log (for this record)
 
 **Root (of a purge)**:
