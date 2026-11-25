@@ -407,10 +407,12 @@ impl SignedChallenge {
     /// another protocol version, a line that is missing, repeated, unknown, or out of order, a
     /// last line without a line feed, an address or a nonce that the reader of the challenge
     /// refuses ([`Challenge::parse`]), a key that is no Ed25519 public key or is not in its
-    /// canonical form, and a signature that is not in its one-line form. The first problem is
-    /// reported, with its line. A message whose form is right is refused last for its signature, at the
-    /// `signature` line: as [`SignInProblem::Key`] if the signature names another key than the
-    /// `key` line, and as [`SignInProblem::Signature`] if it names that key and does not verify.
+    /// canonical form, and a signature that is not an SSHSIG signature of an Ed25519 key for the
+    /// namespace of the proofs with SHA-512, written on one line
+    /// ([`SignInProblem::SignatureForm`]). The first problem is reported, with its line. A
+    /// message whose form is right is refused last for its signature, at the `signature` line:
+    /// as [`SignInProblem::Key`] if the signature names another key than the `key` line, and as
+    /// [`SignInProblem::Signature`] if it names that key and does not verify.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let (unverified, line) = read_signed(bytes)?;
         Self::try_new(unverified.challenge, unverified.key, unverified.signature).map_err(|error| {

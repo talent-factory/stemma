@@ -513,6 +513,10 @@ fn a_side_without_a_sign_in_issues_no_challenge_and_grants_no_token() {
     let mut request = &example_signed().encode()[..];
     let failure = transport.answer_challenge(&mut request).unwrap_err();
     assert!(no_sign_in(&failure), "{failure}");
+    // A request that no reader accepts gets the same answer: the side reads none.
+    let mut request = &b"stemma-protocol 2\n"[..];
+    let failure = transport.answer_challenge(&mut request).unwrap_err();
+    assert!(no_sign_in(&failure), "{failure}");
 
     let signer = Counting::new(daniel());
     let error = signs_in(&mut transport, &signer).unwrap_err();

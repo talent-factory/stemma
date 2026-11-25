@@ -417,10 +417,11 @@ zuordnet (\in{Abschnitt}[sec:signatures]).
 Die Anmeldung am Hub verwendet denselben Schlüssel und führt kein zweites Geheimnis ein.
 
 \startitemize[n]
-\item Der Hub gibt eine Challenge aus, einen Wert (Nonce), den er nur für Sekunden annimmt.
+\item Der Hub gibt eine Challenge aus: seine Adresse und einen Wert (Nonce), den er nur für
+Sekunden annimmt.
 \item Der Schlüssel signiert sie, einmal je Befehl.
 Die Signatur ist ein eigener Typ von Beweis und bindet die Adresse des Hubs, wie der Klon sie
-aufruft, die Challenge und den Schlüssel.
+aufruft, die Nonce und den Schlüssel.
 \item Der Hub antwortet mit einem Token für die folgenden Anfragen.
 \stopitemize
 

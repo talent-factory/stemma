@@ -53,9 +53,10 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
   such as the page of a proxy; the error then carries the words of the carrier, for HTTP the
   status (ADR-023). A transport reads no body but that of the token answer (see "The sign-in"
   below), so it tells such an answer from an error message by something outside the body; for
-  `stemma-remote` that is the media type, which its slice sets (ADR-023, open items). This narrows rule 3 of the mapping to HTTP in ADR-023: a body that the
-  transport hands over as an error message and that its reader refuses is an error of that
-  reader, reported by the core, and no transport error.
+  `stemma-remote` that is the media type, which its slice sets (ADR-023, open items). This
+  narrows rule 3 of the mapping to HTTP in ADR-023: a body that the transport hands over as an
+  error message and that its reader refuses is an error of that reader, reported by the core,
+  and no transport error.
 - A body that ends early is an error of its reader, never an early end, because no message
   carries a count or an end mark. A body that the caller drops before its end is no error: the
   next request is allowed, and the transport discards what was left.
@@ -76,8 +77,8 @@ transport, so the transport reads the one message that holds it:
 - The in-memory transport encodes the token answer of its other side and reads it back, so the
   writer and the reader of the token answer are covered as those of the other messages are. Its
   other side answers the two requests with values, as it answers `refs`. The two answers are one
-  trait (`SignInSide`), so a side has both or none; a side without a sign-in fails both
-  requests.
+  trait (`SignInSide`), so a side has both methods or none; a side without a sign-in fails both
+  requests, whatever the request holds.
 
 Rejected for the sign-in: a caller that reads the token answer and hands the token to the
 transport (the token would pass through code that prints and logs, and the trait would name it),

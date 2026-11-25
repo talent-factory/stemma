@@ -75,7 +75,9 @@ impl fmt::Debug for Answer<'_> {
 ///
 /// The trait is synchronous: a method returns when the answer begins, and the body is read
 /// afterwards by the caller. An implementation does I/O and nothing else. It does not read, check
-/// or change a message, and it decides nothing about a repository.
+/// or change a message, and it decides nothing about a repository. The one exception is the
+/// token answer of a sign-in, which the implementation reads to keep the token
+/// ([`answer_challenge`](Self::answer_challenge)).
 pub trait Transport {
     /// Asks for the list of references. The message of the answer is a [`RefList`].
     ///
@@ -228,16 +230,18 @@ pub trait OtherSide {
 
     /// The part of this side that answers a sign-in, or `None` for a side without one, such as
     /// a repository that is reached without a hub. The method as it is given here returns
-    /// `None`: both requests of a sign-in then fail, nothing is issued, and the transport
-    /// reports [`TransportError::NoAnswer`]. A side that knows its senders returns itself, as a
-    /// [`SignInSide`], which has both answers or none.
+    /// `None`: both requests of a sign-in then fail, whatever the request holds, nothing is
+    /// issued, and the transport reports [`TransportError::NoAnswer`]. A side that knows its
+    /// senders returns itself, as a [`SignInSide`]. The answer must not change while the side
+    /// lives: the transport asks once for each request.
     fn sign_in(&self) -> Option<&dyn SignInSide> {
         None
     }
 }
 
 /// The answers of an [`OtherSide`] to the two requests of a sign-in (ADR-024). They are one
-/// trait, so that a side cannot issue a challenge that it never answers.
+/// trait, so that a side has both methods or none. Whether a method answers or refuses is still
+/// the side's: a side that issues a challenge is expected to answer it.
 pub trait SignInSide {
     /// Answers a challenge for a sign-in.
     ///
@@ -372,10 +376,12 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
         request
             .read_to_end(&mut bytes)
             .map_err(TransportError::Request)?;
-        let issued = match SignedChallenge::parse(&bytes) {
-            Ok(signed) => sign_in_side(&self.side).and_then(|side| side.token(&signed)),
-            Err(error) => Err(ErrorMessage::from(&error).into()),
-        };
+        // The side is asked for its sign-in first: one without it reads no request.
+        let issued =
+            sign_in_side(&self.side).and_then(|side| match SignedChallenge::parse(&bytes) {
+                Ok(signed) => side.token(&signed),
+                Err(error) => Err(ErrorMessage::from(&error).into()),
+            });
         match issued {
             Ok(answer) => {
                 // The token answer travels as bytes and is read by the reader of every transport.
