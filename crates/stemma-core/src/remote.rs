@@ -308,8 +308,8 @@ impl RemoteField {
                  comment, or `-`"
             }
             Self::CaFile => {
-                "the path of a CA file is not empty, is not `-`, has no control character, and \
-                 neither starts nor ends with a space; `-` alone stands for no file"
+                "the path of a CA file is absolute, has no control character, and neither starts \
+                 nor ends with a space; `-` alone stands for no file"
             }
             Self::SignIn => "the value is `yes` or `no`",
         }
@@ -409,9 +409,10 @@ impl fmt::Display for RemoteAddress {
 
 /// The path of an additional CA file of a remote, for a hub with a certificate of an own CA
 /// (ADR-028). It is text that fits a line; whether the file exists is the business of the client
-/// that reads it. The type does not ask for an absolute path. The configuration is shared by
-/// every worktree, so a relative path would name another file from another directory: the
-/// command that writes the configuration has to make the path absolute.
+/// that reads it. The path is absolute by the rule of the platform
+/// ([`Path::is_absolute`]): the configuration is shared by every worktree, and a relative path
+/// would name another file from another directory. The file belongs to one machine, so a path of
+/// another platform is rejected like any other that is not absolute.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CaFile(String);
 
@@ -420,13 +421,11 @@ impl CaFile {
     ///
     /// # Errors
     ///
-    /// Returns [`RemoteValueError`] for a path that is empty, is `-` (which stands for no file;
-    /// write `./-` for a file of that name), has a control character, or starts or ends with a
-    /// space.
+    /// Returns [`RemoteValueError`] for a path that is not absolute (so for an empty one and for
+    /// `-`, which stands for no file), has a control character, or starts or ends with a space.
     pub fn try_new(path: impl Into<String>) -> Result<Self, RemoteValueError> {
         let path = path.into();
-        if path.is_empty()
-            || path == UNSET
+        if !Path::new(&path).is_absolute()
             || path.chars().any(char::is_control)
             || path.starts_with(' ')
             || path.ends_with(' ')
@@ -776,6 +775,12 @@ mod tests {
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMt6BisKCOOMdkWowXYqXUrS1zKF4aE6QenzZ1SSB/Md";
     const ID: &str = "0123456789abcdef0123456789abcdef";
     const ADDRESS: &str = "https://hub.example/talent-factory/stemma";
+    /// An absolute path with a space, by the rule of the platform.
+    const CA_FILE: &str = if cfg!(windows) {
+        r"C:\stemma\own ca.pem"
+    } else {
+        "/etc/stemma/own ca.pem"
+    };
 
     fn id(digit: char) -> String {
         format!("b3:{}", digit.to_string().repeat(64))
@@ -791,7 +796,7 @@ mod tests {
     fn full() -> RemoteConfig {
         RemoteConfig {
             hub_key: Some(KEY.parse().unwrap()),
-            ca_file: Some(CaFile::try_new("/etc/stemma/own ca.pem").unwrap()),
+            ca_file: Some(CaFile::try_new(CA_FILE).unwrap()),
             sign_in: true,
             ..config()
         }
@@ -949,15 +954,12 @@ mod tests {
             "address https://hub.example/talent-factory/stemma",
             "repository 0123456789abcdef0123456789abcdef",
             &format!("hub-key {KEY}"),
-            "ca-file /etc/stemma/own ca.pem",
+            &format!("ca-file {CA_FILE}"),
             "sign-in yes",
         ]);
         assert_eq!(full().encode(), all);
         assert_eq!(RemoteConfig::parse(&all).unwrap(), full());
-        assert_eq!(
-            full().ca_file.unwrap().as_path(),
-            Path::new("/etc/stemma/own ca.pem")
-        );
+        assert_eq!(full().ca_file.unwrap().as_path(), Path::new(CA_FILE));
     }
 
     /// The lines of the full configuration with one line replaced, removed, or added.
@@ -1039,6 +1041,14 @@ mod tests {
             (changed(3, &["hub-key "]), value(RemoteField::HubKey, "")),
             (changed(4, &["ca-file "]), value(RemoteField::CaFile, "")),
             (
+                changed(4, &["ca-file own-ca.pem"]),
+                value(RemoteField::CaFile, "own-ca.pem"),
+            ),
+            (
+                changed(4, &["ca-file ./-"]),
+                value(RemoteField::CaFile, "./-"),
+            ),
+            (
                 changed(4, &["ca-file /a "]),
                 value(RemoteField::CaFile, "/a "),
             ),
@@ -1116,10 +1126,9 @@ mod tests {
     #[test]
     fn every_accepted_configuration_reads_back_to_its_bytes() {
         // `http://` is a valid address; that only a loopback address may have it is a rule of
-        // the client. A file called `-` is written `./-`.
+        // the client.
         let local = RemoteConfig {
             address: RemoteAddress::try_new("http://127.0.0.1:8080/a/b").unwrap(),
-            ca_file: Some(CaFile::try_new("./-").unwrap()),
             ..config()
         };
         for config in [config(), full(), local] {

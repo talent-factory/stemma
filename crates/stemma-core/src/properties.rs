@@ -1731,7 +1731,9 @@ fn the_remote_configuration_reader_accepts_only_what_the_encoder_writes_and_neve
                 config.hub_key = Some(KEY.parse().expect("a valid key"));
             }
             if rng.one_in(2) {
-                config.ca_file = Some(CaFile::try_new(format!("/etc/ca {n}.pem")).expect("a path"));
+                let root = if cfg!(windows) { r"C:\etc" } else { "/etc" };
+                let path = format!("{root}/ca {n}.pem");
+                config.ca_file = Some(CaFile::try_new(path).expect("an absolute path"));
             }
             config.sign_in = rng.one_in(2);
             config.encode()
