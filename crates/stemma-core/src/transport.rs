@@ -163,10 +163,12 @@ impl Error for TransportError {
 /// a request before it asks. A small answer is returned as a value, which the transport encodes;
 /// an object stream is written by this side itself, and the transport passes its bytes on as
 /// they are. The answering operation of the core for `refs` and `fetch` is the implementation
-/// that the tests of `fetch` use, once it is built; a ref update is answered by the accepting
-/// operation
-/// ([`Repository::accept_ref_update`](crate::repository::Repository::accept_ref_update)). A test
-/// may implement the trait itself to answer what a correct side never answers.
+/// that the tests of `fetch` use, once it is built. A side answers a ref update by calling the
+/// accepting operation
+/// ([`Repository::accept_ref_update`](crate::repository::Repository::accept_ref_update)) with
+/// its record and its signer, as the side of the tests of that operation does; this module holds
+/// no such side. A test may implement the trait itself to answer what a correct side never
+/// answers.
 pub trait OtherSide {
     /// Answers the list of references.
     ///

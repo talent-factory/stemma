@@ -378,16 +378,27 @@ held, the record cannot be read or written or is damaged, the store or the signe
 call works on a bare repository only: a repository with a working copy moves its references
 through the operation log (ADR-011).
 
+A policy at the tip of `main` that is missing, no file or not valid refuses the reference
+(`policy`), because the sender can read that commit; a policy that the store cannot return is a
+failure of the hub. The commit of a first push that records an open conflict is refused as
+`bad-register`: `main` never holds such a commit (ADR-019).
+
 **The destination of the record** is a trait with two methods: read the whole record, and append
 the bytes of one entry durably. The operation reads the record under the lock, so a second
 process of the hub cannot write between the reading and the entry. This first version reads and
 checks the whole record with every call, which is linear in the entries; the trigger for keeping
 the state of the chains between two calls is the measured holding time of the lock.
 
-**The order.** Before the lock: the address and the ID against the payload, and one question to
-the authorizer by the references as they are, because the lock of the references is opened with
-the proof of that question only (ADR-002). Nothing is decided by this pass that the pass under
-the lock does not decide again. Under the lock:
+**The order.** Before the lock: the address and the ID against the payload, the sender by the
+references as they are (step 6 below, read without the lock), and one question to the authorizer
+for every reference, because the lock of the references is opened with the proof of that
+question only (ADR-002). This departs from the rule above that only pure functions run before
+the lock: the pass reads the tip of `main`, and for a first push the pushed commit. It can
+refuse an update for its sender before the lock is taken (the key, the first push, the
+authorizer), so such an update is answered `refused` even if it is `stale` as well. It accepts
+nothing: everything is decided again under the lock. Where `main` is missing, the pass takes the
+commit of `main` from the record, so a first push that stopped after its entry does not make the
+repository look empty to the next sender. Under the lock:
 
 1. The record is read and its chains are checked.
 2. An update that stopped after its entry is completed (see below), and every branch and tag
@@ -406,7 +417,9 @@ the lock does not decide again. Under the lock:
 8. The record entry with the signature of the hub, made durable by the destination.
 9. The moves, the deletions first, and the receipt.
 
-All refusals come before step 8, so only accepted updates are recorded.
+All refusals come before step 8, so only accepted updates are recorded, and a refused update
+moves none of its references. Step 2 may write before a refusal: it makes the moves of an
+earlier, accepted update.
 
 **Branches.** The write owner is the actor of the last record entry of the name, and the lease
 ends at the time of that entry plus the duration that `.stemma-policy` at the tip of `main`

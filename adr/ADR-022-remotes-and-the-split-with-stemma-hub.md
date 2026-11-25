@@ -38,8 +38,7 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
 - It has one synchronous method per request of the protocol (ADR-023). The first two are `refs`
   and `fetch`; a slice that adds a request adds its method, and the sign-in adds its step
   (ADR-024). The third is `ref_update`, which sends a ref update and is answered with its
-  receipt or with a typed error (STEMMA-296, ADR-025); the in-memory variant answers it through
-  the accepting operation of the core.
+  receipt or with a typed error (STEMMA-296, ADR-025).
 - Every body is a stream. A request body is read from a reader, and the body of an answer is a
   reader that borrows the transport, so one request runs at a time and an object stream never
   has to lie in memory as a whole.
@@ -128,11 +127,13 @@ dependency.
 - The in-memory `Transport` (`MemoryTransport`, STEMMA-287) passes bytes as a network does: it
   parses a request with the strict reader, answers a request that the reader refuses with the
   error message of the protocol, and encodes a list of references and an error with their
-  writers. The other side is a trait of two methods (`OtherSide`) that take the values of the
+  writers. The other side is a trait (`OtherSide`) whose methods take the values of the
   protocol: it returns a small answer as a value, and it writes an object stream itself, which
-  the transport passes on unread. Its implementation is the answering operation of the core
-  once that is built (STEMMA-288), and the accepting operation follows with the requests of a
-  push; until then the tests of the transport answer from a bare repository themselves. A test
+  the transport passes on unread. Its implementation for `refs` and `fetch` is the answering
+  operation of the core once that is built (STEMMA-288); until then the tests of the transport
+  answer from a bare repository themselves. A side answers `ref_update` by calling the accepting
+  operation with its record and its signer, as the side of the tests of that operation does
+  (STEMMA-296); a side that does not implement the method fails. A test
   may also implement the trait to answer what a correct side never answers.
 - The end-to-end tests with real HTTP live in stemma-hub and use `stemma-remote` and the CLI of
   the pinned commit.

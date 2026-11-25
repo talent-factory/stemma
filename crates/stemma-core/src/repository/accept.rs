@@ -10,8 +10,9 @@ use std::io;
 use std::path::PathBuf;
 
 use super::revision::require_unreserved;
-use super::Repository;
+use super::{PolicyError, Repository};
 use crate::allowed::Allowed;
+use crate::conflict::AnyCommit;
 use crate::history::HistoryError;
 use crate::merge_base::merge_bases;
 use crate::object::CommitId;
@@ -27,6 +28,7 @@ use crate::receive::ConnectivityError;
 use crate::refs::{BranchName, RefError, RefKind, WriteLock};
 use crate::register::{Identity, Mode, ModeError, Register, RegisterAuthorizer, Verified};
 use crate::signature::Signer;
+use crate::store::ObjectStore;
 use crate::{lease, AllowAll, Authorizer};
 
 /// The destination of the record of ref updates of one repository (ADR-025). The layout of a
@@ -96,9 +98,11 @@ pub enum AcceptError {
         /// The root of the repository.
         path: PathBuf,
     },
-    /// The update does not continue the chains of its names. Nothing was written.
+    /// The update does not continue the chains of its names. No entry was written and no
+    /// reference of this update moved; an earlier update may have been completed.
     Stale(Stale),
-    /// The update is refused. Nothing was written.
+    /// The update is refused. No entry was written and no reference of this update moved; an
+    /// earlier update may have been completed.
     Refused(Refused),
     /// The lock of the references or the references failed. Nothing was written, unless an
     /// earlier update was being completed.
@@ -117,7 +121,7 @@ pub enum AcceptError {
     /// another repository.
     Chain(Box<ChainError>),
     /// A reference is not where the record leaves it: something moved it past the accepting
-    /// operation. Nothing was written.
+    /// operation. No entry was written and no reference of this update moved.
     Diverged {
         /// The qualified name.
         name: QualifiedName,
@@ -128,6 +132,9 @@ pub enum AcceptError {
     },
     /// The register at the tip of `main` cannot be read, or `main` holds none.
     Register(Box<ModeError>),
+    /// The policy at the tip of `main` could not be read: the storage failed. A policy that is
+    /// missing or not valid is [`Refused`](Self::Refused) instead.
+    Policy(Box<PolicyError>),
     /// The connectivity check could not run: the storage failed. An update whose objects do not
     /// hold together is [`Refused`](Self::Refused) instead.
     Connectivity(Box<ConnectivityError>),
@@ -174,6 +181,7 @@ impl AcceptError {
             | Self::Record(_)
             | Self::Chain(_)
             | Self::Diverged { .. }
+            | Self::Policy(_)
             | Self::History(_) => None,
         }
     }
@@ -214,6 +222,7 @@ impl fmt::Display for AcceptError {
                     "cannot read the register at the tip of `{TARGET}`: {error}"
                 )
             }
+            Self::Policy(error) => error.fmt(f),
             Self::Connectivity(error) => error.fmt(f),
             Self::History(error) => error.fmt(f),
             Self::Write(error) => error.fmt(f),
@@ -412,9 +421,11 @@ impl Repository {
     /// The operation is one call, and it takes the lock of the references itself, in the middle:
     ///
     /// - **Before the lock** it compares the address of the hub and the ID of the repository
-    ///   with the payload, and asks the authorizer once by the references as they are, because
-    ///   the lock is opened with the proof of that question only (ADR-002). Nothing is decided by
-    ///   this pass that the pass under the lock does not decide again.
+    ///   with the payload, finds the sender by the references as they are, and asks the
+    ///   authorizer once, because the lock is opened with the proof of that question only
+    ///   (ADR-002). This pass can refuse an update for its sender (the key, the first push, the
+    ///   authorizer) before the lock is taken, so such an update is answered as refused even if
+    ///   it is stale as well. It accepts nothing: everything is decided again under the lock.
     /// - **Under the lock** it reads the record, completes an update that stopped after its
     ///   entry, and checks that the references are where the record leaves them. Then it checks,
     ///   in this order: `previous` and `old` against the chain of every name, the names, the
@@ -423,8 +434,8 @@ impl Repository {
     ///   Then it writes the record entry with the signature of the hub, moves the references,
     ///   and returns the entry as the receipt.
     ///
-    /// A refusal writes nothing: the record holds accepted updates only. This version judges
-    /// branches and tags:
+    /// A refusal writes no entry and moves no reference of its update: the record holds
+    /// accepted updates only. This version judges branches and tags:
     ///
     /// - **A branch.** Its write owner is the actor of the last record entry of its name. The
     ///   lease runs from the time of the hub in that entry, for the duration that the policy at
@@ -456,16 +467,19 @@ impl Repository {
     /// [`AcceptError::Stale`] if a reference of the update does not name the last record entry
     /// of its name and the commit that this entry left, with every such reference and its state,
     /// and [`AcceptError::Refused`] with the typed reason if the update names another hub or
-    /// another repository, the register does not hold its key, or a reference is refused. Both
-    /// are answered to the sender ([`AcceptError::answer`]).
+    /// another repository, the register does not hold its key, the repository has no `main` and
+    /// the update does not set it, or a reference is refused. Both are answered to the sender
+    /// ([`AcceptError::answer`]).
     ///
     /// Every other error is a failure of the hub: [`AcceptError::NotBare`] for a repository with
     /// a working copy, [`AcceptError::Refs`] if the lock is held ([`RefError::Locked`]) or the
     /// references cannot be read, [`AcceptError::RecordIo`], [`AcceptError::Record`],
     /// [`AcceptError::Chain`], and [`AcceptError::Diverged`] for a record that cannot be read
     /// or written, is damaged, or does not agree with the references,
-    /// [`AcceptError::Register`], [`AcceptError::Connectivity`], and [`AcceptError::History`] if
-    /// the store fails, [`AcceptError::Write`] if the signer fails, and
+    /// [`AcceptError::Register`] if the register at the tip of `main` cannot be read, is not
+    /// valid, or is not there, [`AcceptError::Policy`], [`AcceptError::Connectivity`], and
+    /// [`AcceptError::History`] if the store fails, [`AcceptError::Write`] if the signer fails,
+    /// and
     /// [`AcceptError::NotCompleted`] if the entry is written and a reference did not move.
     pub fn accept_ref_update(
         &self,
@@ -504,9 +518,17 @@ impl Repository {
         // The lock is opened with the proof that the authorizer allowed the operation
         // (ADR-002), so the sender is asked once by the references as they are. Everything is
         // decided again under the lock.
-        let allowed = self
-            .sender_of(update, self.main_tip()?, false)?
-            .ask_all(update, also)?;
+        let tip = match self.main_tip()? {
+            Some(tip) => Some(tip),
+            // A first push that stopped after its entry left no `main`, and the record names
+            // it. Without this the pass would answer `no-main` to every other sender, and the
+            // completion under the lock would never be reached.
+            None => Record::read(context.record, context.repository)?
+                .owners
+                .get(&main_reference())
+                .and_then(|main| main.commit),
+        };
+        let allowed = self.sender_of(update, tip, false)?.ask_all(update, also)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
 
         let mut record = Record::read(context.record, context.repository)?;
@@ -554,13 +576,18 @@ impl Repository {
             let verdict = if moved.name() == &main && !sender.first {
                 Err(RefusalReason::Gate)
             } else {
-                sender.ask(moved, also).and_then(|_| {
-                    self.write_ownership(moved, &record, &sender, &identity, context.time)
-                        .map(|policy| policies.extend(policy))
-                })
+                match sender.ask(moved, also) {
+                    Ok(_) => {
+                        self.write_ownership(moved, &record, &sender, &identity, context.time)?
+                    }
+                    Err(reason) => Err(reason),
+                }
             };
-            if let Err(reason) = verdict {
-                refused.insert(moved.name().clone(), reason);
+            match verdict {
+                Ok(policy) => policies.extend(policy),
+                Err(reason) => {
+                    refused.insert(moved.name().clone(), reason);
+                }
             }
         }
         if !refused.is_empty() {
@@ -662,6 +689,16 @@ impl Repository {
                 Err(error) => return Err(AcceptError::Connectivity(Box::new(error))),
             }
         }
+        // The check above passes a commit that records an open conflict, which `main` never
+        // holds (ADR-019) and which has no one tree to read a register from.
+        match self.objects().get_any_commit(&pushed) {
+            Ok(Some(AnyCommit::Commit2(_))) => {
+                let reason = Reason::from_message(&"the commit records an open conflict");
+                return Err(one_refused(&main, RefusalReason::BadRegister(reason)));
+            }
+            Ok(_) => {}
+            Err(error) => return Err(unreadable(ModeError::Store(error))),
+        }
         let register = match Register::at_commit(self.objects(), &pushed) {
             Ok(Some(register)) => register,
             Ok(None) => return Err(one_refused(&main, RefusalReason::NoRegister)),
@@ -730,7 +767,13 @@ impl Repository {
 
     /// The rule of the write ownership for the move of one reference (ADR-025). A tag and
     /// `main` have none. Returns the commit of the policy if the verdict rests on one: the
-    /// duration of a lease that has ended.
+    /// duration of a lease that has ended. The inner error is the refusal of the reference.
+    ///
+    /// # Errors
+    ///
+    /// [`AcceptError::Policy`] if the policy cannot be read from the store. A policy that is
+    /// missing, no file, or not valid is a refusal ([`RefusalReason::Policy`]): the sender can
+    /// read the same commit and see it.
     fn write_ownership(
         &self,
         moved: &Move,
@@ -738,25 +781,29 @@ impl Repository {
         sender: &Sender,
         identity: &Identity,
         now: i64,
-    ) -> Result<Option<CommitId>, RefusalReason> {
+    ) -> Result<Result<Option<CommitId>, RefusalReason>, AcceptError> {
         if moved.name().kind() != RefKind::Branch {
-            return Ok(None);
+            return Ok(Ok(None));
         }
         let owner = match record.owners.get(moved.name()) {
             Some(owner) if owner.commit.is_some() && &owner.actor != identity => owner,
-            _ => return Ok(None),
+            _ => return Ok(Ok(None)),
         };
-        let policy = self
-            .policy_at(&sender.register, true)
-            .map_err(|error| RefusalReason::Policy(Reason::from_message(&error)))?;
+        let policy = match self.policy_at(&sender.register, true) {
+            Ok(policy) => policy,
+            Err(
+                error @ (PolicyError::Missing | PolicyError::NotAFile | PolicyError::Invalid(_)),
+            ) => return Ok(Err(RefusalReason::Policy(Reason::from_message(&error)))),
+            Err(error) => return Err(AcceptError::Policy(Box::new(error))),
+        };
         let expires = lease::expiry(owner.time, policy.lease_minutes());
         if now < expires {
-            return Err(RefusalReason::Leased {
+            return Ok(Err(RefusalReason::Leased {
                 holder: owner.actor.clone(),
                 expires,
-            });
+            }));
         }
-        Ok(Some(sender.register))
+        Ok(Ok(Some(sender.register)))
     }
 
     /// Completes the moves of the last entry of the record, if its update stopped between the
@@ -774,7 +821,15 @@ impl Repository {
             let name = moved.name();
             let found = match self.refs_store().recorded(lock, name.kind(), name.name()) {
                 Ok(found) => found,
-                // The name was free when the entry was written, so what holds it came later.
+                // The name was free when the entry was written, so what holds it came later,
+                // past this operation. It is in the way of a reference that the entry sets.
+                Err(RefError::Conflict { .. }) if moved.new_commit().is_some() => {
+                    return Err(AcceptError::Diverged {
+                        name: name.clone(),
+                        recorded: moved.new_commit(),
+                        found: None,
+                    });
+                }
                 Err(RefError::Conflict { .. }) => None,
                 Err(error) => return Err(error.into()),
             };
@@ -834,8 +889,10 @@ impl Repository {
     }
 
     /// Makes the references agree with an update whose entry is in the record: the moves of an
-    /// accepted update, and the completion of one that stopped. The deletions come first, so a
-    /// name that is deleted is out of the way of a name that is created.
+    /// accepted update, and the completion of one that stopped. The deletions come first. No
+    /// accepted update needs that order today, because a new name that a reference of the store
+    /// holds is refused even if the same update deletes that reference; the order keeps the
+    /// moves right if that rule is ever relaxed.
     fn move_references(&self, lock: &WriteLock, update: &RefUpdate) -> Result<(), RefError> {
         let moves = update.payload().moves();
         let deletions = moves.iter().filter(|moved| moved.new_commit().is_none());

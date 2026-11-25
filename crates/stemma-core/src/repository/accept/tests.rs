@@ -30,6 +30,9 @@ const REPOSITORY: &str = "00112233445566778899aabbccddeeff";
 /// The lease that the policy of these tests names, in seconds.
 const LEASE: i64 = 30 * 60;
 
+/// The policy of these tests.
+const POLICY: &str = "stemma-policy 1\nlease 30\n";
+
 /// The time of the hub at the start of a test.
 const START: i64 = 1_000_000;
 
@@ -221,10 +224,15 @@ impl Hub {
 
     /// A commit that holds the register and the policy of these tests, and one more file.
     fn governed(&self, text: &str, parents: Vec<CommitId>) -> CommitId {
+        self.governed_by(&register_text(), text, parents)
+    }
+
+    /// A commit that holds this register and the policy of these tests, and one more file.
+    fn governed_by(&self, register: &str, text: &str, parents: Vec<CommitId>) -> CommitId {
         self.commit(
             &[
-                (register::FILE, &register_text()),
-                (policy::FILE_NAME, "stemma-policy 1\nlease 30\n"),
+                (register::FILE, register),
+                (policy::FILE_NAME, POLICY),
                 ("a.txt", text),
             ],
             parents,
@@ -465,6 +473,18 @@ fn the_first_push_is_refused_unless_its_register_holds_the_key_as_an_owner() {
     assert!(
         matches!(&reasons[..], [(main, RefusalReason::BadRegister(_))] if main == "heads/main"),
         "{reasons:?}"
+    );
+
+    // A commit that records an open conflict, which `main` never holds.
+    let (conflicted, _) = crate::testutil::conflicted_commit(&wire.side().repository);
+    let moved = to(&mut wire, "heads/main", Some(conflicted));
+    let conflict = Reason::try_new("the commit records an open conflict").unwrap();
+    assert_eq!(
+        refused(push(&mut wire, &daniel(), vec![moved])),
+        [(
+            "heads/main".to_owned(),
+            RefusalReason::BadRegister(conflict)
+        )]
     );
     unchanged(&wire, &[], &[("heads/main", None)]);
 }
@@ -887,15 +907,6 @@ fn the_authorizer_is_asked_for_push_tag_and_untag() {
             panic!("{error:?}");
         };
         assert_eq!(refused.reason_of(&reference), Some(&denied(operation)));
-        // Another operation is not refused by it.
-        let other = if operation == "push" { "tag" } else { "push" };
-        assert!(
-            Deny(other).authorize(
-                &Actor::human("mia").unwrap(),
-                &OperationName::try_new(operation).unwrap(),
-                "x"
-            ) == Decision::Allow
-        );
     }
     unchanged(
         &wire,
@@ -1278,4 +1289,221 @@ fn every_failure_has_a_message() {
         io.to_string(),
         "cannot read the record of ref updates: gone"
     );
+}
+
+#[test]
+fn a_first_push_that_stopped_is_completed_by_the_update_of_another_sender() {
+    let mut wire = wire();
+    let root = wire.side().governed("one\n", vec![]);
+    let first = signed(&daniel(), vec![to(&mut wire, "heads/main", Some(root))]);
+    let heads = wire.side().repository.path().join("refs/heads");
+    fs::create_dir_all(&heads).unwrap();
+    let denied = fault::deny_writes_in(&heads);
+    let error = wire.side().accept(&first).unwrap_err();
+    drop(denied);
+    assert!(
+        matches!(error, AcceptError::NotCompleted { .. }),
+        "{error:?}"
+    );
+    assert_eq!(wire.side().reference("heads/main"), None);
+
+    // The repository has no `main` yet, and the record names it: Mia is judged by the register
+    // of that commit, and her update completes the first push before it is accepted.
+    let moved = Move::try_new(name("heads/topic"), None, None, Some(root), None).unwrap();
+    let receipt = push(&mut wire, &mia(), vec![moved]).unwrap();
+    assert_eq!(receipt.number(), 2);
+    assert_eq!(receipt.register(), root);
+    assert_eq!(wire.side().reference("heads/main"), Some(root));
+    assert_eq!(wire.side().reference("heads/topic"), Some(root));
+}
+
+#[test]
+fn a_stopped_deletion_is_completed_and_a_completion_that_fails_writes_nothing() {
+    let (mut wire, root) = started();
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let deletion = signed(&mia(), vec![to(&mut wire, "heads/feature", None)]);
+    let heads = wire.side().repository.path().join("refs/heads");
+    let denied = fault::deny_writes_in(&heads);
+    let error = wire.side().accept(&deletion).unwrap_err();
+    assert!(
+        matches!(error, AcceptError::NotCompleted { .. }),
+        "{error:?}"
+    );
+    assert_eq!(wire.side().reference("heads/feature"), Some(root));
+    let before = record_of(&wire);
+
+    // While the storage still fails, the next call cannot complete the deletion. It reports
+    // the references and appends nothing.
+    let next = signed(&ana(), vec![to(&mut wire, "tags/v1", Some(root))]);
+    let error = wire.side().accept(&next).unwrap_err();
+    assert!(matches!(error, AcceptError::Refs(_)), "{error:?}");
+    assert_eq!(error.answer(), None);
+    unchanged(
+        &wire,
+        &before,
+        &[("heads/feature", Some(root)), ("tags/v1", None)],
+    );
+    drop(denied);
+
+    send(&mut wire, &next).unwrap();
+    assert_eq!(wire.side().reference("heads/feature"), None);
+    assert_eq!(listed(&mut wire, "heads/feature"), (None, None));
+    assert_eq!(wire.side().reference("tags/v1"), Some(root));
+}
+
+#[test]
+fn a_name_that_was_taken_behind_a_stopped_update_stops_the_next_one() {
+    let (mut wire, root) = started();
+    let update = signed(&mia(), vec![to(&mut wire, "heads/feature", Some(root))]);
+    let heads = wire.side().repository.path().join("refs/heads");
+    let denied = fault::deny_writes_in(&heads);
+    wire.side().accept(&update).unwrap_err();
+    drop(denied);
+    let before = record_of(&wire);
+    // Someone writes a branch below the name that the entry sets.
+    fs::create_dir(heads.join("feature")).unwrap();
+    fs::write(heads.join("feature/x"), crate::refs::encode_branch(&root)).unwrap();
+
+    let tagged = Move::try_new(name("tags/v1"), None, None, Some(root), None).unwrap();
+    let next = signed(&ana(), vec![tagged]);
+    let error = wire.side().accept(&next).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            AcceptError::Diverged { name: taken, recorded: Some(_), found: None }
+                if taken == &name("heads/feature")
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.kind(), FailureKind::Damaged);
+    unchanged(&wire, &before, &[("tags/v1", None)]);
+}
+
+#[test]
+fn a_new_name_below_a_branch_that_the_same_update_deletes_is_refused() {
+    let (mut wire, root) = started();
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let before = record_of(&wire);
+    let moves = vec![
+        to(&mut wire, "heads/feature", None),
+        to(&mut wire, "heads/feature/x", Some(root)),
+    ];
+    assert_eq!(
+        refused(push(&mut wire, &mia(), moves)),
+        [(
+            "heads/feature/x".to_owned(),
+            RefusalReason::Conflict(Reason::try_new("feature").unwrap())
+        )]
+    );
+    unchanged(&wire, &before, &[("heads/feature", Some(root))]);
+}
+
+#[test]
+fn an_empty_directory_that_holds_a_name_is_cleared() {
+    let (mut wire, root) = started();
+    let leftover = wire.side().repository.path().join("refs/heads/feature");
+    fs::create_dir(&leftover).unwrap();
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    assert!(leftover.is_file());
+    assert_eq!(wire.side().reference("heads/feature"), Some(root));
+}
+
+#[test]
+fn a_branch_of_another_actor_waits_for_a_policy_that_can_be_used() {
+    let mut wire = wire();
+    // The first push needs a register and no policy.
+    let root = wire
+        .side()
+        .commit(&[(register::FILE, &register_text())], vec![]);
+    let one = wire.side().commit(&[("b.txt", "one\n")], vec![root]);
+    let two = wire.side().commit(&[("b.txt", "two\n")], vec![one]);
+    let moved = to(&mut wire, "heads/main", Some(root));
+    push(&mut wire, &daniel(), vec![moved]).unwrap();
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let before = record_of(&wire);
+
+    // Without a policy no lease has a duration, so the branch of Mia is never free for Ana.
+    for time in [START, START + 100 * LEASE] {
+        wire.side().time.set(time);
+        let moved = to(&mut wire, "heads/feature", Some(one));
+        let reasons = refused(push(&mut wire, &ana(), vec![moved]));
+        assert!(
+            matches!(&reasons[..], [(feature, RefusalReason::Policy(_))] if feature == "heads/feature"),
+            "{reasons:?}"
+        );
+    }
+    unchanged(&wire, &before, &[("heads/feature", Some(root))]);
+    // The write owner reads no policy.
+    let moved = to(&mut wire, "heads/feature", Some(two));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+}
+
+#[test]
+fn a_policy_that_the_store_cannot_return_is_a_failure_of_the_hub() {
+    let (mut wire, root) = started();
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let before = record_of(&wire);
+    let one = wire.side().commit(&[("b.txt", "one\n")], vec![root]);
+    let update = signed(&ana(), vec![to(&mut wire, "heads/feature", Some(one))]);
+    // The blob of the policy is lost.
+    let store = wire.side().repository.objects();
+    let blob = store.put_blob(&Blob::new(POLICY)).unwrap();
+    fs::remove_file(store.object_path(&blob.object_id())).unwrap();
+
+    let error = wire.side().accept(&update).unwrap_err();
+    assert!(matches!(error, AcceptError::Policy(_)), "{error:?}");
+    assert_eq!(error.answer(), None);
+    assert_eq!(error.kind(), FailureKind::Other);
+    unchanged(&wire, &before, &[("heads/feature", Some(root))]);
+}
+
+#[test]
+fn an_agent_is_a_write_owner_by_its_identity() {
+    let mut wire = wire();
+    let bot = Seeded::new(6);
+    let agent = Identity::of(&Actor::agent("bot", "m", "s", "mia").unwrap());
+    let mut register = Register::parse(register_text().as_bytes()).unwrap();
+    let cosign = crate::signature::sign(
+        &mia(),
+        crate::signature::PayloadKind::Sponsorship,
+        &register::sponsorship_payload(&agent, Role::Member, &human("mia")),
+    )
+    .unwrap();
+    register
+        .add_agent(
+            agent.clone(),
+            Role::Member,
+            human("mia"),
+            bot.public(),
+            cosign,
+        )
+        .unwrap();
+    let root = wire.side().governed_by(&register.encode(), "one\n", vec![]);
+    let one = wire.side().commit(&[("b.txt", "one\n")], vec![root]);
+    let moved = to(&mut wire, "heads/main", Some(root));
+    push(&mut wire, &daniel(), vec![moved]).unwrap();
+
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    let created = push(&mut wire, &bot, vec![moved]).unwrap();
+    assert_eq!(created.actor(), &agent);
+    // The agent is the write owner whatever its model and its session are, and its sponsor is
+    // another identity.
+    let moved = to(&mut wire, "heads/feature", Some(one));
+    assert_eq!(
+        refused(push(&mut wire, &mia(), vec![moved.clone()])),
+        [(
+            "heads/feature".to_owned(),
+            RefusalReason::Leased {
+                holder: agent,
+                expires: START + LEASE
+            }
+        )]
+    );
+    push(&mut wire, &bot, vec![moved]).unwrap();
+    assert_eq!(wire.side().reference("heads/feature"), Some(one));
 }

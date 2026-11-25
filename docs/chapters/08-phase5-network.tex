@@ -779,10 +779,12 @@ Gebaut ist der Teil für Branches und Tags.
 und der Owner-Override folgen.
 
 \startitemize[n]
-\item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload und fragt
-den Authorizer ein erstes Mal, nach dem Stand der Referenzen, wie er gerade ist.
-Die Sperre der Referenzen öffnet nur der Beleg dieser Frage (ADR-002); entschieden wird unter
-der Sperre noch einmal.
+\item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload, bestimmt
+den Absender nach dem Stand der Referenzen, wie er gerade ist, und fragt den Authorizer ein
+erstes Mal.
+Die Sperre der Referenzen öffnet nur der Beleg dieser Frage (ADR-002).
+Dieser Durchgang kann ein Ref-Update wegen seines Absenders ablehnen, auch eines, das zugleich
+veraltet ist; angenommen wird erst unter der Sperre, wo alles noch einmal entschieden wird.
 \item Sie nimmt die Sperre der Referenzen, ohne zu warten.
 \item Sie liest die Aufzeichnung und prüft deren Ketten.
 Ein Ref-Update, dessen Eintrag geschrieben ist und dessen Bewegungen fehlen, vollendet sie jetzt.
@@ -799,8 +801,11 @@ Ref-Update, der den Schlüssel des Ref-Updates als aktiven Schlüssel führt.
 \stopitemize
 
 Alle Referenzen eines Ref-Updates bewegen sich oder keine.
-Jede Ablehnung fällt vor Schritt 8, also bevor ein Byte geschrieben ist: Die Aufzeichnung enthält
-nur angenommene Ref-Updates.
+Jede Ablehnung fällt vor Schritt 8, also bevor der Eintrag geschrieben ist: Die Aufzeichnung
+enthält nur angenommene Ref-Updates, und ein abgelehntes Ref-Update bewegt keine seiner
+Referenzen.
+Geschrieben hat ein solcher Aufruf höchstens in Schritt 3, für ein früheres, angenommenes
+Ref-Update.
 Der Hub antwortet auf zwei Arten.
 Ein veraltetes Ref-Update (\type{error stale}) nennt jede Referenz, deren \type{previous} oder
 \type{old} nicht passt, mit ihrem Stand auf dem Hub.
