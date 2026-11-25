@@ -10,8 +10,9 @@
 //!
 //! The small messages are line-oriented text: the first line, then lines `<keyword> <value>` in
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
-//! fetch request ([`FetchRequest`]), and the error ([`ErrorMessage`]). The object stream is
-//! binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
+//! fetch request ([`FetchRequest`]), the error ([`ErrorMessage`]), and, in the module [`record`],
+//! the ref update and the record entry that answers it as a receipt (ADR-025). The object stream
+//! is binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
 //! There are no capabilities and no optional fields: from the first release that carries the
 //! protocol on, every change of a message is a new number (see [`VERSION`]).
 //!
@@ -1092,6 +1093,13 @@ pub enum ParseError {
         /// Why the hash is invalid.
         source: ObjectIdParseError,
     },
+    /// A rule of a ref update or of a record entry is broken ([`record`]).
+    Record {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: record::RecordProblem,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -1117,6 +1125,7 @@ impl fmt::Display for ParseError {
             Self::InvalidRecordHash { line, source } => {
                 write!(f, "line {line}: invalid hash of a record entry: {source}")
             }
+            Self::Record { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
 }
@@ -1132,7 +1141,10 @@ impl Error for ParseError {
             Self::InvalidObjectId { source, .. } | Self::InvalidRecordHash { source, .. } => {
                 source.source()
             }
-            Self::NotUtf8 { .. } | Self::UnsupportedVersion { .. } | Self::Malformed { .. } => None,
+            Self::NotUtf8 { .. }
+            | Self::UnsupportedVersion { .. }
+            | Self::Malformed { .. }
+            | Self::Record { .. } => None,
         }
     }
 }
@@ -1627,6 +1639,10 @@ pub mod examples {
         ObjectStream,
         /// An error ([`ErrorMessage`](super::ErrorMessage)).
         Error,
+        /// A ref update ([`RefUpdate`](super::record::RefUpdate)).
+        RefUpdate,
+        /// A receipt, which is one record entry ([`RecordEntry`](super::record::RecordEntry)).
+        Receipt,
     }
 
     /// One example message.
@@ -1660,8 +1676,12 @@ pub mod examples {
         example!("objects-empty", ObjectStream),
         example!("error-unsupported-version", Error),
         example!("error-malformed", Error),
+        example!("ref-update", RefUpdate),
+        example!("receipt", Receipt),
     ];
 }
+
+pub mod record;
 
 #[cfg(test)]
 mod tests;

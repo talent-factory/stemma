@@ -1,6 +1,7 @@
 //! Signatures of proofs: SSHSIG with Ed25519 (ADR-003, ADR-020).
 //!
-//! A proof signs a log entry or an approval. The signed bytes are not the payload alone: a header
+//! A proof signs a log entry, an approval, a sponsorship, a ref update, or a record entry
+//! ([`PayloadKind`]). The signed bytes are not the payload alone: a header
 //! with the type and the format version of the payload comes first, so a
 //! signature of one type or version never verifies as another (domain separation). The SSHSIG
 //! namespace is [`NAMESPACE`] for all of them.
@@ -45,6 +46,12 @@ pub enum PayloadKind {
     /// The co-signature of the sponsor of an agent over the register entry of the agent
     /// (ADR-004).
     Sponsorship,
+    /// A ref update: the request of an actor to move references on a hub (ADR-025). The payload
+    /// is that of [`RefUpdatePayload`](crate::protocol::record::RefUpdatePayload).
+    RefUpdate,
+    /// An entry of the record of ref updates, signed by the key of the hub (ADR-025, ADR-026).
+    /// The payload is the text of the hash of the entry.
+    RecordEntry,
 }
 
 impl PayloadKind {
@@ -55,6 +62,8 @@ impl PayloadKind {
             Self::LogEntry => "log-entry",
             Self::Approval => "approval",
             Self::Sponsorship => "sponsorship",
+            Self::RefUpdate => "ref-update",
+            Self::RecordEntry => "record-entry",
         }
     }
 }

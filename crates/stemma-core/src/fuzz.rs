@@ -1,7 +1,8 @@
 //! The checks of the fuzz targets in `fuzz/` (STEMMA-20), one for each of the strict readers of
 //! a tree, a commit, an actor line, the index, an entry of the log, the journal of a purge, and the
 //! policy file (whose check is a fixed point, see [`policy`]),
-//! one for the readers of the protocol messages together ([`protocol`]),
+//! one for the readers of the protocol messages together ([`protocol`]), which include the ref
+//! update and the record entry,
 //! and one for the merge of the lines of a file ([`merge_lines`]), which is no reader.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
 //! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
@@ -150,7 +151,8 @@ pub fn policy(input: &[u8]) {
 const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 
 /// The messages of the protocol (ADR-023): the list of references, the fetch request, the error,
-/// and the object stream (`stemma_core::protocol`). The input is given to each of the four
+/// the object stream (`stemma_core::protocol`), and the ref update and the record entry
+/// (`stemma_core::protocol::record`, see [`protocol_record`]). The input is given to each of the
 /// readers, because a message does not name its type and each reader must refuse the messages of
 /// the others. A reader that accepts the input writes it back unchanged, and for a small message
 /// the value it read is one that the constructors build. A refusal is answered with an error
@@ -232,6 +234,7 @@ pub fn protocol(input: &[u8]) {
         }
         Err(error) => check_refusal(&error),
     }
+    protocol_record(input, &check_refusal);
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
         loop {
@@ -265,6 +268,98 @@ pub fn protocol(input: &[u8]) {
                     "the answer to a refusal is not read"
                 );
             }
+        }
+    }
+}
+
+/// The part of [`protocol`] for the ref update and the record entry (ADR-025). A fuzzer makes no
+/// signature, so the form is read without the check of the signatures: what that reader accepts
+/// is written back unchanged and is a value that the constructors build. The reader that checks
+/// the signatures accepts the same value or refuses for a signature alone, and it refuses
+/// everything else for the reason of the form. A record, which is entries one after the other,
+/// is written back unchanged as well.
+fn protocol_record(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseError)) {
+    use crate::protocol::record::{
+        read_record, HubAddress, Move, RecordEntry, RecordProblem, RefUpdate, RefUpdatePayload,
+    };
+    use crate::protocol::ParseError;
+    let rebuilt = |update: &RefUpdate| {
+        let payload = update.payload();
+        let moves = payload
+            .moves()
+            .iter()
+            .map(|moved| {
+                Move::try_new(
+                    moved.name().clone(),
+                    moved.previous(),
+                    moved.old_commit(),
+                    moved.new_commit(),
+                    moved.evidence(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("the reader took a move that the writer refuses");
+        let hub = HubAddress::try_new(payload.hub().as_str())
+            .expect("the reader took an address that the writer refuses");
+        let rebuilt =
+            RefUpdatePayload::try_new(hub, payload.repository(), moves, payload.key().clone());
+        assert_eq!(
+            rebuilt.as_ref(),
+            Ok(payload),
+            "the reader and the writer disagree"
+        );
+    };
+    let only_a_signature = |error: &ParseError, reasons: &[RecordProblem]| {
+        assert!(
+            matches!(error, ParseError::Record { reason, .. } if reasons.contains(reason)),
+            "a message whose form is right was refused for its form: {error}"
+        );
+    };
+    match RefUpdate::parse_unverified(input) {
+        Ok(update) => {
+            assert_eq!(update.encode(), input, "a second spelling was accepted");
+            rebuilt(&update);
+            match RefUpdate::parse(input) {
+                Ok(verified) => assert_eq!(verified, update),
+                Err(error) => {
+                    only_a_signature(&error, &[RecordProblem::ActorSignature]);
+                    check_refusal(&error);
+                }
+            }
+        }
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(RefUpdate::parse(input).as_ref(), Err(&error));
+        }
+    }
+    match RecordEntry::parse_unverified(input) {
+        Ok(entry) => {
+            assert_eq!(entry.encode(), input, "a second spelling was accepted");
+            rebuilt(entry.update());
+            match RecordEntry::parse(input) {
+                Ok(verified) => assert_eq!(verified, entry),
+                Err(error) => {
+                    only_a_signature(
+                        &error,
+                        &[RecordProblem::ActorSignature, RecordProblem::HubSignature],
+                    );
+                    check_refusal(&error);
+                }
+            }
+        }
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(RecordEntry::parse(input).as_ref(), Err(&error));
+        }
+    }
+    match read_record(input) {
+        Ok(entries) => {
+            let written: Vec<u8> = entries.iter().flat_map(RecordEntry::encode).collect();
+            assert_eq!(written, input, "a second spelling was accepted");
+        }
+        Err(error) => {
+            check_rejection(&error);
+            check_refusal(&error.error);
         }
     }
 }
@@ -400,8 +495,11 @@ pub(crate) mod tests {
                 crate::policy::Policy::parse(b).is_ok()
             }),
             ("protocol", super::protocol, |b| {
+                use crate::protocol::record::{RecordEntry, RefUpdate};
                 use crate::protocol::{ErrorMessage, FetchRequest, ObjectStreamReader, RefList};
                 RefList::parse(b).is_ok()
+                    || RefUpdate::parse(b).is_ok()
+                    || RecordEntry::parse(b).is_ok()
                     || FetchRequest::parse(b).is_ok()
                     || ErrorMessage::parse(b).is_ok()
                     || ObjectStreamReader::new(b, u64::MAX).is_ok_and(|mut reader| loop {

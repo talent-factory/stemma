@@ -145,6 +145,8 @@ fn written(example_name: &str) -> Vec<u8> {
         "error-malformed" => {
             ErrorMessage::from(&FetchRequest::parse(b"stemma-protocol 1\n").unwrap_err()).encode()
         }
+        "ref-update" => record::tests::example_update().encode(),
+        "receipt" => record::tests::example_receipt().encode(),
         other => panic!("no value for the example {other}"),
     }
 }
@@ -158,6 +160,8 @@ fn round_trips(message: Message, bytes: &[u8]) -> bool {
             read_stream(bytes, u64::MAX).is_ok_and(|objects| write_stream(&objects) == bytes)
         }
         Message::Error => ErrorMessage::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::RefUpdate => record::RefUpdate::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::Receipt => record::RecordEntry::parse(bytes).is_ok_and(|m| m.encode() == bytes),
     }
 }
 
@@ -192,6 +196,8 @@ fn every_example_is_refused_by_the_readers_of_the_other_messages() {
         Message::FetchRequest,
         Message::ObjectStream,
         Message::Error,
+        Message::RefUpdate,
+        Message::Receipt,
     ];
     for example in examples::ALL {
         for other in all {

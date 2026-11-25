@@ -497,9 +497,10 @@ Ref-Updates)
 _Avoid_: Reflog, protocol, journal
 
 **Record entry**:
-One entry of the record: the signed payload of the actor as received, the lines of the hub
-(number, time, register commit, policy commits, whether each move was a fast-forward, the actor,
-the hash of the previous entry), and the signature of the hub. (Eintrag der Aufzeichnung)
+One entry of the record: the ref update of the actor as received, with its signature, the lines
+of the hub (number, time, register commit, policy commits, whether each move was a fast-forward,
+the actor, the hash of the previous entry), and the signature of the hub. (Eintrag der
+Aufzeichnung)
 
 **Receipt**:
 The record entry that a hub returns for an accepted ref update. The clone checks it and only then

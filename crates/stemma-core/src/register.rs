@@ -1111,7 +1111,7 @@ const PEM_BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 const PEM_END: &str = "-----END SSH SIGNATURE-----";
 
 /// The body of an armored signature on one line, the form of a `cosign` line.
-fn signature_to_line(signature: &Signature) -> String {
+pub(crate) fn signature_to_line(signature: &Signature) -> String {
     signature
         .to_armored()
         .lines()
@@ -1121,7 +1121,7 @@ fn signature_to_line(signature: &Signature) -> String {
 
 /// Reads [`signature_to_line`] back. The text must be the one that it writes, so one signature has
 /// one encoding in the file.
-fn signature_from_line(text: &str) -> Option<Signature> {
+pub(crate) fn signature_from_line(text: &str) -> Option<Signature> {
     if text.is_empty()
         || !text
             .bytes()
