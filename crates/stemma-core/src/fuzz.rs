@@ -284,10 +284,10 @@ pub fn protocol(input: &[u8]) {
 fn rebuilt_refusal(
     refused: &crate::protocol::refusal::Refused,
 ) -> crate::protocol::refusal::Refused {
-    use crate::oplog::OperationName;
     use crate::protocol::record::HubAddress;
     use crate::protocol::refusal::{RefusalReason, Refused, RefusedReference, RefusedReferences};
     use crate::protocol::Reason;
+    use crate::refs::BranchName;
     let text = |reason: &Reason| {
         Reason::try_new(reason.as_str()).expect("the reader took a reason that the writer refuses")
     };
@@ -300,23 +300,23 @@ fn rebuilt_refusal(
             let references = references
                 .references()
                 .iter()
-                .map(|refused| RefusedReference {
-                    name: refused.name.clone(),
-                    reason: match &refused.reason {
-                        RefusalReason::Denied { operation } => RefusalReason::Denied {
-                            operation: OperationName::try_new(operation.to_string())
-                                .expect("the reader took an operation that the writer refuses"),
-                        },
+                .map(|refused| {
+                    let reason = match refused.reason() {
                         RefusalReason::BadRegister(reason) => {
                             RefusalReason::BadRegister(text(reason))
                         }
-                        RefusalReason::Conflict(reason) => RefusalReason::Conflict(text(reason)),
+                        RefusalReason::Conflict(with) => RefusalReason::Conflict(
+                            BranchName::try_new(with.as_str())
+                                .expect("the reader took a name that the writer refuses"),
+                        ),
                         RefusalReason::Incomplete(reason) => {
                             RefusalReason::Incomplete(text(reason))
                         }
                         RefusalReason::Policy(reason) => RefusalReason::Policy(text(reason)),
                         other => other.clone(),
-                    },
+                    };
+                    RefusedReference::try_new(refused.name().clone(), reason)
+                        .expect("the reader took a reason that does not fit its reference")
                 })
                 .collect();
             Refused::References(

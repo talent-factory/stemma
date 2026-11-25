@@ -380,7 +380,14 @@ through the operation log (ADR-011).
 
 A policy at the tip of `main` that is missing, no file or not valid refuses the reference
 (`policy`), because the sender can read that commit; a policy that the store cannot return is a
-failure of the hub. The commit of a first push that records an open conflict is refused as
+failure of the hub, classified as damage where an object on the way to it is missing or not in
+canonical form.
+
+**The time of the hub does not step back.** The leases are counted by the time in the entries,
+so an entry never carries an earlier time than the entry before it; the same second is allowed.
+The rule stands in the chain: the writer refuses such an entry before it writes, which the
+accepting operation reports as a failure of the hub, and the reader of a record refuses it too.
+A chain that began in the middle knows no time until it has read an entry. The commit of a first push that records an open conflict is refused as
 `bad-register`: `main` never holds such a commit (ADR-019).
 
 **The destination of the record** is a trait with two methods: read the whole record, and append
@@ -389,19 +396,15 @@ so a second process of the hub cannot write between that reading and the entry. 
 checks the whole record with every call, which is linear in the entries; the trigger for keeping
 the state of the chains between two calls is the measured holding time of the lock.
 
-**The order.** Before the lock: the address and the ID against the payload, the sender by the
-references as they are (step 6 below, read without the lock), and one question to the authorizer
-for every reference, because the lock of the references is opened with the proof of that
-question only (ADR-002). This departs from the rule above that only pure functions run before
-the lock: the pass reads the tip of `main`, and for a first push the pushed commit. It can
-refuse an update for its sender before the lock is taken (the key, the first push, the
-authorizer), so such an update is answered `refused` even if it is `stale` as well. It accepts
-nothing: everything is decided again under the lock. Where `main` is missing, the pass takes the
-commit of `main` from the record, so a first push that stopped after its entry does not make the
-repository look empty to the next sender. This one read of the record happens without the lock,
-so the entry of another process may be half written: a record that cannot be read there is
-answered as a held lock beside a writer and counts as unknown otherwise, and the pass under the
-lock reads the record again. Under the lock:
+**The order.** Before the lock: the address and the ID against the payload, and nothing of the
+repository. The signature was checked when the update was read, so only pure functions run
+before the lock, as the rule above demands. The lock of the references opens a write with the
+proof of the authorizer only (ADR-002), and the question to the authorizer depends on the
+register at the tip of `main`, which is read under the lock. The operation therefore takes the
+lock as a value that opens no write and turns it into the lock of a writer with the proof, once
+all checks of the update have passed. For an earlier update that stopped, the question is asked
+again by the register that its entry names, and its moves are made with that proof. Under the
+lock:
 
 1. The record is read and its chains are checked.
 2. An update that stopped after its entry is completed (see below), and every branch and tag
@@ -451,7 +454,9 @@ with an actor: for an agent, the model and the session, which are no part of the
 **A stop between the entry and the moves.** The entry is durable before the first reference
 moves (the order of ADR-011), so a process that ends in between leaves an accepted update whose
 references stand partly at their old values. The next call for the repository reads the last
-entry under the lock and makes its moves again before it judges its own update. No earlier entry
+entry under the lock and makes its moves again before it judges its own update, with the proof
+of the authorizer for the actor of that entry by the register that the entry names. An entry
+whose actor does not stand there was not written by the operation; the call fails. No earlier entry
 can be incomplete, because every call completes the last one before it appends. A reference of
 the last entry that is at neither its old nor its new value was not left by a stop; the call
 fails. A call whose storage fails after the entry reports that the entry is written and names
@@ -486,6 +491,11 @@ ref <qualified name> <reason> <facts>               or one or more `ref` lines
   once more.
 - After a refusal of the names or of the connectivity of the commit of a first push, the other
   references are not judged, because their register lies in that commit.
+
+A reason fits its reference, for the constructor and for the reader: `gate`, `no-register`,
+`bad-register` and `not-owner` are reasons of `heads/main`, `leased` and `policy` of another
+branch, and `denied` names `push` for a branch and `tag` or `untag` for a tag. The name of a
+`conflict` is a reference of the same kind or a directory of them, written as a branch name.
 
 The reasons are one type, `Refused`, which the hub answers and the client reads. The holder of a
 lease is an identity there, as the record names it, where the local refusal names the actor of

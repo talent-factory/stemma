@@ -26,10 +26,11 @@ fn reason(text: &str) -> Reason {
 }
 
 fn refused(reference: &str, reason: RefusalReason) -> RefusedReference {
-    RefusedReference {
-        name: name(reference),
-        reason,
-    }
+    RefusedReference::try_new(name(reference), reason).unwrap()
+}
+
+fn branch(text: &str) -> BranchName {
+    BranchName::try_new(text).unwrap()
 }
 
 fn references(references: Vec<RefusedReference>) -> ErrorMessage {
@@ -63,7 +64,7 @@ pub(crate) fn example_refused() -> ErrorMessage {
         refused(
             "tags/v0.2.0",
             RefusalReason::Denied {
-                operation: OperationName::try_new("tag").unwrap(),
+                operation: RefOperation::Tag,
             },
         ),
         refused("heads/main", RefusalReason::Gate),
@@ -206,13 +207,7 @@ fn a_refusal_of_references_carries_every_reason_with_its_facts() {
     );
     let all = references(vec![
         refused("heads/a", RefusalReason::Reserved),
-        refused("heads/b", RefusalReason::NoRegister),
-        refused(
-            "heads/c",
-            RefusalReason::BadRegister(reason("line 2: not sorted")),
-        ),
-        refused("heads/d", RefusalReason::NotOwner),
-        refused("heads/e", RefusalReason::Conflict(reason("E"))),
+        refused("heads/e", RefusalReason::Conflict(branch("E/x"))),
         refused(
             "heads/f",
             RefusalReason::Incomplete(reason("the tree b3:00 is missing")),
@@ -225,13 +220,88 @@ fn a_refusal_of_references_carries_every_reason_with_its_facts() {
                 expires: -1,
             },
         ),
+        refused(
+            "heads/i",
+            RefusalReason::Denied {
+                operation: RefOperation::Push,
+            },
+        ),
+        refused(
+            "tags/v1",
+            RefusalReason::Denied {
+                operation: RefOperation::Untag,
+            },
+        ),
     ]);
     assert_eq!(
         round_trip(&all),
-        "stemma-protocol 1\nerror refused\nref heads/a reserved -\nref heads/b no-register -\n\
-         ref heads/c bad-register line 2: not sorted\nref heads/d not-owner -\n\
-         ref heads/e conflict E\nref heads/f incomplete the tree b3:00 is missing\n\
-         ref heads/g policy no policy file\nref heads/h leased agent bot -1\n"
+        "stemma-protocol 1\nerror refused\nref heads/a reserved -\nref heads/e conflict E/x\n\
+         ref heads/f incomplete the tree b3:00 is missing\n\
+         ref heads/g policy no policy file\nref heads/h leased agent bot -1\n\
+         ref heads/i denied push\nref tags/v1 denied untag\n"
+    );
+    // The reasons of the first push are reasons of `main`.
+    for (reason, line) in [
+        (RefusalReason::NoRegister, "no-register -"),
+        (
+            RefusalReason::BadRegister(reason("line 2: not sorted")),
+            "bad-register line 2: not sorted",
+        ),
+        (RefusalReason::NotOwner, "not-owner -"),
+        (RefusalReason::Gate, "gate -"),
+    ] {
+        let message = references(vec![refused("heads/main", reason)]);
+        assert!(round_trip(&message).ends_with(&format!("ref heads/main {line}\n")));
+    }
+}
+
+#[test]
+fn a_reason_fits_its_reference_for_the_constructor_and_for_the_reader() {
+    let leased = || RefusalReason::Leased {
+        holder: "human mia".parse().unwrap(),
+        expires: 7,
+    };
+    let denied = |operation| RefusalReason::Denied { operation };
+    let misfits = [
+        ("heads/a", RefusalReason::Gate, "gate -"),
+        ("tags/main", RefusalReason::Gate, "gate -"),
+        ("heads/a", RefusalReason::NoRegister, "no-register -"),
+        ("heads/a", RefusalReason::NotOwner, "not-owner -"),
+        (
+            "heads/a",
+            RefusalReason::BadRegister(reason("x")),
+            "bad-register x",
+        ),
+        ("heads/main", leased(), "leased human mia 7"),
+        ("tags/v1", leased(), "leased human mia 7"),
+        ("heads/main", RefusalReason::Policy(reason("x")), "policy x"),
+        ("tags/v1", RefusalReason::Policy(reason("x")), "policy x"),
+        ("heads/a", denied(RefOperation::Tag), "denied tag"),
+        ("heads/a", denied(RefOperation::Untag), "denied untag"),
+        ("tags/v1", denied(RefOperation::Push), "denied push"),
+    ];
+    for (reference, reason, line) in misfits {
+        assert_eq!(
+            RefusedReference::try_new(name(reference), reason),
+            Err(RecordProblem::RefusalReason),
+            "{reference} {line}"
+        );
+        assert_eq!(
+            parse(&format!("error refused\nref {reference} {line}\n")),
+            Err(ParseError::Record {
+                line: 3,
+                reason: RecordProblem::RefusalReason
+            }),
+            "{reference} {line}"
+        );
+    }
+    let fit = refused("heads/main", RefusalReason::Incomplete(reason("x")));
+    assert_eq!(fit.name(), &name("heads/main"));
+    assert_eq!(fit.reason(), &RefusalReason::Incomplete(reason("x")));
+    assert_eq!(RefOperation::Push.operation_name().to_string(), "push");
+    assert_eq!(
+        RefOperation::ALL.map(RefOperation::name),
+        ["push", "tag", "untag"]
     );
 }
 
@@ -265,7 +335,7 @@ fn refused_references_are_at_least_one_and_each_once() {
     );
     assert_eq!(
         RefusedReferences::try_new(vec![
-            refused("heads/a", RefusalReason::Gate),
+            refused("heads/a", RefusalReason::Incomplete(reason("x"))),
             refused("heads/a", RefusalReason::Reserved)
         ]),
         Err(RecordProblem::DuplicateReference)
@@ -285,7 +355,7 @@ fn refused_references_are_at_least_one_and_each_once() {
     assert!(!Refused::References(two).wants_upload());
     assert!(!Refused::NoMain.wants_upload());
     let incomplete = RefusedReferences::try_new(vec![
-        refused("heads/a", RefusalReason::Gate),
+        refused("heads/a", RefusalReason::Reserved),
         refused("heads/b", RefusalReason::Incomplete(reason("missing"))),
     ])
     .unwrap();
@@ -310,6 +380,7 @@ fn the_reader_of_a_refusal_refuses_what_the_writer_does_not_write() {
         "ref heads/a no-register x\n",
         "ref heads/a not-owner x\n",
         "ref heads/a unknown -\n",
+        "ref heads/a denied commit\n",
         "ref heads/a denied Tag\n",
         "ref heads/a denied tag more\n",
         "ref heads/a leased human\n",
@@ -334,15 +405,15 @@ fn the_reader_of_a_refusal_refuses_what_the_writer_does_not_write() {
     ));
     // One `update` line and nothing else, and no `update` line after a `ref` line.
     assert_eq!(
-        parse("error refused\nupdate no-main -\nref heads/a gate -\n"),
+        parse("error refused\nupdate no-main -\nref heads/a reserved -\n"),
         Err(at(4, Malformed::Unexpected))
     );
     assert_eq!(
-        parse("error refused\nref heads/a gate -\nupdate no-main -\n"),
+        parse("error refused\nref heads/a reserved -\nupdate no-main -\n"),
         Err(at(4, Malformed::Unexpected))
     );
     assert_eq!(
-        parse("error refused\nref heads/b gate -\nref heads/a gate -\n"),
+        parse("error refused\nref heads/b reserved -\nref heads/a reserved -\n"),
         Err(at(4, Malformed::Order))
     );
     assert_eq!(
@@ -361,10 +432,13 @@ fn the_reader_of_a_refusal_refuses_what_the_writer_does_not_write() {
         parse("error refused\nref heads/a incomplete \u{2028}\n"),
         Err(at(3, Malformed::Reason))
     );
-    assert_eq!(
-        parse("error refused\nref heads/a conflict \n"),
-        Err(at(3, Malformed::Reason))
-    );
+    for name in ["", "a b", "a//b", "-x/"] {
+        assert_eq!(
+            parse(&format!("error refused\nref heads/a conflict {name}\n")),
+            Err(at(3, Malformed::Fields)),
+            "{name:?}"
+        );
+    }
     assert!(matches!(
         parse("error refused\nref a gate -\n"),
         Err(ParseError::InvalidName { line: 3, .. })

@@ -140,6 +140,9 @@ pub enum RecordProblem {
     FastForward,
     /// The first entry of a record names a previous entry, or a later entry names none.
     Previous,
+    /// The reason of a refusal does not fit its reference: a reason of `main` for another name,
+    /// a reason of a branch for a tag, or an operation of the other kind of reference.
+    RefusalReason,
 }
 
 impl fmt::Display for RecordProblem {
@@ -179,6 +182,7 @@ impl fmt::Display for RecordProblem {
             Self::Previous => {
                 "only the first entry of a record names no previous entry, and it names none"
             }
+            Self::RefusalReason => "the reason of the refusal does not fit the reference",
         })
     }
 }
@@ -1249,6 +1253,15 @@ pub enum ChainError {
     /// The chain began in the middle of the record ([`Chain::after`]), so it does not know the
     /// last entry of every name, and no entry is written by it.
     NotWhole,
+    /// The time of the entry lies before the time of the entry before it. The time of the hub
+    /// orders the leases (ADR-025), so it never steps back inside one record; two entries may
+    /// carry the same second.
+    Time {
+        /// The time of the entry before.
+        last: i64,
+        /// The time of the entry.
+        found: i64,
+    },
 }
 
 impl fmt::Display for ChainError {
@@ -1274,6 +1287,11 @@ impl fmt::Display for ChainError {
             Self::Full => f.write_str("the record holds the largest number of an entry"),
             Self::NotWhole => f.write_str(
                 "the record was not read from its first entry, so no entry is written by it",
+            ),
+            Self::Time { last, found } => write!(
+                f,
+                "the time {found} of the record entry lies before the time {last} of the entry \
+                 before it"
             ),
         }
     }
@@ -1301,6 +1319,8 @@ pub struct Chain {
     /// Whether every entry from the first one was read, so that a name that is not in `names`
     /// was never listed.
     whole: bool,
+    /// The time of the last entry that was written or read, or `None` before the first one.
+    time: Option<i64>,
 }
 
 impl Chain {
@@ -1312,6 +1332,7 @@ impl Chain {
             tip: None,
             names: BTreeMap::new(),
             whole: true,
+            time: None,
         }
     }
 
@@ -1331,6 +1352,7 @@ impl Chain {
             tip: (number > 0).then_some(hash),
             names: BTreeMap::new(),
             whole: number == 0,
+            time: None,
         }
     }
 
@@ -1429,6 +1451,7 @@ impl Chain {
         let hash = entry.hash();
         self.last = entry.number;
         self.tip = Some(hash);
+        self.time = Some(entry.time);
         for moved in &entry.update.payload.moves {
             self.names.insert(
                 moved.name.clone(),
@@ -1469,7 +1492,8 @@ impl Chain {
     /// every name, so the writer must know every name too. The same if the update does not
     /// continue the record ([`check`](Self::check)) or the record is full.
     /// [`WriteError::FastForward`] if `acceptance` names a fast-forward for a reference that the
-    /// update does not list or that it creates or deletes,
+    /// update does not list or that it creates or deletes, [`WriteError::Chain`] with
+    /// [`ChainError::Time`] if the time of `acceptance` lies before the time of the last entry,
     /// [`WriteError::Sign`] with the error of the signer, [`WriteError::Signature`] if the
     /// signature that it returns does not verify for the key that it names and the hash of the
     /// entry, and [`WriteError::Io`] if the destination fails.
@@ -1484,6 +1508,8 @@ impl Chain {
             return Err(WriteError::Chain(ChainError::NotWhole));
         }
         self.check(update).map_err(WriteError::Chain)?;
+        self.not_before(acceptance.time)
+            .map_err(WriteError::Chain)?;
         let number = self.next_number().map_err(WriteError::Chain)?;
         let moves = &update.payload.moves;
         if let Some(name) = acceptance.fast_forward.iter().find(|name| {
@@ -1539,8 +1565,9 @@ impl Chain {
     /// another hash, [`ChainError::Full`] if the last entry carries the largest number, so that
     /// no entry can follow it, [`ChainError::Number`] for any other number that is not the next
     /// one, which includes the last entry read twice, [`ChainError::Previous`] if `previous` is
-    /// not the hash of the last entry, and [`ChainError::Stale`] from [`check`](Self::check).
-    /// The chain does not move on an error.
+    /// not the hash of the last entry, [`ChainError::Stale`] from [`check`](Self::check), and
+    /// [`ChainError::Time`] if the time of the entry lies before the time of the entry before
+    /// it. The chain does not move on an error.
     pub fn accept(&mut self, entry: &RecordEntry) -> Result<(), ChainError> {
         self.continues(entry)?;
         self.advance(entry);
@@ -1568,7 +1595,17 @@ impl Chain {
                 number: entry.number,
             });
         }
-        self.check(&entry.update)
+        self.check(&entry.update)?;
+        self.not_before(entry.time)
+    }
+
+    /// Whether an entry with this time may follow the last one: the time of the hub does not
+    /// step back. A chain that began in the middle knows no time until it read an entry.
+    fn not_before(&self, time: i64) -> Result<(), ChainError> {
+        match self.time {
+            Some(last) if time < last => Err(ChainError::Time { last, found: time }),
+            _ => Ok(()),
+        }
     }
 
     /// Reads entries into the chain and checks everything that a reader of a record checks

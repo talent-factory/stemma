@@ -23,7 +23,11 @@ The open items move to Phase 4 (agent identities) and to a later phase (a config
   argument: the three locks of the references (`lock_writer`, `lock_purge`, `take_over_lock`), the
   mutators of the `RefStore` trait (`set_head`, `update_branch`), and the installation of a new
   repository for `init`. A write path of `Repository` that opens its write through these functions
-  and never asks the authorizer has no `Allowed` to pass, so it does not compile. The proof does not say which operation was allowed,
+  and never asks the authorizer has no `Allowed` to pass, so it does not compile. The accepting
+  operation of a hub (ADR-025) must read under the lock before it can ask, because its question
+  depends on the register at the tip of `main`. It takes the lock as a value that opens no write
+  (`lock_held`, `HeldLock`): no function that changes a pointer accepts it, and it becomes the
+  lock of a writer only with an `Allowed` (STEMMA-296). The proof does not say which operation was allowed,
   and it is bound to no target and no repository: it is the check that the question was asked,
   and the call that asks stays responsible for writing what it asked for. Two things
   are not covered by the type. The operation log is written through `Repository::append` and

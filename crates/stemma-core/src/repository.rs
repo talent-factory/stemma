@@ -80,7 +80,7 @@ mod switch;
 mod track;
 mod worktree;
 
-pub use accept::{AcceptContext, AcceptError, RecordDestination};
+pub use accept::{AcceptContext, AcceptError, RecordDestination, RecordStep};
 pub use bounds::Pause;
 pub use check::CheckError;
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};

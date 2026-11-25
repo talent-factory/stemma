@@ -6,6 +6,10 @@
 //! references, and the installation of a new repository) take it as an argument. A write path that
 //! opens its write through them and never asks the authorizer has no [`Allowed`] to pass, so it
 //! does not compile. What the type does not cover is listed in ADR-002.
+//!
+//! The accepting operation of a hub must read under the lock before it can ask (ADR-025). It
+//! holds the lock as a [`HeldLock`](crate::refs::HeldLock), which no function that changes a
+//! pointer takes, and turns it into the lock of a writer with its [`Allowed`].
 
 use std::fmt;
 

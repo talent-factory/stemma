@@ -1457,6 +1457,23 @@ pub(crate) struct WriteLock {
     _lock: Lock,
 }
 
+/// The lock of the references while an operation holds it and has not yet shown that it may
+/// write (ADR-002, ADR-025). No function that changes a pointer takes this value: the holder
+/// reads under it, and it becomes a [`WriteLock`] only with the answer of the authorizer
+/// ([`into_writer`](Self::into_writer)). The accepting operation of a hub holds it, because the
+/// question to the authorizer depends on state that it may only read under the lock.
+#[must_use]
+pub(crate) struct HeldLock {
+    lock: Lock,
+}
+
+impl HeldLock {
+    /// The lock for a writer, with the proof that the authorizer allowed the operation.
+    pub(crate) fn into_writer(self, _allowed: &Allowed) -> WriteLock {
+        WriteLock { _lock: self.lock }
+    }
+}
+
 /// The lock of the references while a purge holds it, from its plan to its end (ADR-014). The
 /// lock is not re-entrant, so the purge moves the pointers through
 /// [`FsRefStore::purge_moves`], which takes this value as the proof that the lock is held.
@@ -1665,20 +1682,6 @@ impl FsRefStore {
         exists(&self.lock_path())
     }
 
-    /// The error [`RefError::Locked`] if a writer holds the lock now
-    /// ([`is_locked`](Self::is_locked)), for a caller that must not go on beside a writer and
-    /// has no proof to take the lock with. The holder is not read, so it is
-    /// [`LockHolder::Unknown`].
-    pub(crate) fn refuse_beside_writer(&self) -> Result<(), RefError> {
-        if self.is_locked()? {
-            return Err(RefError::Locked {
-                path: self.lock_path(),
-                holder: LockHolder::Unknown,
-            });
-        }
-        Ok(())
-    }
-
     fn journal_path(&self) -> PathBuf {
         self.root.join(PURGE_JOURNAL)
     }
@@ -1850,6 +1853,20 @@ impl FsRefStore {
     pub(crate) fn lock_writer(&self, _allowed: &Allowed) -> Result<WriteLock, RefError> {
         self.require_root()?;
         self.lock().map(|lock| WriteLock { _lock: lock })
+    }
+
+    /// Takes the lock for an operation that must read under it before it can ask the
+    /// authorizer: as [`lock`](Self::lock), so a journal of a purge refuses it, and the scratch
+    /// in `tmp/` that no writer owns any more is removed. The value opens no write; see
+    /// [`HeldLock`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Locked`] or [`RefError::PurgePending`], and [`RefError::Io`] if the
+    /// lock file cannot be made.
+    pub(crate) fn lock_held(&self) -> Result<HeldLock, RefError> {
+        self.require_root()?;
+        self.lock().map(|lock| HeldLock { lock })
     }
 
     /// Takes the lock for a purge that starts: as [`lock`](Self::lock), and a journal that exists
@@ -2627,9 +2644,9 @@ impl FsRefStore {
         Ok(Self::after_move(done, deleted))
     }
 
-    /// What a branch or a tag is for the accepting operation of a bare repository (ADR-025),
-    /// under the lock of the references that the caller holds (`_lock`): its commit, or `None`
-    /// if it does not exist.
+    /// What a branch or a tag is for the accepting operation of a bare repository (ADR-025):
+    /// its commit, or `None` if it does not exist. The caller holds the lock of the references
+    /// ([`HeldLock`] or [`WriteLock`]), so the answer holds until it releases it.
     ///
     /// # Errors
     ///
@@ -2637,7 +2654,6 @@ impl FsRefStore {
     /// reference cannot be created, and the errors of reading it.
     pub(crate) fn recorded(
         &self,
-        _lock: &WriteLock,
         kind: RefKind,
         name: &BranchName,
     ) -> Result<Option<CommitId>, RefError> {
@@ -2660,8 +2676,8 @@ impl FsRefStore {
     /// reference agree with it, whatever it was. It is the move of an accepted update and the
     /// completion of one that stopped after its entry. Returns whether the reference changed.
     ///
-    /// The caller holds the lock of the references (`_lock`) and has checked before the entry
-    /// was written that the name can be taken ([`recorded`](Self::recorded)).
+    /// The caller holds the lock of the references for a writer (`_lock`) and has checked
+    /// before the entry was written that the name can be taken ([`recorded`](Self::recorded)).
     ///
     /// # Errors
     ///
@@ -2672,7 +2688,7 @@ impl FsRefStore {
     /// changed and the directory could not be flushed.
     pub(crate) fn set_recorded(
         &self,
-        lock: &WriteLock,
+        _lock: &WriteLock,
         kind: RefKind,
         name: &BranchName,
         new: Option<CommitId>,
@@ -2681,7 +2697,7 @@ impl FsRefStore {
         if let Some(new) = &new {
             Self::require_commit(new, objects)?;
         }
-        let current = match self.recorded(lock, kind, name) {
+        let current = match self.recorded(kind, name) {
             Ok(current) => current,
             // What holds the name is in the way of a reference only: nothing is there to delete.
             Err(RefError::Conflict { .. }) if new.is_none() => None,

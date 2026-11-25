@@ -388,7 +388,10 @@ impl Classify for crate::repository::AcceptError {
             Self::Connectivity(error) => error.kind(),
             Self::History(error) => error.kind(),
             // The policy could not be read; one that is not valid is a refusal.
-            Self::Policy(_) => FailureKind::Other,
+            Self::Policy { damaged: true, .. } => FailureKind::Damaged,
+            Self::Policy { damaged: false, .. } => FailureKind::Other,
+            // An entry that the operation did not write.
+            Self::LastEntry { .. } => FailureKind::Damaged,
             // A register of `main` that does not parse, or a `main` without one, is no state
             // that an accepted update left.
             Self::Register(error) => match &**error {

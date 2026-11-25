@@ -38,7 +38,7 @@
 //! denied <operation>                 leased <human or agent> <id> <expiry>
 //! gate -                             reserved -
 //! no-register -                      not-owner -
-//! bad-register <one line>            conflict <one line>
+//! bad-register <one line>            conflict <name>
 //! incomplete <one line>              policy <one line>
 //! ```
 //!
@@ -59,6 +59,8 @@ use super::{
 };
 use crate::object::{parse_seconds, CommitId};
 use crate::oplog::OperationName;
+use crate::pull::TARGET;
+use crate::refs::{BranchName, RefKind};
 use crate::register::Identity;
 
 /// The text of a value that is not there.
@@ -72,8 +74,8 @@ pub enum RefusalReason {
     /// The authorizer refused the operation on the reference: `push` for a branch, `tag` to set a
     /// tag, `untag` to delete one.
     Denied {
-        /// The name of the operation.
-        operation: OperationName,
+        /// The operation.
+        operation: RefOperation,
     },
     /// Another actor holds the write ownership of the branch, and its lease has not ended.
     Leased {
@@ -99,8 +101,8 @@ pub enum RefusalReason {
     NotOwner,
     /// The name of a new reference cannot be taken: another reference, or a directory of
     /// references, holds it or a part of it, also one that differs in case only. Carries the name
-    /// that is in the way.
-    Conflict(Reason),
+    /// that is in the way, a reference of the same kind or a directory of them.
+    Conflict(BranchName),
     /// The objects of the new commit do not hold together: one is missing, has another kind, or
     /// is refused by its reader. The sender uploads again (ADR-023). Carries what the
     /// connectivity check reported.
@@ -182,9 +184,11 @@ impl RefusalReason {
             }
         };
         match word {
-            "denied" => OperationName::try_new(facts)
+            "denied" => RefOperation::ALL
+                .into_iter()
+                .find(|operation| operation.name() == facts)
                 .map(|operation| Self::Denied { operation })
-                .map_err(|_| malformed(line, Malformed::Fields)),
+                .ok_or(malformed(line, Malformed::Fields)),
             "leased" => {
                 let (holder, expires) = facts
                     .rsplit_once(' ')
@@ -203,7 +207,10 @@ impl RefusalReason {
             "no-register" => none(Self::NoRegister),
             "bad-register" => text(Self::BadRegister),
             "not-owner" => none(Self::NotOwner),
-            "conflict" => text(Self::Conflict),
+            "conflict" => facts
+                .parse()
+                .map(Self::Conflict)
+                .map_err(|_| malformed(line, Malformed::Fields)),
             "incomplete" => text(Self::Incomplete),
             "policy" => text(Self::Policy),
             _ => Err(malformed(line, Malformed::Fields)),
@@ -215,13 +222,101 @@ fn problem(line: usize, reason: RecordProblem) -> ParseError {
     ParseError::Record { line, reason }
 }
 
-/// A reference of a ref update that is refused, with the reason.
+/// A reference of a ref update that is refused, with the reason. Every value carries a reason
+/// that can be given for its reference ([`try_new`](Self::try_new)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusedReference {
+    name: QualifiedName,
+    reason: RefusalReason,
+}
+
+impl RefusedReference {
+    /// A refused reference.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordProblem::RefusalReason`] if the reason does not fit the reference:
+    /// [`Gate`](RefusalReason::Gate), [`NoRegister`](RefusalReason::NoRegister),
+    /// [`BadRegister`](RefusalReason::BadRegister), and [`NotOwner`](RefusalReason::NotOwner)
+    /// are reasons of `heads/main` only; [`Leased`](RefusalReason::Leased) and
+    /// [`Policy`](RefusalReason::Policy) are reasons of a branch other than `main`; and
+    /// [`Denied`](RefusalReason::Denied) names `push` for a branch and `tag` or `untag` for a
+    /// tag. [`Reserved`](RefusalReason::Reserved), [`Conflict`](RefusalReason::Conflict), and
+    /// [`Incomplete`](RefusalReason::Incomplete) fit every reference.
+    pub fn try_new(name: QualifiedName, reason: RefusalReason) -> Result<Self, RecordProblem> {
+        let branch = name.kind() == RefKind::Branch;
+        let main = branch && name.name().as_str() == TARGET;
+        let fits = match &reason {
+            RefusalReason::Gate
+            | RefusalReason::NoRegister
+            | RefusalReason::BadRegister(_)
+            | RefusalReason::NotOwner => main,
+            RefusalReason::Leased { .. } | RefusalReason::Policy(_) => branch && !main,
+            RefusalReason::Denied { operation } => (operation.kind() == RefKind::Branch) == branch,
+            RefusalReason::Reserved | RefusalReason::Conflict(_) | RefusalReason::Incomplete(_) => {
+                true
+            }
+        };
+        if fits {
+            Ok(Self { name, reason })
+        } else {
+            Err(RecordProblem::RefusalReason)
+        }
+    }
+
     /// The qualified name.
-    pub name: QualifiedName,
+    pub fn name(&self) -> &QualifiedName {
+        &self.name
+    }
+
     /// Why the reference is refused.
-    pub reason: RefusalReason,
+    pub fn reason(&self) -> &RefusalReason {
+        &self.reason
+    }
+}
+
+/// An operation that the authorizer is asked for when a reference moves on a hub (ADR-025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefOperation {
+    /// A branch is created, moved, or deleted.
+    Push,
+    /// A tag is set.
+    Tag,
+    /// A tag is deleted.
+    Untag,
+}
+
+impl RefOperation {
+    /// Every operation.
+    pub const ALL: [Self; 3] = [Self::Push, Self::Tag, Self::Untag];
+
+    /// The word of the operation: `push`, `tag`, or `untag`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::Tag => "tag",
+            Self::Untag => "untag",
+        }
+    }
+
+    /// The kind of reference that the operation moves.
+    pub const fn kind(self) -> RefKind {
+        match self {
+            Self::Push => RefKind::Branch,
+            Self::Tag | Self::Untag => RefKind::Tag,
+        }
+    }
+
+    /// The name that the authorizer is asked with, as the operation log names operations.
+    pub fn operation_name(self) -> OperationName {
+        OperationName::try_new(self.name()).expect("a valid operation name")
+    }
+}
+
+impl fmt::Display for RefOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// The refused references of one ref update: at least one, each once, in the order of the
@@ -470,7 +565,9 @@ pub(super) fn read_refused(lines: &mut Lines<'_>) -> Result<Refused, ParseError>
         };
         let name = parse_name(line, name, references.last().map(|refused| &refused.name))?;
         let reason = RefusalReason::parse(line, word, facts)?;
-        references.push(RefusedReference { name, reason });
+        let refused =
+            RefusedReference::try_new(name, reason).map_err(|reason| problem(line, reason))?;
+        references.push(refused);
     }
     if references.is_empty() {
         return Err(malformed(lines.line, Malformed::Expected("ref")));

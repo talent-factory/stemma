@@ -13,6 +13,7 @@ use crate::failure::{Classify, FailureKind};
 use crate::fault;
 use crate::index::Index;
 use crate::object::{Blob, Commit, FileMode};
+use crate::oplog::OperationName;
 use crate::policy;
 use crate::protocol::record::tests::Seeded;
 use crate::protocol::record::{RecordProblem, RefUpdatePayload, StaleReference};
@@ -361,7 +362,7 @@ fn refused(answer: Result<RecordEntry, ErrorMessage>) -> Vec<(String, RefusalRea
         Err(ErrorMessage::Refused(Refused::References(refused))) => refused
             .references()
             .iter()
-            .map(|refused| (refused.name.to_string(), refused.reason.clone()))
+            .map(|refused| (refused.name().to_string(), refused.reason().clone()))
             .collect(),
         other => panic!("{other:?}"),
     }
@@ -890,7 +891,10 @@ fn the_authorizer_is_asked_for_push_tag_and_untag() {
     push(&mut wire, &mia(), vec![tagged]).unwrap();
     let before = record_of(&wire);
     let denied = |operation: &str| RefusalReason::Denied {
-        operation: OperationName::try_new(operation).unwrap(),
+        operation: RefOperation::ALL
+            .into_iter()
+            .find(|found| found.name() == operation)
+            .unwrap(),
     };
     let cases = [
         ("push", to(&mut wire, "heads/feature", Some(root))),
@@ -955,7 +959,7 @@ fn a_name_that_is_reserved_or_held_by_another_reference_is_refused() {
     push(&mut wire, &mia(), vec![moved]).unwrap();
     let before = record_of(&wire);
 
-    let conflict = |with: &str| RefusalReason::Conflict(Reason::try_new(with).unwrap());
+    let conflict = |with: &str| RefusalReason::Conflict(BranchName::try_new(with).unwrap());
     let moves = vec![
         // A reserved prefix (ADR-008).
         to(&mut wire, "heads/tags/v1", Some(root)),
@@ -1119,7 +1123,7 @@ fn a_record_that_cannot_be_used_stops_the_update() {
         matches!(
             error,
             AcceptError::RecordIo {
-                operation: "read",
+                step: RecordStep::Read,
                 ..
             }
         ),
@@ -1160,7 +1164,7 @@ fn a_record_that_cannot_be_used_stops_the_update() {
         matches!(
             error,
             AcceptError::RecordIo {
-                operation: "append to",
+                step: RecordStep::Append,
                 ..
             }
         ),
@@ -1283,7 +1287,7 @@ fn every_failure_has_a_message() {
         )
     );
     let io = AcceptError::RecordIo {
-        operation: "read",
+        step: RecordStep::Read,
         source: io::Error::other("gone"),
     };
     assert_eq!(
@@ -1395,7 +1399,7 @@ fn a_new_name_below_a_branch_that_the_same_update_deletes_is_refused() {
         refused(push(&mut wire, &mia(), moves)),
         [(
             "heads/feature/x".to_owned(),
-            RefusalReason::Conflict(Reason::try_new("feature").unwrap())
+            RefusalReason::Conflict(BranchName::try_new("feature").unwrap())
         )]
     );
     unchanged(&wire, &before, &[("heads/feature", Some(root))]);
@@ -1457,9 +1461,13 @@ fn a_policy_that_the_store_cannot_return_is_a_failure_of_the_hub() {
     fs::remove_file(store.object_path(&blob.object_id())).unwrap();
 
     let error = wire.side().accept(&update).unwrap_err();
-    assert!(matches!(error, AcceptError::Policy(_)), "{error:?}");
+    assert!(
+        matches!(error, AcceptError::Policy { damaged: true, .. }),
+        "{error:?}"
+    );
     assert_eq!(error.answer(), None);
-    assert_eq!(error.kind(), FailureKind::Other);
+    // An object that the history names is gone: the store is damaged.
+    assert_eq!(error.kind(), FailureKind::Damaged);
     unchanged(&wire, &before, &[("heads/feature", Some(root))]);
 }
 
@@ -1510,15 +1518,19 @@ fn an_agent_is_a_write_owner_by_its_identity() {
 }
 
 #[test]
-fn a_record_that_cannot_be_read_before_the_lock_is_no_damage_beside_a_writer() {
-    let wire = wire();
-    let root = wire.side().governed("one\n", vec![]);
-    let topic = Move::try_new(name("heads/topic"), None, None, Some(root), None).unwrap();
-    let update = signed(&mia(), vec![topic]);
-    // The entry of a first push of another process is half written.
+fn nothing_of_the_repository_is_read_before_the_lock() {
+    let (mut wire, root) = started();
+    let good = record_of(&wire);
+    // A stale update of a key that the register does not hold is stale: the sender is judged
+    // under the lock, after the chains.
+    let late = Move::try_new(name("heads/main"), None, None, Some(root), None).unwrap();
+    assert!(matches!(
+        push(&mut wire, &stranger(), vec![late]),
+        Err(ErrorMessage::Stale(_))
+    ));
+    // Beside a writer the answer is the lock, whatever the record and the sender are.
+    let update = signed(&stranger(), vec![to(&mut wire, "heads/topic", Some(root))]);
     wire.side().record.borrow_mut().bytes = b"stemma-protocol 1\nhub".to_vec();
-
-    // Beside the writer the answer is the lock, as it would be a moment later.
     let lock = wire
         .side()
         .repository
@@ -1529,20 +1541,80 @@ fn a_record_that_cannot_be_read_before_the_lock_is_no_damage_beside_a_writer() {
     assert_eq!(error.kind(), FailureKind::Locked, "{error:?}");
     assert_eq!(error.receipt(), None);
     drop(lock);
-
-    // Without a writer the record counts as unknown before the lock: an update that does not
-    // set `main` is refused as in an empty repository, and one that sets it reaches the pass
-    // under the lock, which reports the record.
+    // Under the lock the record is read first.
+    let error = wire.side().accept(&update).unwrap_err();
+    assert!(matches!(error, AcceptError::Record(_)), "{error:?}");
+    wire.side().record.borrow_mut().bytes = good;
     assert_eq!(
-        wire.side().accept(&update).unwrap_err().answer(),
-        Some(ErrorMessage::Refused(Refused::NoMain))
+        send(&mut wire, &update),
+        Err(ErrorMessage::Refused(Refused::Key { register: root }))
     );
-    let main = Move::try_new(name("heads/main"), None, None, Some(root), None).unwrap();
+}
+
+#[test]
+fn the_time_of_the_hub_does_not_step_back() {
+    let (mut wire, root) = started();
+    let before = record_of(&wire);
+    let update = signed(&mia(), vec![to(&mut wire, "heads/feature", Some(root))]);
+    wire.side().time.set(START - 1);
+    let error = wire.side().accept(&update).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            AcceptError::Write(source) if matches!(
+                **source,
+                WriteError::Chain(ChainError::Time { last: START, found })
+                    if found == START - 1
+            )
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.answer(), None);
+    unchanged(&wire, &before, &[("heads/feature", None)]);
+    // The same second is taken.
+    wire.side().time.set(START);
+    send(&mut wire, &update).unwrap();
+}
+
+#[test]
+fn an_entry_whose_actor_does_not_stand_is_not_completed() {
+    let (mut wire, root) = started();
+    // An entry that this operation would not write: the key of a stranger, named as Mia.
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    let forged = signed(&stranger(), vec![moved]);
+    let mut chain = wire.side().chain();
+    let acceptance = Acceptance {
+        time: START,
+        register: root,
+        policies: Vec::new(),
+        fast_forward: BTreeSet::new(),
+        actor: human("mia"),
+    };
+    let mut bytes = Vec::new();
+    chain
+        .append(&forged, acceptance, &hub_key(), &mut bytes)
+        .unwrap();
+    wire.side()
+        .record
+        .borrow_mut()
+        .bytes
+        .extend_from_slice(&bytes);
+    let before = record_of(&wire);
+
+    let tagged = Move::try_new(name("tags/v1"), None, None, Some(root), None).unwrap();
     let error = wire
         .side()
-        .accept(&signed(&daniel(), vec![main]))
+        .accept(&signed(&ana(), vec![tagged]))
         .unwrap_err();
-    assert!(matches!(error, AcceptError::Record(_)), "{error:?}");
+    assert!(
+        matches!(error, AcceptError::LastEntry { number: 2 }),
+        "{error:?}"
+    );
     assert_eq!(error.kind(), FailureKind::Damaged);
-    assert_eq!(wire.side().reference("heads/main"), None);
+    assert!(error.to_string().contains("record entry 2"), "{error}");
+    unchanged(
+        &wire,
+        &before,
+        &[("heads/feature", None), ("tags/v1", None)],
+    );
 }

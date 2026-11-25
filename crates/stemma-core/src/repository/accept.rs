@@ -16,19 +16,20 @@ use crate::conflict::AnyCommit;
 use crate::history::HistoryError;
 use crate::merge_base::merge_bases;
 use crate::object::CommitId;
-use crate::oplog::OperationName;
 use crate::protocol::record::{
     read_record, Acceptance, Chain, ChainError, HubAddress, Move, RecordEntry, RecordParseError,
     RefUpdate, Stale, WriteError,
 };
-use crate::protocol::refusal::{RefusalReason, Refused, RefusedReference, RefusedReferences};
+use crate::protocol::refusal::{
+    RefOperation, RefusalReason, Refused, RefusedReference, RefusedReferences,
+};
 use crate::protocol::{ErrorMessage, QualifiedName, Reason, RepositoryId};
 use crate::pull::TARGET;
 use crate::receive::ConnectivityError;
-use crate::refs::{BranchName, RefError, RefKind, WriteLock};
+use crate::refs::{BranchName, HeldLock, RefError, RefKind, WriteLock};
 use crate::register::{Identity, Mode, ModeError, Register, RegisterAuthorizer, Verified};
 use crate::signature::Signer;
-use crate::store::ObjectStore;
+use crate::store::{ObjectStore, ReadError, StoreError};
 use crate::{lease, AllowAll, Authorizer};
 
 /// The destination of the record of ref updates of one repository (ADR-025). The layout of a
@@ -36,11 +37,7 @@ use crate::{lease, AllowAll, Authorizer};
 /// and passes the way to it with every call.
 ///
 /// The accepting operation calls both methods under the lock of the references, so no other
-/// writer of the same repository runs between them. There is one exception: in a repository
-/// without `main` it calls [`read`](Self::read) once before it takes the lock, to learn whether
-/// a first push stopped after its entry. That read may meet the entry of another process half
-/// written; the operation takes nothing from a record that it cannot read there and reads again
-/// under the lock.
+/// writer of the same repository runs between them.
 pub trait RecordDestination {
     /// The whole record: the bytes of every entry that [`append`](Self::append) took, in their
     /// order, and nothing else. A repository without an accepted update has an empty record.
@@ -114,6 +111,15 @@ impl fmt::Debug for AcceptContext<'_> {
     }
 }
 
+/// The step at the destination of the record that failed ([`AcceptError::RecordIo`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecordStep {
+    /// The record was read.
+    Read,
+    /// The entry of the update was appended.
+    Append,
+}
+
 /// Why a ref update was not accepted. [`Stale`](Self::Stale) and [`Refused`](Self::Refused)
 /// are answers to the sender ([`answer`](Self::answer)); every other variant is a failure of
 /// the hub, which the sender cannot mend.
@@ -132,14 +138,14 @@ pub enum AcceptError {
     /// The update is refused. No entry was written and no reference of this update moved; an
     /// earlier update may have been completed.
     Refused(Refused),
-    /// The lock of the references or the references failed. Nothing was written, unless an
-    /// earlier update was being completed.
+    /// The lock of the references is held by another writer ([`RefError::Locked`]), or the
+    /// references failed. Nothing was written, unless an earlier update was being completed.
     Refs(Box<RefError>),
     /// The record could not be read or the entry could not be appended. No reference of this
     /// update moved.
     RecordIo {
         /// What was tried.
-        operation: &'static str,
+        step: RecordStep,
         /// The error of the destination.
         source: io::Error,
     },
@@ -161,9 +167,22 @@ pub enum AcceptError {
     /// The register at the tip of `main` cannot be read, or `main` holds none. For a first
     /// push it is the register of the pushed commit that the store could not return.
     Register(Box<ModeError>),
-    /// The policy at the tip of `main` could not be read: the storage failed. A policy that is
+    /// The policy at the tip of `main` could not be read from the store. A policy that is
     /// missing or not valid is [`Refused`](Self::Refused) instead.
-    Policy(Box<PolicyError>),
+    Policy {
+        /// What the reader of the policy reported.
+        source: Box<PolicyError>,
+        /// Whether the store is damaged: an object on the way to the policy is missing or not
+        /// in canonical form. `false` if the storage failed, so that a later call can succeed.
+        damaged: bool,
+    },
+    /// The last entry of the record names an actor that does not stand in the register that it
+    /// names, so its moves, which stopped, are not completed. The operation writes no such
+    /// entry.
+    LastEntry {
+        /// The number of the entry.
+        number: u64,
+    },
     /// The connectivity check could not run: the storage failed. An update whose objects do not
     /// hold together is [`Refused`](Self::Refused) instead.
     Connectivity(Box<ConnectivityError>),
@@ -222,7 +241,8 @@ impl AcceptError {
             | Self::Record(_)
             | Self::Chain(_)
             | Self::Diverged { .. }
-            | Self::Policy(_)
+            | Self::Policy { .. }
+            | Self::LastEntry { .. }
             | Self::History(_) => None,
         }
     }
@@ -242,8 +262,12 @@ impl fmt::Display for AcceptError {
             Self::Stale(stale) => stale.fmt(f),
             Self::Refused(refused) => refused.fmt(f),
             Self::Refs(error) => error.fmt(f),
-            Self::RecordIo { operation, source } => {
-                write!(f, "cannot {operation} the record of ref updates: {source}")
+            Self::RecordIo { step, source } => {
+                let step = match step {
+                    RecordStep::Read => "read",
+                    RecordStep::Append => "append to",
+                };
+                write!(f, "cannot {step} the record of ref updates: {source}")
             }
             Self::Record(error) => write!(f, "the record of ref updates is damaged: {error}"),
             Self::Chain(error) => write!(f, "the record of ref updates is damaged: {error}"),
@@ -263,7 +287,12 @@ impl fmt::Display for AcceptError {
                     "cannot read the register at the tip of `{TARGET}`: {error}"
                 )
             }
-            Self::Policy(error) => error.fmt(f),
+            Self::Policy { source, .. } => source.fmt(f),
+            Self::LastEntry { number } => write!(
+                f,
+                "the actor of the record entry {number} does not stand in the register that the \
+                 entry names, so its moves are not completed"
+            ),
             Self::Connectivity(error) => error.fmt(f),
             Self::History(error) => error.fmt(f),
             Self::Write(error) => error.fmt(f),
@@ -298,14 +327,17 @@ fn main_reference() -> QualifiedName {
     QualifiedName::new(RefKind::Branch, name)
 }
 
+/// A reference with the reason that this operation found for it.
+fn refused_reference(name: QualifiedName, reason: RefusalReason) -> RefusedReference {
+    RefusedReference::try_new(name, reason)
+        .expect("the operation gives a reference only a reason of its kind")
+}
+
 /// The refusal of one reference.
 fn one_refused(name: &QualifiedName, reason: RefusalReason) -> AcceptError {
     Refused::References(
-        RefusedReferences::try_new(vec![RefusedReference {
-            name: name.clone(),
-            reason,
-        }])
-        .expect("one reference is at least one, and it is named once"),
+        RefusedReferences::try_new(vec![refused_reference(name.clone(), reason)])
+            .expect("one reference is at least one, and it is named once"),
     )
     .into()
 }
@@ -314,7 +346,7 @@ fn one_refused(name: &QualifiedName, reason: RefusalReason) -> AcceptError {
 fn all_refused(refused: BTreeMap<QualifiedName, RefusalReason>) -> AcceptError {
     let references = refused
         .into_iter()
-        .map(|(name, reason)| RefusedReference { name, reason })
+        .map(|(name, reason)| refused_reference(name, reason))
         .collect();
     Refused::References(
         RefusedReferences::try_new(references)
@@ -323,15 +355,14 @@ fn all_refused(refused: BTreeMap<QualifiedName, RefusalReason>) -> AcceptError {
     .into()
 }
 
-/// The name of the operation that the authorizer is asked for: `push` for a branch, `tag` to
-/// set a tag, and `untag` to delete one.
-fn operation_of(moved: &Move) -> OperationName {
-    let name = match (moved.name().kind(), moved.new_commit()) {
-        (RefKind::Branch, _) => "push",
-        (RefKind::Tag, Some(_)) => "tag",
-        (RefKind::Tag, None) => "untag",
-    };
-    OperationName::try_new(name).expect("a valid operation name")
+/// The operation that the authorizer is asked for: `push` for a branch, `tag` to set a tag,
+/// and `untag` to delete one.
+fn operation_of(moved: &Move) -> RefOperation {
+    match (moved.name().kind(), moved.new_commit()) {
+        (RefKind::Branch, _) => RefOperation::Push,
+        (RefKind::Tag, Some(_)) => RefOperation::Tag,
+        (RefKind::Tag, None) => RefOperation::Untag,
+    }
 }
 
 /// Whether one name holds the place of the other in a directory of references: they are equal
@@ -353,6 +384,33 @@ fn in_the_way(one: &BranchName, other: &BranchName) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// The lock of the references through one call: held from the start, and open for a write
+/// from the first answer of the authorizer on (ADR-002). One of the two fields is always set.
+struct Lock {
+    held: Option<HeldLock>,
+    writer: Option<WriteLock>,
+}
+
+impl Lock {
+    fn new(held: HeldLock) -> Self {
+        Self {
+            held: Some(held),
+            writer: None,
+        }
+    }
+
+    /// The lock for a writer. The first call opens it with the proof that the authorizer
+    /// allowed an operation; a later call returns the lock that is open already.
+    fn writer(&mut self, allowed: &Allowed) -> &WriteLock {
+        if let Some(held) = self.held.take() {
+            self.writer = Some(held.into_writer(allowed));
+        }
+        self.writer
+            .as_ref()
+            .expect("the lock is held or open for a writer")
+    }
+}
+
 /// Who sends a ref update, by the register that counts for it.
 struct Sender {
     /// The commit whose register was read: the tip of `main`, or the pushed commit of the first
@@ -369,33 +427,16 @@ impl Sender {
     /// must allow it.
     fn ask(&self, moved: &Move, also: &dyn Authorizer) -> Result<Allowed, RefusalReason> {
         let operation = operation_of(moved);
+        let asked = operation.operation_name();
         let target = moved.name().name().as_str();
         let actor = self.verified.actor();
         let authorizer = RegisterAuthorizer::new(&self.mode, Some(&self.verified));
         match (
-            Allowed::ask(&authorizer, actor, &operation, target),
-            Allowed::ask(also, actor, &operation, target),
+            Allowed::ask(&authorizer, actor, &asked, target),
+            Allowed::ask(also, actor, &asked, target),
         ) {
             (Some(allowed), Some(_)) => Ok(allowed),
             _ => Err(RefusalReason::Denied { operation }),
-        }
-    }
-
-    /// Asks for every reference of the update, and returns the proof that all were allowed.
-    fn ask_all(&self, update: &RefUpdate, also: &dyn Authorizer) -> Result<Allowed, AcceptError> {
-        let mut refused = BTreeMap::new();
-        let mut proof = None;
-        for moved in update.payload().moves() {
-            match self.ask(moved, also) {
-                Ok(allowed) => proof = Some(allowed),
-                Err(reason) => {
-                    refused.insert(moved.name().clone(), reason);
-                }
-            }
-        }
-        match proof {
-            Some(allowed) if refused.is_empty() => Ok(allowed),
-            _ => Err(all_refused(refused)),
         }
     }
 }
@@ -424,7 +465,7 @@ impl Record {
         repository: RepositoryId,
     ) -> Result<Self, AcceptError> {
         let bytes = destination.read().map_err(|source| AcceptError::RecordIo {
-            operation: "read",
+            step: RecordStep::Read,
             source,
         })?;
         let entries = read_record(&bytes).map_err(|error| AcceptError::Record(Box::new(error)))?;
@@ -462,11 +503,13 @@ impl Repository {
     /// The operation is one call, and it takes the lock of the references itself, in the middle:
     ///
     /// - **Before the lock** it compares the address of the hub and the ID of the repository
-    ///   with the payload, finds the sender by the references as they are, and asks the
-    ///   authorizer once, because the lock is opened with the proof of that question only
-    ///   (ADR-002). This pass can refuse an update for its sender (the key, the first push, the
-    ///   authorizer) before the lock is taken, so such an update is answered as refused even if
-    ///   it is stale as well. It accepts nothing: everything is decided again under the lock.
+    ///   with the payload. Nothing of the repository is read: the signature was checked when
+    ///   the update was read, and everything else depends on state that only the lock holds
+    ///   still.
+    /// - **The lock** is held from then on without a proof, which opens no write. It becomes
+    ///   the lock of a writer with the answer of the authorizer (ADR-002), which is asked under
+    ///   it: for the update of this call after all its checks, and for an earlier update that
+    ///   stopped before that one is completed.
     /// - **Under the lock** it reads the record, completes an update that stopped after its
     ///   entry, and checks that the references are where the record leaves them. Then it checks,
     ///   in this order: `previous` and `old` against the chain of every name, the names, the
@@ -557,19 +600,13 @@ impl Repository {
             }
             .into());
         }
-        // The lock is opened with the proof that the authorizer allowed the operation
-        // (ADR-002), so the sender is asked once by the references as they are. Everything is
-        // decided again under the lock.
-        let tip = match self.main_tip()? {
-            Some(tip) => Some(tip),
-            None => self.main_of_stopped_first_push(context.record, context.repository)?,
-        };
-        let allowed = self.sender_of(update, tip, false)?.ask_all(update, also)?;
-        let lock = self.refs_store().lock_writer(&allowed)?;
+        // Nothing but the form was judged so far. The lock is held from here on, and it opens
+        // a write only with the answer of the authorizer (ADR-002), which is asked under it.
+        let mut lock = Lock::new(self.refs_store().lock_held()?);
 
         let mut record = Record::read(context.record, context.repository)?;
         if let Some(last) = &record.last {
-            self.complete(&lock, last)?;
+            self.complete(&mut lock, last)?;
         }
         self.require_agreement(&record)?;
         match record.chain.check(update) {
@@ -579,7 +616,7 @@ impl Repository {
         }
 
         let moves = payload.moves();
-        let mut refused = self.refused_names(&lock, moves)?;
+        let mut refused = self.refused_names(moves)?;
         for moved in moves {
             let Some(new) = moved.new_commit() else {
                 continue;
@@ -602,9 +639,10 @@ impl Repository {
             // The register of the first push lies in the commit that is refused.
             return Err(all_refused(refused));
         }
-        let sender = self.sender_of(update, main_tip, true)?;
+        let sender = self.sender_of(update, main_tip)?;
         let identity = Identity::of(sender.verified.actor());
         let mut policies = Vec::new();
+        let mut proof = None;
         for moved in moves {
             if refused.contains_key(moved.name()) {
                 continue;
@@ -613,7 +651,8 @@ impl Repository {
                 Err(RefusalReason::Gate)
             } else {
                 match sender.ask(moved, also) {
-                    Ok(_) => {
+                    Ok(allowed) => {
+                        proof = Some(allowed);
                         self.write_ownership(moved, &record, &sender, &identity, context.time)?
                     }
                     Err(reason) => Err(reason),
@@ -626,9 +665,12 @@ impl Repository {
                 }
             }
         }
-        if !refused.is_empty() {
-            return Err(all_refused(refused));
-        }
+        let allowed = match proof {
+            Some(allowed) if refused.is_empty() => allowed,
+            // An update names at least one reference, so one that names none that is refused
+            // was allowed for every one of them.
+            _ => return Err(all_refused(refused)),
+        };
         policies.dedup();
 
         let mut fast_forward = BTreeSet::new();
@@ -655,45 +697,20 @@ impl Repository {
             .chain
             .append(update, acceptance, context.signer, &mut bytes)
             .map_err(|error| AcceptError::Write(Box::new(error)))?;
+        let writer = lock.writer(&allowed);
         context
             .record
             .append(&bytes)
             .map_err(|source| AcceptError::RecordIo {
-                operation: "append to",
+                step: RecordStep::Append,
                 source,
             })?;
-        match self.move_references(&lock, update) {
+        match self.move_references(writer, update) {
             Ok(()) => Ok(entry),
             Err(source) => Err(AcceptError::NotCompleted {
                 receipt: Box::new(entry),
                 source: Box::new(source),
             }),
-        }
-    }
-
-    /// The commit that the record leaves `main` at, for the pass before the lock in a
-    /// repository without `main`: a first push that stopped after its entry left no reference,
-    /// and the record names it. Without this the pass would answer `no-main` to every other
-    /// sender, and the completion under the lock would never be reached.
-    ///
-    /// The record is read without the lock here, so a first push of another process may be
-    /// writing its entry. A record that cannot be read is therefore no damage yet: beside a
-    /// writer the answer is that the references are locked, as it would be a moment later, and
-    /// otherwise the record counts as unknown and the pass under the lock reads it again.
-    fn main_of_stopped_first_push(
-        &self,
-        record: &mut dyn RecordDestination,
-        repository: RepositoryId,
-    ) -> Result<Option<CommitId>, AcceptError> {
-        match Record::read(record, repository) {
-            Ok(record) => Ok(record
-                .owners
-                .get(&main_reference())
-                .and_then(|main| main.commit)),
-            Err(_) => {
-                self.refs_store().refuse_beside_writer()?;
-                Ok(None)
-            }
         }
     }
 
@@ -705,13 +722,12 @@ impl Repository {
 
     /// Who sends the update: the entry of the register at the tip of `main` that holds its key
     /// as an active key, or, without a `main`, the owner in the register of the commit that the
-    /// update sets `main` to (ADR-024). `checked` says that the connectivity of that commit was
-    /// checked already; without it the commit is checked here, because its register is read.
+    /// update sets `main` to (ADR-024). The connectivity of that commit was checked before,
+    /// because its register is read.
     fn sender_of(
         &self,
         update: &RefUpdate,
         main_tip: Option<CommitId>,
-        checked: bool,
     ) -> Result<Sender, AcceptError> {
         let unreadable = |error: ModeError| AcceptError::Register(Box::new(error));
         if let Some(tip) = main_tip {
@@ -744,14 +760,7 @@ impl Repository {
                 RefusalReason::Incomplete(Reason::from_message(error)),
             )
         };
-        if !checked {
-            match self.check_connectivity(&[pushed]) {
-                Ok(()) => {}
-                Err(error) if error.is_incomplete() => return Err(incomplete(&error)),
-                Err(error) => return Err(AcceptError::Connectivity(Box::new(error))),
-            }
-        }
-        // The check above passes a commit that records an open conflict, which `main` never
+        // The connectivity check passes a commit that records an open conflict, which `main` never
         // holds (ADR-019) and which has no one tree to read a register from.
         match self.objects().get_any_commit(&pushed) {
             Ok(Some(AnyCommit::Commit2(_))) => {
@@ -788,7 +797,6 @@ impl Repository {
     /// the update itself.
     fn refused_names(
         &self,
-        lock: &WriteLock,
         moves: &[Move],
     ) -> Result<BTreeMap<QualifiedName, RefusalReason>, AcceptError> {
         let mut refused = BTreeMap::new();
@@ -798,11 +806,19 @@ impl Repository {
             if !created {
                 continue;
             }
-            match self.refs_store().recorded(lock, name.kind(), name.name()) {
+            match self.refs_store().recorded(name.kind(), name.name()) {
                 Ok(_) => {}
-                Err(RefError::Conflict { with, .. }) => {
-                    let reason = RefusalReason::Conflict(Reason::from_message(&with));
-                    refused.insert(name.clone(), reason);
+                Err(error @ RefError::Conflict { .. }) => {
+                    // What is in the way is a reference or a directory of them, so it has a
+                    // name; anything else in the directories of the references is damage.
+                    let with = match &error {
+                        RefError::Conflict { with, .. } => with.parse::<BranchName>().ok(),
+                        _ => None,
+                    };
+                    let Some(with) = with else {
+                        return Err(error.into());
+                    };
+                    refused.insert(name.clone(), RefusalReason::Conflict(with));
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -820,7 +836,7 @@ impl Repository {
                     && in_the_way(before.name().name(), name.name())
             });
             if let Some(before) = before {
-                let reason = RefusalReason::Conflict(Reason::from_message(before.name().name()));
+                let reason = RefusalReason::Conflict(before.name().name().clone());
                 refused.insert(name.clone(), reason);
             }
         }
@@ -856,7 +872,12 @@ impl Repository {
             Err(
                 error @ (PolicyError::Missing | PolicyError::NotAFile | PolicyError::Invalid(_)),
             ) => return Ok(Err(RefusalReason::Policy(Reason::from_message(&error)))),
-            Err(error) => return Err(AcceptError::Policy(Box::new(error))),
+            Err(error) => {
+                return Err(AcceptError::Policy {
+                    damaged: self.policy_is_damaged(&sender.register),
+                    source: Box::new(error),
+                })
+            }
         };
         let expires = lease::expiry(owner.time, policy.lease_minutes());
         if now < expires {
@@ -877,11 +898,11 @@ impl Repository {
     ///
     /// [`AcceptError::Diverged`] for a reference that is at neither value: no stop of this
     /// operation leaves it there.
-    fn complete(&self, lock: &WriteLock, last: &RecordEntry) -> Result<(), AcceptError> {
+    fn complete(&self, lock: &mut Lock, last: &RecordEntry) -> Result<(), AcceptError> {
         let mut stopped = false;
         for moved in last.update().payload().moves() {
             let name = moved.name();
-            let found = match self.refs_store().recorded(lock, name.kind(), name.name()) {
+            let found = match self.refs_store().recorded(name.kind(), name.name()) {
                 Ok(found) => found,
                 // The name was free when the entry was written, so what holds it came later,
                 // past this operation. It is in the way of a reference that the entry sets.
@@ -908,9 +929,44 @@ impl Repository {
             stopped = true;
         }
         if stopped {
-            self.move_references(lock, last.update())?;
+            let allowed = self.allowed_again(last)?;
+            self.move_references(lock.writer(&allowed), last.update())?;
         }
         Ok(())
+    }
+
+    /// The proof for the moves of an entry that is in the record: the question to the
+    /// authorizer that was asked when the update was accepted, asked again by the register that
+    /// the entry names. The lock opens for a write with a proof only (ADR-002), and the proof of
+    /// the call that wrote the entry ended with that call.
+    ///
+    /// # Errors
+    ///
+    /// [`AcceptError::Register`] if the register of the entry cannot be read, and
+    /// [`AcceptError::LastEntry`] if it does not hold the key of the update as an active key:
+    /// the operation wrote no such entry.
+    fn allowed_again(&self, last: &RecordEntry) -> Result<Allowed, AcceptError> {
+        let unstanding = || AcceptError::LastEntry {
+            number: last.number(),
+        };
+        let register = Register::at_commit(self.objects(), &last.register())
+            .map_err(|error| AcceptError::Register(Box::new(error)))?
+            .ok_or_else(unstanding)?;
+        let verified = register
+            .verify_ref_update(last.update())
+            .filter(|verified| &Identity::of(verified.actor()) == last.actor())
+            .ok_or_else(unstanding)?;
+        let sender = Sender {
+            register: last.register(),
+            first: false,
+            mode: Mode::Enforcing(register),
+            verified,
+        };
+        let mut proof = None;
+        for moved in last.update().payload().moves() {
+            proof = Some(sender.ask(moved, &AllowAll).map_err(|_| unstanding())?);
+        }
+        proof.ok_or_else(unstanding)
     }
 
     /// Checks that the branches and the tags are where the record leaves them: every reference
@@ -948,6 +1004,33 @@ impl Repository {
             }
         }
         Ok(())
+    }
+
+    /// Whether a policy that could not be read is damage of the store: the commit, its tree, or
+    /// the file of the policy is missing or not in canonical form. The error of the policy
+    /// carries text only, so the objects are read once more. A failure of the storage is no
+    /// damage.
+    fn policy_is_damaged(&self, tip: &CommitId) -> bool {
+        let store = self.objects();
+        let io = |error: &ReadError| matches!(error.store_error(), Some(StoreError::Io { .. }));
+        let commit = match store.get_commit(tip) {
+            Ok(Some(commit)) => commit,
+            Ok(None) => return true,
+            Err(error) => return !io(&error),
+        };
+        let tree = match store.get_tree(&commit.tree()) {
+            Ok(Some(tree)) => tree,
+            Ok(None) => return true,
+            Err(error) => return !io(&error),
+        };
+        let Some(entry) = tree
+            .entries()
+            .iter()
+            .find(|entry| entry.name() == crate::policy::FILE_NAME)
+        else {
+            return true;
+        };
+        !matches!(store.get(&entry.id()), Err(StoreError::Io { .. }))
     }
 
     /// Makes the references agree with an update whose entry is in the record: the moves of an

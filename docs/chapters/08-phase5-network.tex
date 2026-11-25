@@ -779,17 +779,15 @@ Gebaut ist der Teil für Branches und Tags.
 und der Owner-Override folgen.
 
 \startitemize[n]
-\item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload, bestimmt
-den Absender nach dem Stand der Referenzen, wie er gerade ist, und fragt den Authorizer ein
-erstes Mal.
-Fehlt \type{main}, liest sie dafür die Aufzeichnung: Ein erster Push, der nach seinem Eintrag
-abgebrochen ist, hat \type{main} dort schon gesetzt.
-Die Sperre der Referenzen öffnet nur der Beleg dieser Frage (ADR-002).
-Dieser Durchgang kann ein Ref-Update wegen seines Absenders ablehnen, auch eines, das zugleich
-veraltet ist; angenommen wird erst unter der Sperre, wo alles noch einmal entschieden wird.
-\item Sie nimmt die Sperre der Referenzen, ohne zu warten.
+\item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload.
+Vom Repository liest sie dabei nichts; die Signatur ist schon beim Lesen des Ref-Updates geprüft.
+\item Sie nimmt die Sperre der Referenzen, ohne zu warten, zunächst als Sperre, die kein
+Schreiben öffnet.
+Schreiben darf sie erst mit dem Beleg des Authorizers (ADR-002), und den fragt sie unter der
+Sperre.
 \item Sie liest die Aufzeichnung und prüft deren Ketten.
-Ein Ref-Update, dessen Eintrag geschrieben ist und dessen Bewegungen fehlen, vollendet sie jetzt.
+Ein Ref-Update, dessen Eintrag geschrieben ist und dessen Bewegungen fehlen, vollendet sie jetzt;
+den Authorizer fragt sie dafür noch einmal, nach dem Register, das der Eintrag nennt.
 Danach muss jeder Branch und jeder Tag dort stehen, wo die Aufzeichnung ihn lässt.
 \item Sie prüft \type{previous} und \type{old} jeder Referenz gegen die Kette ihres Namens.
 \item Sie prüft die Namen neuer Referenzen und den Zusammenhang der Objekte jedes neuen Commits
@@ -902,6 +900,9 @@ etwa \type{heads/a} und \type{heads/a/b} oder zwei Namen, die sich nur in der
 Gross-/Kleinschreibung unterscheiden; der Hub lehnt den späteren ab.
 Die Payload nennt keinen Akteur: Die Identität folgt aus dem Schlüssel, und Modell und Session
 eines Agenten kennt der Hub nicht.
+Die Zeit des Hubs läuft in einer Aufzeichnung nie zurück, weil die Leases nach ihr gezählt
+werden: Einen Eintrag mit einer früheren Zeit als der des vorigen schreibt der Hub nicht, und
+ein Leser lehnt ihn ab.
 Scheitert der Speicher nach dem Eintrag, sendet der Hub keine Quittung.
 Die Liste der Referenzen zeigt das Ref-Update, sobald der nächste Aufruf seine Bewegungen
 vollendet hat; bis dahin kann eine seiner Referenzen noch am alten Wert stehen.
