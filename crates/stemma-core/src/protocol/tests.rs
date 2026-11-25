@@ -148,6 +148,9 @@ fn written(example_name: &str) -> Vec<u8> {
         "error-unknown-want" => ErrorMessage::UnknownWant(example_commit()).encode(),
         "ref-update" => record::tests::example_update().encode(),
         "receipt" => record::tests::example_receipt().encode(),
+        "challenge" => sign_in::tests::example_challenge().encode(),
+        "signed-challenge" => sign_in::tests::example_signed().encode(),
+        "token" => sign_in::tests::example_token_answer().encode(),
         other => panic!("no value for the example {other}"),
     }
 }
@@ -163,6 +166,13 @@ fn round_trips(message: Message, bytes: &[u8]) -> bool {
         Message::Error => ErrorMessage::parse(bytes).is_ok_and(|m| m.encode() == bytes),
         Message::RefUpdate => record::RefUpdate::parse(bytes).is_ok_and(|m| m.encode() == bytes),
         Message::Receipt => record::RecordEntry::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::Challenge => sign_in::Challenge::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::SignedChallenge => {
+            sign_in::SignedChallenge::parse(bytes).is_ok_and(|m| m.encode() == bytes)
+        }
+        Message::TokenAnswer => {
+            sign_in::TokenAnswer::parse(bytes).is_ok_and(|m| m.encode() == bytes)
+        }
     }
 }
 
@@ -199,6 +209,9 @@ fn every_example_is_refused_by_the_readers_of_the_other_messages() {
         Message::Error,
         Message::RefUpdate,
         Message::Receipt,
+        Message::Challenge,
+        Message::SignedChallenge,
+        Message::TokenAnswer,
     ];
     for example in examples::ALL {
         for other in all {

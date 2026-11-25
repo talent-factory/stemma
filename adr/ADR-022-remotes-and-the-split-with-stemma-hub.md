@@ -36,29 +36,54 @@ sealed).
 The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not values:
 
 - It has one synchronous method per request of the protocol (ADR-023). The first two are `refs`
-  and `fetch`; a slice that adds a request adds its method, and the sign-in adds its step
-  (ADR-024). The ref update and its receipt exist as messages (ADR-025); their request comes
+  and `fetch`; a slice that adds a request adds its method. The sign-in is the two methods
+  `challenge` and `answer_challenge` (ADR-024, see "The sign-in" below). The ref update and its
+  receipt exist as messages (ADR-025); their request comes
   with the slice of `push`, which builds the operation that answers it.
 - Every body is a stream. A request body is read from a reader, and the body of an answer is a
   reader that borrows the transport, so one request runs at a time and an object stream never
   has to lie in memory as a whole.
-- A transport reads no message. The caller writes a request with the writers of
-  `stemma_core::protocol` and reads an answer with its readers, so the rules of `fetch` and
-  `push` stand once, above every transport.
+- A transport reads no message, with the one exception of the token answer of a sign-in. The
+  caller writes a request with the writers of `stemma_core::protocol` and reads an answer with
+  its readers, so the rules of `fetch` and `push` stand once, above every transport.
 - An answer is one of two cases, and the transport says which: the message that was asked for, or
   an error message in its place (ADR-023). The caller chooses the reader by the case.
 - A request fails with a transport error in three cases only: the body of the request could not
   be read, the carrier failed, or what came back is no answer of the other side in the protocol,
   such as the page of a proxy; the error then carries the words of the carrier, for HTTP the
-  status (ADR-023). A transport reads no body, so it tells such an answer from an error message by
-  something outside the body; for `stemma-remote` that is the media type, which its slice sets
-  (ADR-023, open items). This narrows rule 3 of the mapping to HTTP in ADR-023: a body that the
-  transport hands over as an error message and that its reader refuses is an error of that
-  reader, reported by the core, and no transport error.
+  status (ADR-023). A transport reads no body but that of the token answer (see "The sign-in"
+  below), so it tells such an answer from an error message by something outside the body; for
+  `stemma-remote` that is the media type, which its slice sets (ADR-023, open items). This
+  narrows rule 3 of the mapping to HTTP in ADR-023: a body that the transport hands over as an
+  error message and that its reader refuses is an error of that reader, reported by the core,
+  and no transport error.
 - A body that ends early is an error of its reader, never an early end, because no message
   carries a count or an end mark. A body that the caller drops before its end is no error: the
   next request is allowed, and the transport discards what was left.
 - The trait names no address, path, status, header, token or compression.
+
+The sign-in (STEMMA-294). The token travels in no request message and stays inside the
+transport, so the transport reads the one message that holds it:
+
+- `challenge` asks for a challenge, and the caller reads the answer as it reads every answer.
+- `answer_challenge` sends the signed challenge. The transport reads the token answer itself,
+  with the reader of the core (`TokenAnswer::parse`), keeps the token in memory, and hands over
+  the lifetime alone. An error in place of the token answer is handed over unread, as for every
+  request, and a token answer that the reader refuses is a transport error. No method takes or
+  returns a token.
+- The procedure stands once, in the core: `stemma_core::transport::sign_in` runs the two
+  requests over any transport. It signs through `Challenge::answer`, which holds the rule that a
+  challenge for another address is not signed (ADR-024).
+- The in-memory transport encodes the token answer of its other side and reads it back, so the
+  writer and the reader of the token answer are covered as those of the other messages are. Its
+  other side answers the two requests with values, as it answers `refs`. The two answers are one
+  trait (`SignInSide`), so a side has both methods or none; a side without a sign-in fails both
+  requests, whatever the request holds.
+
+Rejected for the sign-in: a caller that reads the token answer and hands the token to the
+transport (the token would pass through code that prints and logs, and the trait would name it),
+and a single method that takes the signer (the transport would hold the order of the requests and
+the rule of the address, once per transport).
 
 Rejected: methods that take and return the values of `stemma_core::protocol` (every transport
 would call the readers itself, and the in-memory `Transport` would pass values and never run the
@@ -177,8 +202,11 @@ without internet. No phase schedules it.
 
 - [x] The design of the bare repository: what it contains exactly, how it is created and opened,
       and the typed refusal are in ADR-009, "A bare repository" (STEMMA-284).
-- [ ] The step of the sign-in in `Transport` (ADR-023, ADR-024): the token travels in no message
-      and stays inside the transport, while the trait reads no message and names no token. The
-      slice of the sign-in decides who reads the token message and records it here.
+- [x] The step of the sign-in in `Transport` (ADR-023, ADR-024): the transport reads the token
+      answer, the one message that holds the token, and the trait names no token (STEMMA-294,
+      see "The shape of `Transport`").
+- [ ] The token reaches no other side yet: the in-memory transport keeps it and does not hand it
+      to its other side, because no request of this version needs a sender. The slice that adds
+      the first such request decides how the other side learns which key speaks.
 - [ ] How much of the hub is passed on to third parties. The answer "a hub of one's own" to
       working without the central hub (ADR-003) depends on it; it is not decided.
