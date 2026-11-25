@@ -115,15 +115,18 @@ lifetime <seconds>
 
 The rules that the core holds:
 
-- **The client signs only for the address that it calls.** `Challenge::answer` is the one way to
-  a signed challenge. It takes the address that the client calls and refuses a challenge that
+- **The client signs only for the address that it calls.** A client signs through
+  `Challenge::answer`. It takes the address that the client calls and refuses a challenge that
   names another one before the signer is asked, so nothing is signed for it and a hardware token
-  is not touched.
-- **The hub checks the address and the register.** `SignedChallenge::check` refuses a challenge
-  that was signed for another address than that of the hub. `SignedChallenge::actor` also asks a
-  register and returns the identity whose entry holds the key as an active key; an unknown, a
-  retired and a revoked key are refused alike, because none of them signs anything new. The
-  nonce is not checked by the core: the hub alone knows its secret and its clock.
+  is not touched. The procedure of the sign-in (`stemma_core::transport::sign_in`) signs in no
+  other way.
+- **The hub checks the address, the nonce and the register.** `SignedChallenge::check` refuses a
+  challenge that was signed for another address than that of the hub, and one whose nonce the
+  hub does not accept. The core cannot judge a nonce, because the hub alone knows its secret and
+  its clock; the check therefore takes the judgement of the hub as an argument, so that it
+  cannot be left out. `SignedChallenge::actor` also asks a register and returns the identity
+  whose entry holds the key as an active key; an unknown, a retired and a revoked key are
+  refused alike, because none of them signs anything new. The three are judged in this order.
 - **The token shows in no output.** The type of the token has no `Display` form, its `Debug`
   form does not show it, and no error of a reader quotes it. The core writes it to no file and to
   no log. The token answer is the one message that holds a secret; it is read by the transport,
@@ -202,10 +205,13 @@ the low ones only.
 ## Open items
 
 - [ ] The kind of error message that answers a refused sign-in: a signed challenge for another
-      address, a nonce that does not count, or a key that the register and the accounts do not
-      know. The core refuses with a typed error (`Refused`); the message on the wire comes with
-      the slice that builds the answering side of a hub, and it decides whether the three cases
-      are told apart to the sender.
+      address, a nonce that the hub does not accept, or a key that the register and the accounts
+      do not know. The core refuses with a typed error (`Refused`); the message on the wire
+      comes with the slice that builds the answering side of a hub, and it decides whether the
+      three cases are told apart to the sender.
+- [ ] The bound of a client for the answers of a sign-in is 64 KiB for the challenge and for an
+      error (`MAX_SIGN_IN_MESSAGE`). The token answer is read by the transport, and the slice
+      of the HTTP transport sets its bound.
 - [ ] The token is not wiped from memory when the transport is dropped. It lives for minutes,
       and a process that reads the memory of the command reads the key file as well (ADR-003).
 - [ ] The steps by which an account is created and a key is bound through the identity provider.

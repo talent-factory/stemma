@@ -1,6 +1,6 @@
 //! The sign-in of a client at a hub (ADR-024), over any [`Transport`]: the one place that holds
-//! the order of its two requests and the rule that a challenge for another address is not
-//! signed.
+//! the order of its two requests. The rule that a challenge for another address is not signed
+//! stands in [`Challenge::answer`], through which this procedure signs.
 
 use std::error::Error;
 use std::fmt;
@@ -14,7 +14,9 @@ use crate::protocol::{ErrorMessage, ParseError};
 use crate::signature::{PublicKey, Signer};
 
 /// The longest challenge and the longest error message that [`sign_in`] reads, in bytes. It is
-/// the bound of the client for the answers of a sign-in (ADR-023); both messages are a few lines.
+/// the bound of the client for the answers of a sign-in, which the side that reads sets
+/// (ADR-023, ADR-024); both messages are a few lines. The token answer is read by the transport,
+/// which sets its own bound.
 pub const MAX_SIGN_IN_MESSAGE: u64 = 64 * 1024;
 
 /// Signs in at a hub: asks for a challenge, signs it with the key of the sender, and sends the
@@ -30,13 +32,15 @@ pub const MAX_SIGN_IN_MESSAGE: u64 = 64 * 1024;
 ///
 /// # Errors
 ///
-/// [`SignInError::Transport`] if a request gets no answer, [`SignInError::Refused`] if the other
+/// [`SignInError::Transport`] if a request gets no answer, which includes a token answer that
+/// the reader of the transport refuses, [`SignInError::Refused`] if the other
 /// side answers one of the two requests with an error, [`SignInError::Body`] and
 /// [`SignInError::TooLarge`] if an answer cannot be read to its end or is longer than
 /// [`MAX_SIGN_IN_MESSAGE`], [`SignInError::Challenge`] and [`SignInError::Error`] if the reader
 /// of the challenge or of the error refuses it, and [`SignInError::Answer`] if the challenge
-/// names another address than `called` or cannot be signed. The transport is signed in only if
-/// the result is `Ok`; after an error it holds the token that it had, or none.
+/// names another address than `called`, the signer fails, or the signer holds another key than
+/// `key`. The transport holds a new token only if the result is `Ok`; after an error it holds
+/// the token of an earlier sign-in, which may have run out, or none.
 pub fn sign_in(
     transport: &mut dyn Transport,
     called: &HubAddress,
@@ -87,7 +91,8 @@ fn refused(body: Body<'_>) -> SignInError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum SignInError {
-    /// One of the two requests got no answer.
+    /// One of the two requests got no answer. That includes a token answer that the reader of
+    /// the transport refused ([`TransportError::NoAnswer`]).
     Transport(TransportError),
     /// The body of an answer could not be read to its end.
     Body(io::Error),
@@ -96,7 +101,7 @@ pub enum SignInError {
     /// The reader of the challenge refused what the other side sent as one.
     Challenge(ParseError),
     /// The challenge was not answered: it names another address than the one that was called,
-    /// or the signer failed.
+    /// the signer failed, or the signer holds another key than the one that was named.
     Answer(AnswerError),
     /// The other side answered with an error in place of the challenge or of the token answer.
     Refused(ErrorMessage),

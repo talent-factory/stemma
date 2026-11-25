@@ -16,10 +16,16 @@ use crate::protocol::sign_in::{Refused, SignedChallenge, Token, TokenAnswer};
 use crate::protocol::{FetchRequest, RefList, Spoken};
 use crate::register::{Identity, Register};
 use crate::signature::{SignError, Signature};
-use crate::transport::{MemoryTransport, OtherSide, Refusal};
+use crate::transport::{MemoryTransport, OtherSide, Refusal, SignInSide};
 
-/// The token that the hub of these tests issues. The tests look for it in what is printed.
+/// The beginning of every token that the hub of these tests issues. The tests look for it in
+/// what is printed.
 const TOKEN: &str = "dGhlLXRva2VuLW9mLXRoZXNlLXRlc3Rz";
+
+/// The token of the sign-in with this number, from 1: every sign-in gets another one.
+fn token(number: usize) -> String {
+    format!("{TOKEN}.{number}")
+}
 
 fn address(text: &str) -> HubAddress {
     HubAddress::try_new(text).unwrap()
@@ -56,6 +62,7 @@ impl Signer for Counting {
 
 /// The other side of these tests: a hub with one address and a register, which issues a token
 /// to the active keys of the register, as a hub does with the checks of the core.
+#[derive(Debug)]
 struct Door {
     /// The address that the hub knows as its own.
     own: HubAddress,
@@ -66,6 +73,8 @@ struct Door {
     issued: RefCell<Vec<Identity>>,
     /// How often a token answer was asked for.
     asked: Cell<u32>,
+    /// The error that the hub answers in place of a token answer, where a test sets one.
+    refusing: Cell<Option<fn() -> ErrorMessage>>,
 }
 
 impl Door {
@@ -77,6 +86,7 @@ impl Door {
             register: Register::with_owner(owner, daniel().public()).unwrap(),
             issued: RefCell::default(),
             asked: Cell::new(0),
+            refusing: Cell::new(None),
         }
     }
 }
@@ -94,6 +104,12 @@ impl OtherSide for Door {
         not_asked()
     }
 
+    fn sign_in(&self) -> Option<&dyn SignInSide> {
+        Some(self)
+    }
+}
+
+impl SignInSide for Door {
     fn challenge(&self) -> Result<Challenge, Refusal> {
         Ok(Challenge::new(
             self.named.clone(),
@@ -103,17 +119,22 @@ impl OtherSide for Door {
 
     fn token(&self, answer: &SignedChallenge) -> Result<TokenAnswer, Refusal> {
         self.asked.set(self.asked.get() + 1);
-        if answer.nonce() != example_challenge().nonce() {
-            return Err(Refusal::Failed("the nonce is not one of this hub".into()));
+        if let Some(error) = self.refusing.get() {
+            return Err(error().into());
         }
-        // This version has no kind of error for a refused sign-in, so the refusal travels in
-        // the words of the carrier.
+        // The hub of these tests issues one nonce. This version has no kind of error for a
+        // refused sign-in, so the refusal travels in the words of the carrier.
         let identity = answer
-            .actor(&self.own, &self.register)
+            .actor(
+                &self.own,
+                |nonce| nonce == example_challenge().nonce(),
+                &self.register,
+            )
             .map_err(|refused| Refusal::Failed(refused.to_string()))?;
-        self.issued.borrow_mut().push(identity.clone());
+        let mut issued = self.issued.borrow_mut();
+        issued.push(identity.clone());
         Ok(TokenAnswer::new(
-            Token::try_new(TOKEN).unwrap(),
+            Token::try_new(token(issued.len())).unwrap(),
             NonZeroU64::new(300).unwrap(),
         ))
     }
@@ -131,6 +152,12 @@ impl OtherSide for Refusing {
         not_asked()
     }
 
+    fn sign_in(&self) -> Option<&dyn SignInSide> {
+        Some(self)
+    }
+}
+
+impl SignInSide for Refusing {
     fn challenge(&self) -> Result<Challenge, Refusal> {
         Err((self.0)())
     }
@@ -214,6 +241,14 @@ impl Transport for Scripted {
     }
 }
 
+/// The token that the transport holds. Only these tests look at it.
+fn held(transport: &MemoryTransport<Door>) -> Option<String> {
+    transport
+        .token
+        .as_ref()
+        .map(|token| token.expose().to_owned())
+}
+
 fn signs_in(transport: &mut dyn Transport, signer: &Counting) -> Result<Duration, SignInError> {
     sign_in(transport, &hub(), &signer.0.public(), signer)
 }
@@ -222,21 +257,23 @@ fn signs_in(transport: &mut dyn Transport, signer: &Counting) -> Result<Duration
 fn a_sign_in_leaves_the_token_in_the_transport_and_returns_its_lifetime() {
     let mut transport = MemoryTransport::new(Door::new());
     let signer = Counting::new(daniel());
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 
     let lifetime = signs_in(&mut transport, &signer).unwrap();
 
     assert_eq!(lifetime, Duration::from_secs(300));
-    assert!(transport.is_signed_in());
+    assert!(transport.holds_token());
     assert_eq!(signer.1.get(), 1, "the key signs once per sign-in");
     assert_eq!(
         *transport.side().issued.borrow(),
         [Identity::human("daniel").unwrap()]
     );
+    assert_eq!(held(&transport), Some(token(1)));
     // A sign-in can be repeated; the new token replaces the old one.
     signs_in(&mut transport, &signer).unwrap();
-    assert!(transport.is_signed_in());
+    assert!(transport.holds_token());
     assert_eq!(transport.side().issued.borrow().len(), 2);
+    assert_eq!(held(&transport), Some(token(2)));
 }
 
 #[test]
@@ -249,15 +286,17 @@ fn no_output_of_a_sign_in_shows_the_token() {
     drop(answer);
     assert_eq!(shown, "SignedIn::Accepted(300s)");
     // The transport holds the token, and it is the one that the hub issued.
-    assert_eq!(transport.token.as_ref().map(Token::expose), Some(TOKEN));
+    assert_eq!(held(&transport), Some(token(1)));
+    // Neither the answer nor the transport as a whole shows it, with the other side inside.
     for shown in [
         shown,
+        format!("{transport:?}"),
+        format!("{transport:#?}"),
         format!("{:?}", transport.token),
-        format!("{:#?}", transport.token),
     ] {
         assert!(!shown.contains(TOKEN), "{shown}");
     }
-    assert_eq!(format!("{:?}", transport.token), "Some(Token(..))");
+    assert!(format!("{transport:?}").contains("token: Some(Token(..))"));
 }
 
 #[test]
@@ -285,7 +324,7 @@ fn a_challenge_that_names_another_address_is_not_signed() {
     check_rejection(&error);
     assert_eq!(signer.1.get(), 0, "the signer was asked");
     assert_eq!(transport.side().asked.get(), 0, "an answer was sent");
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 }
 
 #[test]
@@ -310,7 +349,7 @@ fn a_hub_grants_nothing_for_a_challenge_that_was_signed_for_another_address() {
     assert_eq!(signer.1.get(), 1);
     assert_eq!(transport.side().asked.get(), 1);
     assert!(transport.side().issued.borrow().is_empty());
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 }
 
 #[test]
@@ -329,13 +368,61 @@ fn a_key_that_is_not_active_in_the_register_gets_no_token() {
         "{error:?}"
     );
     assert!(transport.side().issued.borrow().is_empty());
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 
     // A sign-in that fails leaves the token of an earlier one where it is.
     signs_in(&mut transport, &Counting::new(daniel())).unwrap();
     signs_in(&mut transport, &stranger).unwrap_err();
-    assert!(transport.is_signed_in());
-    assert_eq!(transport.token.as_ref().map(Token::expose), Some(TOKEN));
+    assert!(transport.holds_token());
+    assert_eq!(held(&transport), Some(token(1)));
+}
+
+#[test]
+fn a_sign_in_that_is_answered_with_an_error_leaves_the_earlier_token() {
+    let mut transport = MemoryTransport::new(Door::new());
+    let signer = Counting::new(daniel());
+    signs_in(&mut transport, &signer).unwrap();
+
+    // The hub answers an error in place of the token answer.
+    transport
+        .side()
+        .refusing
+        .set(Some(|| ErrorMessage::UnsupportedVersion(Spoken::here())));
+    let error = signs_in(&mut transport, &signer).unwrap_err();
+    assert!(matches!(error, SignInError::Refused(_)), "{error:?}");
+    assert_eq!(held(&transport), Some(token(1)));
+
+    // The transport answers a request that the reader refuses, and the hub is not asked.
+    let asked = transport.side().asked.get();
+    let mut request = &b"stemma-protocol 1\n"[..];
+    assert!(matches!(
+        transport.answer_challenge(&mut request).unwrap(),
+        SignedIn::Error(_)
+    ));
+    assert_eq!(transport.side().asked.get(), asked);
+    assert_eq!(held(&transport), Some(token(1)));
+
+    // The request cannot be read.
+    transport.answer_challenge(&mut Broken).unwrap_err();
+    assert_eq!(held(&transport), Some(token(1)));
+}
+
+#[test]
+fn a_nonce_that_the_hub_did_not_issue_gets_no_token() {
+    let mut transport = MemoryTransport::new(Door::new());
+    let other = Challenge::new(hub(), "ab".repeat(32).parse().unwrap());
+    let signed = other.answer(&hub(), &daniel().public(), &daniel()).unwrap();
+
+    let mut request = &signed.encode()[..];
+    let failure = transport.answer_challenge(&mut request).unwrap_err();
+
+    assert!(
+        matches!(&failure, TransportError::NoAnswer { detail }
+            if *detail == Refused::Nonce.to_string()),
+        "{failure}"
+    );
+    assert!(transport.side().issued.borrow().is_empty());
+    assert!(!transport.holds_token());
 }
 
 #[test]
@@ -367,7 +454,7 @@ fn an_error_of_the_other_side_travels_in_place_of_the_challenge_and_of_the_token
     body.read_to_end(&mut bytes).unwrap();
     drop(body);
     assert_eq!(ErrorMessage::parse(&bytes).unwrap(), expected);
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 
     let mut scripted = Scripted {
         challenge: Script::Message(example_challenge().encode()),
@@ -406,7 +493,7 @@ fn an_answer_that_the_reader_refuses_is_answered_with_malformed_and_the_side_is_
         SignedIn::Error(_)
     ));
     assert_eq!(transport.side().asked.get(), 0);
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 
     let failure = transport.answer_challenge(&mut Broken).unwrap_err();
     assert!(matches!(failure, TransportError::Request(_)), "{failure}");
@@ -441,7 +528,7 @@ fn a_side_without_a_sign_in_issues_no_challenge_and_grants_no_token() {
     assert!(error.io_error().is_none());
     check_rejection(&error);
     assert_eq!(signer.1.get(), 0);
-    assert!(!transport.is_signed_in());
+    assert!(!transport.holds_token());
 }
 
 #[test]

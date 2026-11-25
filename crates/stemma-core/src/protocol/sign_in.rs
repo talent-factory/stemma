@@ -31,7 +31,8 @@
 //! challenge with [`SignedChallenge::check`], and against a register with
 //! [`SignedChallenge::actor`]. The nonce is the hub's: it derives it from a secret of its own and
 //! accepts it for seconds (ADR-024), so whether a nonce is one of this hub and still counts is
-//! decided by the hub and not here.
+//! judged by the hub. Both checks take that judgement as an argument, so that it cannot be
+//! forgotten.
 //!
 //! The token answer holds the [`Token`], the one secret of the protocol. A token says which key
 //! speaks and nothing else; it is no proof. It lives in the memory of the transport only: it is
@@ -77,7 +78,7 @@ pub enum SignInProblem {
     /// The nonce is not 16 to 64 bytes, written as 32 to 128 lowercase hexadecimal digits.
     Nonce,
     /// The signature is not an SSHSIG signature of an Ed25519 key for the namespace of the
-    /// proofs, written on one line.
+    /// proofs with SHA-512, written on one line.
     SignatureForm,
     /// The signature names another key than the `key` line: another key signed, or the `key`
     /// line was changed.
@@ -85,8 +86,9 @@ pub enum SignInProblem {
     /// The signature names the key of the message and does not verify for it and the payload:
     /// the address or the nonce was changed, or the signature is not one of a challenge.
     Signature,
-    /// The token is empty or holds another character than a letter, a digit, `-`, `.`, `_`,
-    /// `~`, `+`, `/`, and `=` at its end.
+    /// The token does not begin with at least one letter, digit, `-`, `.`, `_`, `~`, `+`, or
+    /// `/`, or holds anything else than these and `=` at its end. A text of `=` alone is refused
+    /// as well.
     Token,
 }
 
@@ -158,7 +160,7 @@ impl FromStr for Nonce {
     type Err = SignInProblem;
 
     /// Reads the canonical form only: uppercase digits and half a byte are refused, so that a
-    /// nonce has one text.
+    /// nonce has one text, and so are fewer than 32 and more than 128 digits.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let nibble = |digit: u8| match digit {
             b'0'..=b'9' => Ok(digit - b'0'),
@@ -218,7 +220,8 @@ impl Challenge {
     /// Returns an error for input that is not UTF-8, a first line that is missing or malformed,
     /// another protocol version, a line that is missing, repeated, unknown, or out of order, a
     /// last line without a line feed, an address that [`HubAddress::try_new`] refuses, and a
-    /// nonce that is not in canonical form. The first problem is reported, with its line.
+    /// nonce that is not 32 to 128 lowercase hexadecimal digits, two for each byte. The first
+    /// problem is reported, with its line.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let mut lines = Lines::open(bytes)?;
         let challenge = read_challenge(&mut lines)?;
@@ -402,9 +405,10 @@ impl SignedChallenge {
     ///
     /// Returns an error for input that is not UTF-8, a first line that is missing or malformed,
     /// another protocol version, a line that is missing, repeated, unknown, or out of order, a
-    /// last line without a line feed, an address, a nonce, or a key that is not in canonical
-    /// form, and a signature that is not in its one-line form. The first problem is reported,
-    /// with its line. A message whose form is right is refused last for its signature, at the
+    /// last line without a line feed, an address or a nonce that the reader of the challenge
+    /// refuses ([`Challenge::parse`]), a key that is no Ed25519 public key or is not in its
+    /// canonical form, and a signature that is not in its one-line form. The first problem is
+    /// reported, with its line. A message whose form is right is refused last for its signature, at the
     /// `signature` line: as [`SignInProblem::Key`] if the signature names another key than the
     /// `key` line, and as [`SignInProblem::Signature`] if it names that key and does not verify.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
@@ -412,7 +416,10 @@ impl SignedChallenge {
         Self::try_new(unverified.challenge, unverified.key, unverified.signature).map_err(|error| {
             let reason = match error {
                 VerifyError::WrongKey => SignInProblem::Key,
-                _ => SignInProblem::Signature,
+                // The version is the one of this program, so only the signature can be wrong.
+                VerifyError::Invalid | VerifyError::UnsupportedVersion { .. } => {
+                    SignInProblem::Signature
+                }
             };
             problem(line, reason)
         })
@@ -425,43 +432,52 @@ impl SignedChallenge {
         read_signed(bytes).map(|(unverified, _)| unverified)
     }
 
-    /// The check of a hub that needs no register: the challenge was signed for this hub.
-    /// `hub` is the public address of the hub that checks.
+    /// The check of a hub that needs no register: the challenge was signed for this hub, and
+    /// its nonce counts. `hub` is the public address of the hub that checks, and `counts` is its
+    /// judgement of the nonce: whether it issued the nonce and still accepts it. Only the hub
+    /// knows its secret and its clock (ADR-024), so the judgement is an argument, and it is one
+    /// that cannot be left out.
     ///
-    /// The signature is checked already, by every way to a value of this type. The nonce is not
-    /// checked here: the caller refuses one that it did not issue or that is too old before it
-    /// issues a token.
+    /// The signature is checked already, by every way to a value of this type.
     ///
     /// # Errors
     ///
-    /// [`Refused::OtherAddress`] if the key signed another address, compared byte for byte.
-    pub fn check(&self, hub: &HubAddress) -> Result<(), Refused> {
-        if self.hub() == hub {
-            Ok(())
-        } else {
-            Err(Refused::OtherAddress)
+    /// [`Refused::OtherAddress`] if the key signed another address, compared byte for byte, and
+    /// [`Refused::Nonce`] if `counts` says no. The address is judged first, and `counts` is not
+    /// asked for a challenge of another address.
+    pub fn check(
+        &self,
+        hub: &HubAddress,
+        counts: impl FnOnce(&Nonce) -> bool,
+    ) -> Result<(), Refused> {
+        if self.hub() != hub {
+            return Err(Refused::OtherAddress);
         }
+        if !counts(self.nonce()) {
+            return Err(Refused::Nonce);
+        }
+        Ok(())
     }
 
-    /// The check of a hub against a register: the challenge was signed for this hub
-    /// ([`check`](Self::check)), by a key that the register holds as an active key. Returns the
-    /// identity that the key speaks for, a human or an agent.
+    /// The check of a hub against a register: the challenge was signed for this hub and its
+    /// nonce counts ([`check`](Self::check)), and the register holds the key as an active key.
+    /// Returns the identity that the key speaks for, a human or an agent.
     ///
     /// A retired key and a revoked key sign nothing new, so neither signs in, whatever the
-    /// number from which it no longer counts. The nonce is not checked here, as in
-    /// [`check`](Self::check).
+    /// number from which it no longer counts.
     ///
     /// # Errors
     ///
-    /// [`Refused::OtherAddress`] if the key signed another address, and [`Refused::NotActive`]
-    /// if no entry of the register holds the key as an active key: the key is unknown, retired,
-    /// or revoked. The address is judged first.
+    /// [`Refused::OtherAddress`] if the key signed another address, [`Refused::Nonce`] if
+    /// `counts` says no, and [`Refused::NotActive`] if no entry of the register holds the key as
+    /// an active key: the key is unknown, retired, or revoked. They are judged in this order.
     pub fn actor<'a>(
         &self,
         hub: &HubAddress,
+        counts: impl FnOnce(&Nonce) -> bool,
         register: &'a Register,
     ) -> Result<&'a Identity, Refused> {
-        self.check(hub)?;
+        self.check(hub, counts)?;
         register
             .entries()
             .iter()
@@ -503,6 +519,8 @@ pub enum Refused {
     /// The challenge was signed for another address than that of this hub: it was issued by
     /// another hub, or the client calls this hub under a name that it does not know as its own.
     OtherAddress,
+    /// The hub did not issue the nonce, or no longer accepts it.
+    Nonce,
     /// No entry of the register holds the key as an active key.
     NotActive,
 }
@@ -511,6 +529,7 @@ impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::OtherAddress => "the challenge was signed for another address than this hub's",
+            Self::Nonce => "the nonce of the challenge is not one that this hub accepts",
             Self::NotActive => "the register does not hold the key of the sign-in as an active key",
         })
     }
@@ -520,7 +539,8 @@ impl Error for Refused {}
 
 /// The token of a hub (ADR-024): a short-lived credential that says which key speaks. It is the
 /// one secret of the protocol, so it is kept apart from every other value: it has no `Display`
-/// form, its `Debug` form does not show it, and it is compared without an early end.
+/// form, its `Debug` form does not show it, and two tokens of the same length are compared
+/// without an early end.
 ///
 /// The text is what an `Authorization: Bearer` header carries (ADR-023): at least one letter,
 /// digit, `-`, `.`, `_`, `~`, `+`, or `/`, then any number of `=`. Its content is the hub's; a
@@ -533,8 +553,8 @@ impl Token {
     ///
     /// # Errors
     ///
-    /// [`SignInProblem::Token`] if the text is empty, holds another character than the ones
-    /// above, or has a `=` before its end.
+    /// [`SignInProblem::Token`] if the text is empty or `=` alone, holds another character than
+    /// the ones above, or has a `=` before its end.
     pub fn try_new(text: impl Into<String>) -> Result<Self, SignInProblem> {
         let text = text.into();
         let body = text.trim_end_matches('=');
@@ -603,7 +623,9 @@ impl TokenAnswer {
         self.token
     }
 
-    /// How long the token counts, from the answer of the hub.
+    /// How long the token counts, from the answer of the hub: at least one second. The value is
+    /// the hub's and has no upper bound here, so a caller that adds it to a point in time uses
+    /// an addition that cannot overflow (`Instant::checked_add`).
     pub fn lifetime(&self) -> Duration {
         Duration::from_secs(self.seconds.get())
     }

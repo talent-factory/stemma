@@ -29,6 +29,16 @@ fn daniel() -> Seeded {
     Seeded::new(1)
 }
 
+/// The judgement of a hub that accepts every nonce.
+fn accepted(_: &Nonce) -> bool {
+    true
+}
+
+/// The judgement of a hub that accepts no nonce.
+fn stale(_: &Nonce) -> bool {
+    false
+}
+
 fn human(id: &str) -> Identity {
     Identity::human(id).unwrap()
 }
@@ -235,7 +245,7 @@ fn the_reader_of_the_challenge_refuses_everything_else() {
 }
 
 #[test]
-fn the_reader_of_the_grant_refuses_everything_else() {
+fn the_reader_of_the_token_answer_refuses_everything_else() {
     let refused = |rest: &str| {
         let message = format!("stemma-protocol 1\n{rest}");
         let error = TokenAnswer::parse(message.as_bytes()).unwrap_err();
@@ -549,15 +559,94 @@ fn a_hub_refuses_a_challenge_that_was_signed_for_another_address() {
     let signed = Challenge::new(other_hub(), example_challenge().nonce().clone())
         .answer(&other_hub(), &key, &daniel())
         .unwrap();
-    assert_eq!(signed.check(&other_hub()), Ok(()));
-    assert_eq!(signed.check(&hub()), Err(Refused::OtherAddress));
+    assert_eq!(signed.check(&other_hub(), accepted), Ok(()));
+    assert_eq!(signed.check(&hub(), accepted), Err(Refused::OtherAddress));
     // The address is judged first, so an active key does not help.
-    assert_eq!(signed.actor(&hub(), &register), Err(Refused::OtherAddress));
-    assert_eq!(signed.actor(&other_hub(), &register), Ok(&human("daniel")));
+    assert_eq!(
+        signed.actor(&hub(), accepted, &register),
+        Err(Refused::OtherAddress)
+    );
+    assert_eq!(
+        signed.actor(&other_hub(), accepted, &register),
+        Ok(&human("daniel"))
+    );
     check_rejection(&Refused::OtherAddress);
     // What travelled is refused as well: the reader accepts it, the check does not.
     let read = SignedChallenge::parse(&signed.encode()).unwrap();
-    assert_eq!(read.check(&hub()), Err(Refused::OtherAddress));
+    assert_eq!(read.check(&hub(), accepted), Err(Refused::OtherAddress));
+}
+
+#[test]
+fn the_hub_compares_the_address_byte_for_byte() {
+    let signed = example_signed();
+    assert_eq!(signed.check(&hub(), accepted), Ok(()));
+    // A port, a path, another case, or another scheme is another address for the hub as well.
+    for own in [
+        "https://hub.example:443",
+        "https://hub.example/stemma",
+        "https://HUB.example",
+        "http://hub.example",
+    ] {
+        let own = HubAddress::try_new(own).unwrap();
+        assert_eq!(
+            signed.check(&own, accepted),
+            Err(Refused::OtherAddress),
+            "{own}"
+        );
+    }
+}
+
+#[test]
+fn a_nonce_that_the_hub_does_not_accept_does_not_sign_in() {
+    let key = daniel().public();
+    let register = Register::with_owner(human("daniel"), key).unwrap();
+    let signed = example_signed();
+
+    // The hub is asked about the nonce of the message, and its answer decides.
+    let seen = Cell::new(None);
+    let look = |nonce: &Nonce| {
+        seen.set(Some(nonce.clone()));
+        true
+    };
+    assert_eq!(signed.check(&hub(), look), Ok(()));
+    assert_eq!(seen.take().as_ref(), Some(example_challenge().nonce()));
+    assert_eq!(signed.check(&hub(), stale), Err(Refused::Nonce));
+    assert_eq!(signed.actor(&hub(), stale, &register), Err(Refused::Nonce));
+    check_rejection(&Refused::Nonce);
+
+    // The address is judged before the nonce: the hub is not asked about the nonce of a
+    // challenge that was signed for another address.
+    let never = |_: &Nonce| -> bool { panic!("the hub was asked about the nonce") };
+    assert_eq!(
+        signed.check(&other_hub(), never),
+        Err(Refused::OtherAddress)
+    );
+    // The nonce is judged before the register: an unknown key learns nothing about it.
+    let stranger = Seeded::new(4);
+    let unknown = example_challenge()
+        .answer(&hub(), &stranger.public(), &stranger)
+        .unwrap();
+    assert_eq!(unknown.actor(&hub(), stale, &register), Err(Refused::Nonce));
+    assert_eq!(
+        unknown.actor(&hub(), accepted, &register),
+        Err(Refused::NotActive)
+    );
+}
+
+#[test]
+fn the_check_of_the_fuzz_target_holds_for_a_signature_that_does_not_verify() {
+    // The seeds carry signatures that verify, so the branch of the check for a message whose
+    // form is right and whose signature is wrong is run here.
+    let signed = text(example_signed().encode());
+    let other = Seeded::new(7).public();
+    for forged in [
+        signed.replacen("nonce 00", "nonce ff", 1),
+        signed.replacen(&daniel().public().to_string(), &other.to_string(), 1),
+    ] {
+        assert!(SignedChallenge::parse_unverified(forged.as_bytes()).is_ok());
+        assert!(SignedChallenge::parse(forged.as_bytes()).is_err());
+        crate::fuzz::protocol(forged.as_bytes());
+    }
 }
 
 #[test]
@@ -581,31 +670,43 @@ fn a_key_that_is_not_active_in_the_register_does_not_sign_in() {
     register.add_key(&daniel, second.public()).unwrap();
 
     // Every active key signs in, as the identity of its entry.
-    assert_eq!(answer(&first).actor(&hub(), &register), Ok(&daniel));
-    assert_eq!(answer(&second).actor(&hub(), &register), Ok(&daniel));
-    assert_eq!(answer(&erin).actor(&hub(), &register), Ok(&human("erin")));
+    assert_eq!(
+        answer(&first).actor(&hub(), accepted, &register),
+        Ok(&daniel)
+    );
+    assert_eq!(
+        answer(&second).actor(&hub(), accepted, &register),
+        Ok(&daniel)
+    );
+    assert_eq!(
+        answer(&erin).actor(&hub(), accepted, &register),
+        Ok(&human("erin"))
+    );
 
     // A key that the register does not hold. Its signature verifies all the same.
     assert_eq!(
-        answer(&stranger).actor(&hub(), &register),
+        answer(&stranger).actor(&hub(), accepted, &register),
         Err(Refused::NotActive)
     );
-    assert_eq!(answer(&stranger).check(&hub()), Ok(()));
+    assert_eq!(answer(&stranger).check(&hub(), accepted), Ok(()));
 
     // A retired key signs nothing new, whatever the number from which it is retired.
     register.retire(&daniel, &first.public(), u64::MAX).unwrap();
     assert_eq!(
-        answer(&first).actor(&hub(), &register),
+        answer(&first).actor(&hub(), accepted, &register),
         Err(Refused::NotActive)
     );
-    assert_eq!(answer(&second).actor(&hub(), &register), Ok(&daniel));
+    assert_eq!(
+        answer(&second).actor(&hub(), accepted, &register),
+        Ok(&daniel)
+    );
 
     // A revoked key does not either.
     register
         .revoke(&human("erin"), &erin.public(), u64::MAX)
         .unwrap();
     assert_eq!(
-        answer(&erin).actor(&hub(), &register),
+        answer(&erin).actor(&hub(), accepted, &register),
         Err(Refused::NotActive)
     );
     check_rejection(&Refused::NotActive);
@@ -635,12 +736,15 @@ fn an_agent_signs_in_with_the_key_of_its_register_entry() {
     let signed = example_challenge()
         .answer(&hub(), &bot.public(), &bot)
         .unwrap();
-    assert_eq!(signed.actor(&hub(), &register), Ok(&agent));
+    assert_eq!(signed.actor(&hub(), accepted, &register), Ok(&agent));
 
     // The revocation of the sponsor's key takes the key of the agent with it.
     register.add_key(&daniel, Seeded::new(6).public()).unwrap();
     register.revoke(&daniel, &owner.public(), 9).unwrap();
-    assert_eq!(signed.actor(&hub(), &register), Err(Refused::NotActive));
+    assert_eq!(
+        signed.actor(&hub(), accepted, &register),
+        Err(Refused::NotActive)
+    );
 }
 
 #[test]

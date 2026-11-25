@@ -226,39 +226,47 @@ pub trait OtherSide {
 
     // The sign-in (ADR-024).
 
+    /// The part of this side that answers a sign-in, or `None` for a side without one, such as
+    /// a repository that is reached without a hub. The method as it is given here returns
+    /// `None`: both requests of a sign-in then fail, nothing is issued, and the transport
+    /// reports [`TransportError::NoAnswer`]. A side that knows its senders returns itself, as a
+    /// [`SignInSide`], which has both answers or none.
+    fn sign_in(&self) -> Option<&dyn SignInSide> {
+        None
+    }
+}
+
+/// The answers of an [`OtherSide`] to the two requests of a sign-in (ADR-024). They are one
+/// trait, so that a side cannot issue a challenge that it never answers.
+pub trait SignInSide {
     /// Answers a challenge for a sign-in.
-    ///
-    /// The method as it is given here is the answer of a side without a sign-in, such as a
-    /// repository that is reached without a hub: it fails, and nothing is issued. A side that
-    /// knows its senders implements both methods of the sign-in.
     ///
     /// # Errors
     ///
     /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
     /// answering.
-    fn challenge(&self) -> Result<Challenge, Refusal> {
-        Err(Refusal::Failed(NO_SIGN_IN.to_owned()))
-    }
+    fn challenge(&self) -> Result<Challenge, Refusal>;
 
     /// Answers a signed challenge with a token and its lifetime. The signature of `answer`
     /// verifies for its key; whether the address, the nonce and the key count is the question of
     /// this side ([`SignedChallenge::check`], [`SignedChallenge::actor`]).
     ///
-    /// The method as it is given here is the answer of a side without a sign-in, as for
-    /// [`challenge`](Self::challenge): it fails, and no token is issued.
-    ///
     /// # Errors
     ///
     /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
     /// answering.
-    fn token(&self, answer: &SignedChallenge) -> Result<TokenAnswer, Refusal> {
-        let _ = answer;
-        Err(Refusal::Failed(NO_SIGN_IN.to_owned()))
-    }
+    fn token(&self, answer: &SignedChallenge) -> Result<TokenAnswer, Refusal>;
 }
 
-/// What a side without a sign-in says in place of a challenge and of a token answer.
+/// What the transport reports for a side without a sign-in, in place of a challenge and of a
+/// token answer.
 const NO_SIGN_IN: &str = "this side has no sign-in";
+
+/// The part of a side that answers a sign-in, or the refusal of a side without one.
+fn sign_in_side<S: OtherSide>(side: &S) -> Result<&dyn SignInSide, Refusal> {
+    side.sign_in()
+        .ok_or_else(|| Refusal::Failed(NO_SIGN_IN.to_owned()))
+}
 
 /// Why an [`OtherSide`] did not answer with the message that was asked for.
 #[derive(Debug)]
@@ -292,7 +300,7 @@ impl From<ErrorMessage> for Refusal {
 /// compresses nothing and sets no bound for the size of a request.
 ///
 /// A sign-in runs as over a network too: the token answer of the other side is encoded and read
-/// back with [`TokenAnswer::parse`], and its token is kept ([`is_signed_in`](Self::is_signed_in)).
+/// back with [`TokenAnswer::parse`], and its token is kept ([`holds_token`](Self::holds_token)).
 /// The requests of this version need no sender, so the token is not handed to the other side yet;
 /// the slice that adds a request that needs one does that. The `Debug` form shows no token.
 #[derive(Debug)]
@@ -308,9 +316,10 @@ impl<S: OtherSide> MemoryTransport<S> {
         Self { side, token: None }
     }
 
-    /// Whether a sign-in was issued, so that the transport holds a token. It says nothing about
-    /// the lifetime: the transport has no clock.
-    pub fn is_signed_in(&self) -> bool {
+    /// Whether the transport holds a token, because a sign-in was answered with one. It says
+    /// nothing about the lifetime: the transport has no clock, and a sign-in that is refused
+    /// later leaves the token of the earlier one where it is.
+    pub fn holds_token(&self) -> bool {
         self.token.is_some()
     }
 
@@ -351,7 +360,11 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
     // The sign-in (ADR-024).
 
     fn challenge(&mut self) -> Result<Answer<'_>, TransportError> {
-        answer(self.side.challenge().map(|challenge| challenge.encode()))
+        answer(
+            sign_in_side(&self.side)
+                .and_then(SignInSide::challenge)
+                .map(|challenge| challenge.encode()),
+        )
     }
 
     fn answer_challenge(&mut self, request: &mut dyn Read) -> Result<SignedIn<'_>, TransportError> {
@@ -360,7 +373,7 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
             .read_to_end(&mut bytes)
             .map_err(TransportError::Request)?;
         let issued = match SignedChallenge::parse(&bytes) {
-            Ok(signed) => self.side.token(&signed),
+            Ok(signed) => sign_in_side(&self.side).and_then(|side| side.token(&signed)),
             Err(error) => Err(ErrorMessage::from(&error).into()),
         };
         match issued {

@@ -50,9 +50,10 @@ Berechnung der fehlenden Objekte, die Prüfung empfangener Objekte und die Eintr
 \type{fetch} und \type{push} im Operation Log.
 Der Kern spricht mit der Gegenseite über eine Schnittstelle (\type{Transport}), die nur Nachrichten
 überträgt und nichts über HTTP annimmt.
-Sie hat eine Methode pro Anfrage des Protokolls, vorerst für die Liste der Referenzen und für
-\type{fetch}, und sie überträgt Bytes: Eine Nachricht schreibt und liest der Kern, nie der
-Transport.
+Sie hat eine Methode pro Anfrage des Protokolls, vorerst für die Liste der Referenzen, für
+\type{fetch} und für die zwei Anfragen der Anmeldung, und sie überträgt Bytes: Eine Nachricht
+schreibt und liest der Kern, nicht der Transport.
+Die eine Ausnahme ist die Nachricht mit dem Token (\in{Abschnitt}[sec:hub-auth]).
 Jeder Body ist ein Strom, sodass ein Objektstrom nie als Ganzes im Speicher liegen muss.
 Der Transport sagt zu einer Antwort nur, ob sie die verlangte Nachricht ist oder ein Fehler an
 ihrer Stelle; danach wählt der Kern den Leser.
@@ -468,11 +469,12 @@ Der Kern hält drei Regeln.
 \item Der Klon signiert nur für die Adresse, die er aufruft.
 Nennt die Challenge eine andere, bricht die Anmeldung ab, bevor der Schlüssel gefragt wird; die
 Adressen werden Byte für Byte verglichen.
-\item Der Hub prüft eine signierte Challenge mit zwei Fragen des Kerns: ob sie für seine eigene
-Adresse signiert wurde und ob das Register den Schlüssel als aktiven Schlüssel führt.
+\item Der Hub prüft eine signierte Challenge mit drei Fragen, in dieser Reihenfolge: ob sie für
+seine eigene Adresse signiert wurde, ob er die Nonce annimmt und ob das Register den Schlüssel
+als aktiven Schlüssel führt.
 Ein unbekannter, ein ausgemusterter und ein widerrufener Schlüssel werden gleich abgelehnt.
-Ob die Nonce von ihm stammt und noch gilt, prüft der Hub selbst, denn nur er kennt sein Geheimnis
-und seine Uhr.
+Die Nonce kann der Kern nicht beurteilen, denn nur der Hub kennt sein Geheimnis und seine Uhr;
+die Prüfung des Kerns verlangt deshalb sein Urteil als Argument, sodass es nicht fehlen kann.
 \item Das Token erscheint in keiner Ausgabe.
 Sein Typ lässt sich nicht als Text ausgeben, und kein Fehler eines Lesers zitiert es.
 Die Nachricht mit dem Token liest der Transport, nicht der Aufrufer: Er behält das Token im

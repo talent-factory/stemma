@@ -51,9 +51,9 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
 - A request fails with a transport error in three cases only: the body of the request could not
   be read, the carrier failed, or what came back is no answer of the other side in the protocol,
   such as the page of a proxy; the error then carries the words of the carrier, for HTTP the
-  status (ADR-023). A transport reads no body, so it tells such an answer from an error message by
-  something outside the body; for `stemma-remote` that is the media type, which its slice sets
-  (ADR-023, open items). This narrows rule 3 of the mapping to HTTP in ADR-023: a body that the
+  status (ADR-023). A transport reads no body but that of the token answer (see "The sign-in"
+  below), so it tells such an answer from an error message by something outside the body; for
+  `stemma-remote` that is the media type, which its slice sets (ADR-023, open items). This narrows rule 3 of the mapping to HTTP in ADR-023: a body that the
   transport hands over as an error message and that its reader refuses is an error of that
   reader, reported by the core, and no transport error.
 - A body that ends early is an error of its reader, never an early end, because no message
@@ -71,12 +71,13 @@ transport, so the transport reads the one message that holds it:
   request, and a token answer that the reader refuses is a transport error. No method takes or
   returns a token.
 - The procedure stands once, in the core: `stemma_core::transport::sign_in` runs the two
-  requests over any transport, and it holds the rule that a challenge for another address is not
-  signed (ADR-024).
+  requests over any transport. It signs through `Challenge::answer`, which holds the rule that a
+  challenge for another address is not signed (ADR-024).
 - The in-memory transport encodes the token answer of its other side and reads it back, so the
   writer and the reader of the token answer are covered as those of the other messages are. Its
-  other side answers the two requests with values, as it answers `refs`; a side that implements
-  neither has no sign-in and fails both.
+  other side answers the two requests with values, as it answers `refs`. The two answers are one
+  trait (`SignInSide`), so a side has both or none; a side without a sign-in fails both
+  requests.
 
 Rejected for the sign-in: a caller that reads the token answer and hands the token to the
 transport (the token would pass through code that prints and logs, and the trait would name it),
