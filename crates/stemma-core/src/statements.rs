@@ -329,6 +329,23 @@ mod tests {
     }
 
     #[test]
+    fn a_statement_that_is_held_already_is_flushed_before_an_entry_names_it() {
+        let dir = TempDir::new();
+        let set = set(&dir);
+        let statement = example(StatementKind::Opening);
+        set.put(&statement).unwrap();
+        // An earlier call may have stopped between the rename and the flush of the directory,
+        // so the repeat flushes it: a flush that fails is the failure of the repeat.
+        let before = crate::store::flush_count();
+        set.put(&statement).unwrap();
+        assert!(crate::store::flush_count() > before);
+        let denied = crate::store::fail_flush_of(set.dir());
+        assert!(matches!(set.put(&statement), Err(SetError::Io { .. })));
+        drop(denied);
+        set.put(&statement).unwrap();
+    }
+
+    #[test]
     fn the_reader_refuses_a_changed_file_a_wrong_name_and_a_foreign_name() {
         let dir = TempDir::new();
         let set = set(&dir);

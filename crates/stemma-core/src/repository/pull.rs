@@ -26,8 +26,8 @@ use crate::history::{self, HistoryError, Parents};
 use crate::lease;
 use crate::object::{CommitId, Kind};
 use crate::oplog::{
-    Entry, EntryError, OpLogError, OperationName, PullEntry, PR_APPROVE, PR_CLOSE, PR_MERGE,
-    PR_OPEN,
+    Entry, EntryError, OpLogError, OperationName, PullEntry, PullKind, PR_APPROVE, PR_CLOSE,
+    PR_MERGE, PR_OPEN,
 };
 use crate::protocol::record::SealError;
 use crate::protocol::statement::{self, Body, Closing, Opening, Statement, StatementProblem};
@@ -162,10 +162,20 @@ impl Repository {
                 number: open.number(),
             });
         }
+        // The log is asked, not only the fold: an entry whose statement was lost names the
+        // opening still, and putting the statement back would bring its pull request back,
+        // ended or not, while the new entry would name nothing.
         let id = statement.hash();
-        if let Some(ended) = pulls.iter().find(|pull| pull.id() == id) {
+        let entries = self.oplog().entries().map_err(PullError::Log)?;
+        let same = entries.iter().find(|entry| {
+            entry.statement() == Some(id)
+                && entry
+                    .pull()
+                    .is_some_and(|pull| pull.kind() == PullKind::Open)
+        });
+        if let Some(same) = same {
             return Err(PullError::SameOpening {
-                number: ended.number(),
+                number: same.number(),
             });
         }
         for reviewer in &reviewers {
@@ -535,20 +545,45 @@ pub(super) fn make_statement(
     actor: &Actor,
     register: Option<&Register>,
     signer: Option<&dyn Signer>,
-) -> Result<Statement, PullError> {
+) -> Result<Statement, NotSigned> {
     let Some(register) = register else {
         return Ok(Statement::unsigned(body));
     };
-    let signer = signer.ok_or(PullError::SignatureRequired)?;
-    let statement = Statement::sign(body, signer).map_err(PullError::Sign)?;
+    let signer = signer.ok_or(NotSigned::SignatureRequired)?;
+    let statement = Statement::sign(body, signer).map_err(NotSigned::Sign)?;
     let verified = register
         .verify_statement(actor, &statement, None)
-        .map_err(|error| PullError::Proof(Box::new(error)))?;
+        .map_err(|error| NotSigned::Proof(Box::new(error)))?;
     // A retired key keeps the statements it made, but it signs nothing new.
     if !register.is_active_key(&Identity::of(actor), verified.key()) {
-        return Err(PullError::KeyNotActive);
+        return Err(NotSigned::KeyNotActive);
     }
     Ok(statement)
+}
+
+/// Why [`make_statement`] made no statement: the four refusals of a signature, which every
+/// writer of a statement reports as its own error.
+#[derive(Debug)]
+pub(super) enum NotSigned {
+    /// The repository has a register, and the caller gave no signer.
+    SignatureRequired,
+    /// The key of the signature is retired.
+    KeyNotActive,
+    /// The statement could not be signed, or the signer signed with another key than it named.
+    Sign(SealError),
+    /// The register does not accept the signature for the actor.
+    Proof(Box<ProofError>),
+}
+
+impl From<NotSigned> for PullError {
+    fn from(error: NotSigned) -> Self {
+        match error {
+            NotSigned::SignatureRequired => Self::SignatureRequired,
+            NotSigned::KeyNotActive => Self::KeyNotActive,
+            NotSigned::Sign(error) => Self::Sign(error),
+            NotSigned::Proof(error) => Self::Proof(error),
+        }
+    }
 }
 
 /// The pull request `number` if it is open.
@@ -820,7 +855,6 @@ mod tests {
 
     use super::*;
     use crate::object::Blob;
-    use crate::oplog::PullKind;
     use crate::pull::PullState;
     use crate::register;
     use crate::repository::statements::by_hand;
@@ -2572,6 +2606,23 @@ mod tests {
                 "{damage:?}"
             );
         }
+        // The ended pull request is final also while its opening is lost: the log still names
+        // it, so the same opening is refused and nothing is written.
+        let lost = repository
+            .statement_set()
+            .path_of(&repository.pull_requests().unwrap()[0].id());
+        let kept = std::fs::read(&lost).unwrap();
+        std::fs::remove_file(&lost).unwrap();
+        let before = written(&repository);
+        let error = repository
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, PullError::SameOpening { number: n } if n == number),
+            "{error:?}"
+        );
+        assert_eq!(written(&repository), before);
+        std::fs::write(&lost, kept).unwrap();
         // An opening can let a change through, so it counts only with its statement.
         let opening = repository.oplog().entries().unwrap();
         let opening = opening

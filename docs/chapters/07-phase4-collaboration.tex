@@ -247,6 +247,9 @@ Ersetzte der Purge nur \type{pr-merge} und liesse \type{pr-open} stehen, wäre d
 wieder offen; deshalb ersetzt er in diesem Fall auch das \type{pr-open}.
 Die Erklärung eines ersetzten Eintrags rührt der Purge nicht an.
 Sie bleibt in der Menge der Erklärungen liegen und zählt nicht mehr, weil kein Eintrag sie nennt.
+Lässt sich die Erklärung eines \type{pr-open} nicht lesen, weiss der Purge nicht, ob der Pull
+Request offen ist, und lehnt ab, bis sie wiederhergestellt ist; \type{op verify} nennt den
+Schaden.
 
 {\bf Erklärungen und Einträge.}
 Bis zur Format-Version 15 waren die Einträge selbst der Beleg.

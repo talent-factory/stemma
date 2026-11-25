@@ -28,9 +28,8 @@ use super::snapshot::{read_any_commit, read_object, SnapshotError};
 use super::{Repository, UpdateError};
 use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::object::{BlobId, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
-use crate::oplog::PullKind;
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
-use crate::pull::PullRequest;
+use crate::oplog::{PullEntry, PullKind};
 use crate::refs::{BranchName, Head, RefError};
 use crate::remote::{RemoteRef, RemoteRefName};
 use crate::statements::SetError;
@@ -411,25 +410,29 @@ impl Repository {
         // counts as open unless the evidence shows that its pull request ended: one whose
         // statement cannot be read is kept as well, because a stub would hide the damage from
         // `op verify` for good.
-        let ended: HashSet<u64> = self
-            .evidence_of(&log)
-            .map_err(statements_unreadable)?
-            .pulls
-            .iter()
-            .filter(|pull| !pull.is_open())
-            .map(PullRequest::number)
-            .collect();
-        let is_open = |entry: &Entry| {
-            entry.statement().is_some()
-                && entry
-                    .pull()
-                    .is_some_and(|pull| pull.kind() == PullKind::Open)
-                && !ended.contains(&entry.number())
-        };
-        if let Some(entry) = replaced.iter().find(|entry| is_open(entry)) {
-            return Err(PurgeError::OpenPullRequest {
-                number: entry.number(),
-            });
+        // The question is asked by the name of the pull request, the hash of its opening, and
+        // not by the number of the entry: an opening that the log names twice is one pull
+        // request.
+        let pulls = self.evidence_of(&log).map_err(statements_unreadable)?.pulls;
+        for entry in &replaced {
+            let opening = entry
+                .pull()
+                .filter(|pull| pull.kind() == PullKind::Open)
+                .and_then(PullEntry::statement);
+            let Some(opening) = opening else { continue };
+            match pulls.iter().find(|pull| pull.id() == opening) {
+                Some(pull) if pull.is_open() => {
+                    return Err(PurgeError::OpenPullRequest {
+                        number: pull.number(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    return Err(PurgeError::UnreadableOpening {
+                        number: entry.number(),
+                    });
+                }
+            }
         }
         // A log with 2^24 entries is too large for a test, so no test notices if this goes.
         // Without it, a purge writes a journal that `--resume` and `--abort` cannot read.
@@ -1040,6 +1043,14 @@ pub enum PurgeError {
         /// The number of the pull request.
         number: u64,
     },
+    /// The plan would replace an entry `pr-open` whose opening the evidence does not know: its
+    /// statement is missing or damaged, or it says something else than the entry. Whether the
+    /// pull request is open cannot be told, and a stub in place of the entry would hide the
+    /// damage from `op verify` for good. Restore the statement first (ADR-011, ADR-025).
+    UnreadableOpening {
+        /// The number of the entry.
+        number: u64,
+    },
     /// Tags point to commits that the purge would rewrite. A tag never moves (ADR-008), so the
     /// purge would leave the commits with the secret reachable.
     TaggedCommit {
@@ -1117,6 +1128,13 @@ impl PurgeError {
                 f,
                 "the pull request {number} is still open and names a commit that the purge would \
                  rewrite; close it or merge it first"
+            ),
+            Self::UnreadableOpening { number } => write!(
+                f,
+                "entry {number} opens a pull request and names a commit that the purge would \
+                 rewrite, but its statement cannot be read, so the pull request may be open; \
+                 `stemma op verify` says what is wrong with the statement, and the purge goes \
+                 on once it is restored"
             ),
             Self::Rewrite { commit, source } => write!(
                 f,
@@ -1196,6 +1214,7 @@ impl Error for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::TooManyEntries { .. }
             | Self::OpenPullRequest { .. }
+            | Self::UnreadableOpening { .. }
             | Self::TaggedCommit { .. }
             | Self::RemoteReference { .. }
             | Self::Unsound { .. } => None,
@@ -1626,9 +1645,10 @@ mod tests {
             .plan_purge(secret(), &actor(), &AllowAll)
             .unwrap_err();
         assert!(
-            matches!(error, PurgeError::OpenPullRequest { number: n } if n == number),
+            matches!(error, PurgeError::UnreadableOpening { number: n } if n == number),
             "{error:?}"
         );
+        assert!(error.to_string().contains("stemma op verify"), "{error}");
     }
 
     #[test]

@@ -106,7 +106,7 @@ pub use revision::{
 pub use rewrite::{RewriteError, Rewritten};
 pub use rules::{LevelError, PolicyError};
 pub use snapshot::{SnapshotError, TakeOverAdvice, Unsupported};
-pub use statements::{EvidenceError, StatementCheckError, StatementsVerified};
+pub use statements::{Disagreement, EvidenceError, StatementCheckError, StatementsVerified};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use switch::{Changes, Handled, Planned, SwitchError, SwitchPlan, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};

@@ -15,9 +15,9 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
-use super::pull::make_statement;
+use super::pull::{make_statement, NotSigned};
 use super::statements::{proof_of, EvidenceError};
-use super::{now, PullError, Repository};
+use super::{now, Repository};
 use crate::check::{self, Check};
 use crate::conflict::AnyCommit;
 use crate::history::{self, HistoryError, Parents};
@@ -82,16 +82,7 @@ impl Repository {
             })?;
         let checked = Checked::try_new(None, commit, base, result)
             .map_err(|_| CheckError::BaseIsCommit { commit })?;
-        let statement =
-            make_statement(Body::Check(checked), actor, register, signer).map_err(|error| {
-                match error {
-                    PullError::SignatureRequired => CheckError::SignatureRequired,
-                    PullError::KeyNotActive => CheckError::KeyNotActive,
-                    PullError::Sign(error) => CheckError::Sign(error),
-                    PullError::Proof(error) => CheckError::Proof(error),
-                    _ => unreachable!("making a statement fails for its signature only"),
-                }
-            })?;
+        let statement = make_statement(Body::Check(checked), actor, register, signer)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
         for named in std::iter::once(commit).chain(base) {
             match self.objects().kind_of(&named.object_id())? {
@@ -435,6 +426,17 @@ impl From<StoreError> for CheckError {
 impl From<HistoryError> for CheckError {
     fn from(error: HistoryError) -> Self {
         Self::History(error)
+    }
+}
+
+impl From<NotSigned> for CheckError {
+    fn from(error: NotSigned) -> Self {
+        match error {
+            NotSigned::SignatureRequired => Self::SignatureRequired,
+            NotSigned::KeyNotActive => Self::KeyNotActive,
+            NotSigned::Sign(error) => Self::Sign(error),
+            NotSigned::Proof(error) => Self::Proof(error),
+        }
     }
 }
 

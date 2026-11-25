@@ -685,8 +685,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     says something else places nothing, with one exception: a closing and a failing run are
     placed from the lines of their entry, without a signature. Losing a file of the set
     therefore never opens a pull request again, and in the open mode never takes a red tip
-    away; in an enforcing repository a failing run without a signature does not count, as
-    one without its proof did not (ADR-019).
+    away. In an enforcing repository a failing run without a signature does not count, as
+    one without its proof did not (ADR-019); losing the statement of a signed failure takes
+    the red tip away there, which `op verify` reports and the gate does not.
   - **The order of writing.** The statement is signed before the lock of the references is
     taken, because a key with a passphrase may ask a person, and the register is asked for the
     signature before anything is written: every refusal comes before the first write. Under
@@ -696,7 +697,9 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     "an approval without its proof", which the formats 10 to 15 had, does not exist any more.
   - **An ended pull request is final** (ADR-025): the writer refuses an opening that the fold
     knows already, and the fold skips one that is placed a second time. The next pull request
-    of a branch needs a new head, other reviewers, or another repair.
+    of a branch needs a new head, other reviewers, or another repair. The writer asks the
+    log for it and not only the fold, so an opening whose statement was lost is refused as
+    well.
   - **`op verify` checks the statements and the entries that name them.** Every file of the
     set is a statement under the name of its hash, with a signature that verifies for the key
     that it names. Every entry that names a statement names one that the set holds, of its
@@ -709,7 +712,12 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   - **Purge.** The entries are replaced by stubs as before (above). The purge does not touch
     the set: the statement of a stub stays as a statement that no entry names. A closing names
     no commit and stays; that its opening is a stub is no damage. What a purge does with such
-    statements is an open item of ADR-025.
+    statements is an open item of ADR-025. The purge asks by the hash of the opening whether
+    a pull request is open, not by the number of an entry. It also refuses to replace an
+    entry `pr-open` whose opening the fold does not know, because its statement is missing,
+    damaged, or says something else (`PurgeError::UnreadableOpening`, exit code 5): whether
+    that pull request is open cannot be told, and a stub would hide the damage from
+    `op verify` for good. The statement is restored first.
   - **Not built.** The `fetch` entry that names the statements received, and an entry
     `lease-override` that names the statement of an owner override, whose format exists
     (ADR-025). They come with their slices.

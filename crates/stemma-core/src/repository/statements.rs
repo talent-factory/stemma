@@ -238,7 +238,7 @@ pub(crate) fn disagreement(
     entry: &Entry,
     statement: &Statement,
     openings: &HashMap<u64, Opened>,
-) -> Option<&'static str> {
+) -> Option<Disagreement> {
     let names = |number: Option<u64>, pull: StatementHash| match number
         .and_then(|number| openings.get(&number))
     {
@@ -266,22 +266,30 @@ pub(crate) fn disagreement(
                 && check.base().copied() == checked.base()
                 && check.result() == checked.result()
         }
-        _ => return Some("the statement is of another kind than the entry"),
+        _ => return Some(Disagreement::Kind),
     };
-    (!agrees).then_some("the statement says something else than the lines of the entry")
+    (!agrees).then_some(Disagreement::Lines)
 }
 
-/// What an entry says that can only hold a change back, as an unsigned statement made from the
-/// lines of the entry: the closing of a pull request, and a failing run of a check. It stands
-/// in where the statement that the entry names is missing, is damaged, or says something else,
-/// which `op verify` reports. An opening, an approval, and a passing run can let a change
-/// through, so they count only with their statement.
+/// What an entry says against a change, as an unsigned statement made from the lines of the
+/// entry: the closing of a pull request, and a failing run of a check. It stands in where the
+/// statement that the entry names is missing, is damaged, or says something else, which
+/// `op verify` reports. An opening, an approval, and a passing run let a change through, so
+/// they count only with their statement.
 ///
-/// The stand-in carries no signature. A closing was never counted against the register by the
-/// fold, so it ends its pull request in both modes, as the entry `pr-close` did before the
-/// statements. A failing run counts in the open mode and does not count in an enforcing
-/// repository, where a failure without the signature of its writer must not pause `main`
-/// (ADR-019): that is what an entry without its proof did before the statements.
+/// The stand-in carries no signature, and it gives no more than the entry gave before the
+/// statements, for each kind:
+///
+/// - A closing ends its pull request in both modes. The fold never counted a closing against
+///   the register, and the entry `pr-close` had no proof.
+/// - A failing run in the open mode counts as any unsigned failure there does. It makes its
+///   commit red, and with that it also moves the verified tip, ends a row of invalidated runs
+///   of another change, and opens the red window that a declared repair needs (ADR-019); the
+///   filter of independent writers still asks for the actor of the entry.
+/// - A failing run in an enforcing repository does not count: a failure without the signature
+///   of its writer must not pause `main` (ADR-019), as an entry without its proof did not. So
+///   losing the statement of a signed failure takes the red tip away there, which `op verify`
+///   reports and the gate does not.
 fn held_back(entry: &Entry, openings: &HashMap<u64, Opened>) -> Option<Statement> {
     let body = match entry.record() {
         Record::Pull(pull) if pull.kind() == PullKind::Close => {
@@ -313,6 +321,26 @@ pub(crate) fn proof_of(
         Some(register) => register
             .verify_statement(actor, statement, Some(number))
             .map(|_| ()),
+    }
+}
+
+/// How an entry and the statement that it names disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disagreement {
+    /// The statement is of another kind than the entry: an opening under an entry `check`,
+    /// for example.
+    Kind,
+    /// The statement is of the kind of the entry and says something else than its lines:
+    /// another branch, commit, pull request, reviewer, base, or result.
+    Lines,
+}
+
+impl fmt::Display for Disagreement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Kind => "the statement is of another kind than the entry",
+            Self::Lines => "the statement says something else than the lines of the entry",
+        })
     }
 }
 
@@ -382,7 +410,7 @@ pub enum StatementCheckError {
         /// The number of the entry.
         number: u64,
         /// The reason.
-        reason: &'static str,
+        reason: Disagreement,
     },
     /// The register does not accept the signature of a statement for the actor of its entry.
     Proof {
