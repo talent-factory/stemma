@@ -27,8 +27,9 @@ Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs
 umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository,
 die Schnittstelle für den Transport,
 die Remotes im Layout des Klons mit ihren Remote-Referenzen,
-die empfangende Seite des Objektstroms
-und die Formate des Ref-Updates und der Aufzeichnung.
+die empfangende Seite des Objektstroms,
+die Formate des Ref-Updates und der Aufzeichnung
+und die Anmeldung mit ihren drei Nachrichten.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -318,6 +319,7 @@ ist jede Änderung einer Nachricht eine neue Protokollversion.
 Gebaut sind die ersten vier Nachrichten: die Liste der Referenzen, die Fetch-Anfrage, der
 Objektstrom und der Fehler.
 Dazu kommen das Ref-Update und seine Quittung (\in{Abschnitt}[sec:ref-update]).
+Die drei Nachrichten der Anmeldung stehen in \in{Abschnitt}[sec:hub-auth].
 Die Liste der Referenzen eines Repositorys mit einem Branch sieht so aus, mit gekürzten Werten:
 
 \starttyping
@@ -428,6 +430,57 @@ Was dieser Schlüssel darf, prüft der Hub bei jeder Anfrage gegen das Register 
 \type{main}; ein Widerruf wirkt deshalb sofort.
 Die Bindung an die Adresse verhindert, dass ein fremder Hub eine Challenge weiterreicht.
 TLS ist für jede Adresse Pflicht, die ein Netz überquert (ADR-028).
+
+Gebaut sind die drei Nachrichten, der Typ des Beweises und die Prüfungen des Kerns; der Hub mit
+seiner Nonce und seinem Token gehört zu stemma-hub.
+Die Challenge und die Antwort des Klons sehen so aus, mit gekürzten Werten:
+
+\starttyping
+stemma-protocol 1
+hub https://hub.example
+nonce 000102030405060708090a0b0c0d0e0f...
+
+stemma-protocol 1
+hub https://hub.example
+nonce 000102030405060708090a0b0c0d0e0f...
+key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI...
+signature U1NIU0lHAAAAAQAAADMAAAALc3NoLWVk...
+\stoptyping
+
+Der Hub nennt in der Challenge die Adresse, unter der der Klon ihn aufruft, und eine Nonce von 16
+bis 64 Bytes.
+Die Antwort wiederholt beide, weil der Hub zwischen den zwei Anfragen keinen Zustand hält,
+und fügt den öffentlichen Schlüssel und die Signatur an.
+Signiert sind die Zeilen von \type{hub} bis \type{key}, mit dem Typ \type{challenge} in der
+Kopfzeile der signierten Bytes (\in{Abschnitt}[sec:signatures]).
+Die Signatur gilt deshalb weder als Log-Eintrag noch als Freigabe oder Ref-Update, und keiner
+dieser Beweise gilt als Anmeldung.
+Die dritte Nachricht trägt das Token und seine Lebensdauer in Sekunden:
+
+\starttyping
+stemma-protocol 1
+token c3RlbW1hLWV4YW1wbGUtdG9rZW4
+lifetime 600
+\stoptyping
+
+Der Kern hält drei Regeln.
+\startitemize
+\item Der Klon signiert nur für die Adresse, die er aufruft.
+Nennt die Challenge eine andere, bricht die Anmeldung ab, bevor der Schlüssel gefragt wird; die
+Adressen werden Byte für Byte verglichen.
+\item Der Hub prüft eine signierte Challenge mit zwei Fragen des Kerns: ob sie für seine eigene
+Adresse signiert wurde und ob das Register den Schlüssel als aktiven Schlüssel führt.
+Ein unbekannter, ein ausgemusterter und ein widerrufener Schlüssel werden gleich abgelehnt.
+Ob die Nonce von ihm stammt und noch gilt, prüft der Hub selbst, denn nur er kennt sein Geheimnis
+und seine Uhr.
+\item Das Token erscheint in keiner Ausgabe.
+Sein Typ lässt sich nicht als Text ausgeben, und kein Fehler eines Lesers zitiert es.
+Die Nachricht mit dem Token liest der Transport, nicht der Aufrufer: Er behält das Token im
+Speicher und gibt nur die Lebensdauer weiter.
+Das ist die eine Ausnahme von der Regel, dass ein Transport keine Nachricht liest
+(\in{Abschnitt}[sec:remote-split]).
+\stopitemize
+Welchen Fehler der Hub auf eine abgelehnte Anmeldung antwortet, ist noch offen (ADR-024).
 
 Auf dem Hub hat ein Mensch ein Konto: einen Namen mit öffentlichen Schlüsseln, ohne eigenes
 Geheimnis.

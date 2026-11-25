@@ -11,7 +11,8 @@
 //! The small messages are line-oriented text: the first line, then lines `<keyword> <value>` in
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
 //! fetch request ([`FetchRequest`]), the error ([`ErrorMessage`]), and, in the module [`record`],
-//! the ref update and the record entry that answers it as a receipt (ADR-025). The object stream
+//! the ref update and the record entry that answers it as a receipt (ADR-025), and, in the
+//! module [`sign_in`], the three messages of the sign-in (ADR-024). The object stream
 //! is binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
 //! There are no capabilities and no optional fields: from the first release that carries the
 //! protocol on, every change of a message is a new number (see [`VERSION`]).
@@ -36,8 +37,9 @@
 //! The caller also chooses the reader: an error arrives in place of the message that was asked
 //! for, and the transport says which of the two it is (the status code, ADR-023).
 //!
-//! Not part of a message, because they belong to the transport: TLS, the token, the content
-//! encoding, URL paths, and status codes (ADR-023).
+//! Not part of a message, because they belong to the transport: TLS, the carriage of the token, the
+//! content encoding, URL paths, and status codes (ADR-023). The token itself stands in one message,
+//! the token answer of the sign-in ([`sign_in::TokenAnswer`]), which a transport reads and keeps.
 //!
 //! The messages of [`examples`] are checked in. The tests of this crate read them, and so does a
 //! hub, as conformance tests through its dependency on this crate (ADR-022).
@@ -1102,6 +1104,13 @@ pub enum ParseError {
         /// The rule.
         reason: record::RecordProblem,
     },
+    /// A rule of a message of the sign-in is broken ([`sign_in`]).
+    SignIn {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: sign_in::SignInProblem,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -1128,6 +1137,7 @@ impl fmt::Display for ParseError {
                 write!(f, "line {line}: invalid hash of a record entry: {source}")
             }
             Self::Record { line, reason } => write!(f, "line {line}: {reason}"),
+            Self::SignIn { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
 }
@@ -1146,7 +1156,8 @@ impl Error for ParseError {
             Self::NotUtf8 { .. }
             | Self::UnsupportedVersion { .. }
             | Self::Malformed { .. }
-            | Self::Record { .. } => None,
+            | Self::Record { .. }
+            | Self::SignIn { .. } => None,
         }
     }
 }
@@ -1649,6 +1660,14 @@ pub mod examples {
         RefUpdate,
         /// A receipt, which is one record entry ([`RecordEntry`](super::record::RecordEntry)).
         Receipt,
+        /// The challenge of a sign-in ([`Challenge`](super::sign_in::Challenge)).
+        Challenge,
+        /// The answer of a client to a challenge
+        /// ([`SignedChallenge`](super::sign_in::SignedChallenge)).
+        SignedChallenge,
+        /// The answer of a hub with a token ([`TokenAnswer`](super::sign_in::TokenAnswer)). The token of
+        /// the example is one that no hub issued.
+        TokenAnswer,
     }
 
     /// One example message.
@@ -1684,10 +1703,15 @@ pub mod examples {
         example!("error-malformed", Error),
         example!("ref-update", RefUpdate),
         example!("receipt", Receipt),
+        example!("challenge", Challenge),
+        example!("signed-challenge", SignedChallenge),
+        example!("token", TokenAnswer),
     ];
 }
 
 pub mod record;
+
+pub mod sign_in;
 
 #[cfg(test)]
 mod tests;

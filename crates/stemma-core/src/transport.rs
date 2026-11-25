@@ -8,14 +8,18 @@
 //! `fetch` or a `push` lives in the core once, whatever carries the bytes, and can be tested
 //! without a socket.
 //!
-//! The trait has one method per request of the protocol (ADR-023). This version has two
-//! requests, the list of references and the fetch; the slices that add a request add its
-//! method, and the sign-in adds its step. The ref update and its receipt exist as messages
+//! The trait has one method per request of the protocol (ADR-023). This version has the list of
+//! references, the fetch, and the two requests of the sign-in (ADR-024); the slices that add a
+//! request add its method. The sign-in is the one place where a transport reads a message: the
+//! token answer holds the token, which stays inside the transport
+//! ([`Transport::answer_challenge`]). The procedure of the client is [`sign_in`]. The ref update
+//! and its receipt exist as messages
 //! already ([`record`](crate::protocol::record), ADR-025); their request comes with the slice
 //! of `push`, which builds the operation that answers it.
 //!
 //! The trait names nothing of a carrier: no address, no path, no status, no header, and no
-//! compression. They belong to the implementation, as TLS and the token do (ADR-023). What a
+//! compression. They belong to the implementation, as TLS and the token do (ADR-023): no method
+//! takes or returns a token. What a
 //! carrier knows beyond the two kinds of answer, it says in the words of
 //! [`TransportError::NoAnswer`].
 //!
@@ -26,8 +30,14 @@
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufRead, Cursor, Read, Write};
+use std::time::Duration;
 
+use crate::protocol::sign_in::{Challenge, SignedChallenge, Token, TokenAnswer};
 use crate::protocol::{ErrorMessage, FetchRequest, RefList};
+
+mod sign_in;
+
+pub use sign_in::{sign_in, SignInError, MAX_SIGN_IN_MESSAGE};
 
 /// The body of an answer, as a stream. It borrows the transport, so one request runs at a time.
 ///
@@ -85,6 +95,54 @@ pub trait Transport {
     /// the carrier fails, and [`TransportError::NoAnswer`] if what comes back is no answer of the
     /// other side.
     fn fetch(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError>;
+
+    // The sign-in (ADR-024): the two requests of one step, which [`sign_in`] runs.
+
+    /// Asks for a challenge, the first request of a sign-in. The message of the answer is a
+    /// [`Challenge`].
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Carrier`] if the carrier fails, and [`TransportError::NoAnswer`] if
+    /// what comes back is no answer of the other side.
+    fn challenge(&mut self) -> Result<Answer<'_>, TransportError>;
+
+    /// Sends the answer to a challenge, which `request` holds as [`SignedChallenge::encode`]
+    /// writes it, the second request of a sign-in.
+    ///
+    /// The message of the answer is a [`TokenAnswer`], and it is the one message that the transport
+    /// reads itself, with [`TokenAnswer::parse`]: it keeps the token for the requests that follow
+    /// and hands over the lifetime alone ([`SignedIn::Accepted`]). The token replaces the one of an
+    /// earlier sign-in. It is held in memory only: an implementation writes it to no file and to no
+    /// log and puts it into no error. An error of the other side is handed over unread, as for
+    /// every request ([`SignedIn::Error`]); the transport then keeps the token that it had, or
+    /// none.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Request`] if `request` cannot be read, [`TransportError::Carrier`] if the
+    /// carrier fails, also while the token answer is read, and [`TransportError::NoAnswer`] if what
+    /// comes back is no answer of the other side, which includes a token answer that its reader
+    /// refuses.
+    fn answer_challenge(&mut self, request: &mut dyn Read) -> Result<SignedIn<'_>, TransportError>;
+}
+
+/// What the other side answered to a signed challenge ([`Transport::answer_challenge`]).
+pub enum SignedIn<'a> {
+    /// A token, which the transport keeps. Carries its lifetime, counted from the answer.
+    Accepted(Duration),
+    /// An error in place of the token answer, for the reader [`ErrorMessage::parse`].
+    Error(Body<'a>),
+}
+
+impl fmt::Debug for SignedIn<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accepted(lifetime) => write!(f, "SignedIn::Accepted({lifetime:?})"),
+            // A body is a stream that is not read yet, so only the case is shown.
+            Self::Error(_) => f.write_str("SignedIn::Error(..)"),
+        }
+    }
 }
 
 /// Why a request got no answer. An error that the other side answers is no failure of the
@@ -165,7 +223,42 @@ pub trait OtherSide {
     /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
     /// answering. What was written to `stream` before is discarded.
     fn fetch(&self, request: &FetchRequest, stream: &mut dyn Write) -> Result<(), Refusal>;
+
+    // The sign-in (ADR-024).
+
+    /// Answers a challenge for a sign-in.
+    ///
+    /// The method as it is given here is the answer of a side without a sign-in, such as a
+    /// repository that is reached without a hub: it fails, and nothing is issued. A side that
+    /// knows its senders implements both methods of the sign-in.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
+    /// answering.
+    fn challenge(&self) -> Result<Challenge, Refusal> {
+        Err(Refusal::Failed(NO_SIGN_IN.to_owned()))
+    }
+
+    /// Answers a signed challenge with a token and its lifetime. The signature of `answer`
+    /// verifies for its key; whether the address, the nonce and the key count is the question of
+    /// this side ([`SignedChallenge::check`], [`SignedChallenge::actor`]).
+    ///
+    /// The method as it is given here is the answer of a side without a sign-in, as for
+    /// [`challenge`](Self::challenge): it fails, and no token is issued.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
+    /// answering.
+    fn token(&self, answer: &SignedChallenge) -> Result<TokenAnswer, Refusal> {
+        let _ = answer;
+        Err(Refusal::Failed(NO_SIGN_IN.to_owned()))
+    }
 }
+
+/// What a side without a sign-in says in place of a challenge and of a token answer.
+const NO_SIGN_IN: &str = "this side has no sign-in";
 
 /// Why an [`OtherSide`] did not answer with the message that was asked for.
 #[derive(Debug)]
@@ -197,15 +290,28 @@ impl From<ErrorMessage> for Refusal {
 ///
 /// The answer is complete before the method returns, and it is held in memory. This transport
 /// compresses nothing and sets no bound for the size of a request.
+///
+/// A sign-in runs as over a network too: the token answer of the other side is encoded and read
+/// back with [`TokenAnswer::parse`], and its token is kept ([`is_signed_in`](Self::is_signed_in)).
+/// The requests of this version need no sender, so the token is not handed to the other side yet;
+/// the slice that adds a request that needs one does that. The `Debug` form shows no token.
 #[derive(Debug)]
 pub struct MemoryTransport<S> {
     side: S,
+    /// The token of the last sign-in that was issued.
+    token: Option<Token>,
 }
 
 impl<S: OtherSide> MemoryTransport<S> {
-    /// A transport to `side`.
+    /// A transport to `side`, not signed in.
     pub fn new(side: S) -> Self {
-        Self { side }
+        Self { side, token: None }
+    }
+
+    /// Whether a sign-in was issued, so that the transport holds a token. It says nothing about
+    /// the lifetime: the transport has no clock.
+    pub fn is_signed_in(&self) -> bool {
+        self.token.is_some()
     }
 
     /// The other side.
@@ -240,6 +346,40 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
         };
         let mut stream = Vec::new();
         answer(self.side.fetch(&request, &mut stream).map(|()| stream))
+    }
+
+    // The sign-in (ADR-024).
+
+    fn challenge(&mut self) -> Result<Answer<'_>, TransportError> {
+        answer(self.side.challenge().map(|challenge| challenge.encode()))
+    }
+
+    fn answer_challenge(&mut self, request: &mut dyn Read) -> Result<SignedIn<'_>, TransportError> {
+        let mut bytes = Vec::new();
+        request
+            .read_to_end(&mut bytes)
+            .map_err(TransportError::Request)?;
+        let issued = match SignedChallenge::parse(&bytes) {
+            Ok(signed) => self.side.token(&signed),
+            Err(error) => Err(ErrorMessage::from(&error).into()),
+        };
+        match issued {
+            Ok(answer) => {
+                // The token answer travels as bytes and is read by the reader of every transport.
+                let answer = TokenAnswer::parse(&answer.encode()).map_err(|error| {
+                    TransportError::NoAnswer {
+                        detail: format!("the token answer of the sign-in cannot be read: {error}"),
+                    }
+                })?;
+                let lifetime = answer.lifetime();
+                self.token = Some(answer.into_token());
+                Ok(SignedIn::Accepted(lifetime))
+            }
+            Err(Refusal::Error(error)) => {
+                Ok(SignedIn::Error(Box::new(Cursor::new(error.encode()))))
+            }
+            Err(Refusal::Failed(detail)) => Err(TransportError::NoAnswer { detail }),
+        }
     }
 }
 

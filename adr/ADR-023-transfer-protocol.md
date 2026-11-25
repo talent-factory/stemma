@@ -272,9 +272,11 @@ Rejected: a new object kind always raises the number, and a negotiation of capab
 | Statements of a namespace | ADR-027 |
 | Error | The first line, then the kind of the error with its facts |
 
-The token travels in the `Authorization` header of a request and in no message, so fetch, upload
-and ref update look the same for a public and a private repository, and no stored or logged
-message holds a secret. The trait `Transport` gets a step for the sign-in.
+The token travels in the `Authorization` header of a request and in no request message, so
+fetch, upload and ref update look the same for a public and a private repository, and no stored
+or logged message holds a secret. The one message that holds the token is the answer of the hub
+to a sign-in; the transport reads it and keeps the token (ADR-022). The trait `Transport` has the
+two requests of the sign-in as its step (STEMMA-294).
 
 ### The first number is 1
 
@@ -341,6 +343,8 @@ spoken <version> <version> ...
   kinds with their slices.
 - **Ref update and receipt.** The ref update and the record entry that answers it are messages
   of number 1 as well; their lines and rules stand in ADR-025 ("The formats as built").
+- **Sign-in.** The challenge, the signed challenge and the token answer are messages of number
+  1 as well; their lines and rules stand in ADR-024 ("The sign-in as built").
 
 Example messages are checked in under `crates/stemma-core/protocol-examples/` and are reachable
 as `stemma_core::protocol::examples`, so a hub reads them through its dependency (ADR-022). They
