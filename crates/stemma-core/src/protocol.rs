@@ -822,7 +822,9 @@ impl Error for ErrorMessageError {}
 /// does; a status code of the transport names the coarse class only.
 ///
 /// This version knows the two kinds that the reading of a message gives. The refusals of a ref
-/// update, of a statement, and of the bounds come with the slices that build them.
+/// update and of a statement come with the slices that build them, and the refusal of a bound
+/// with the slice that carries an upload over a transport: the bounds themselves are set by
+/// the receiver ([`crate::receive::Bounds`]).
 ///
 /// ```text
 /// stemma-protocol <highest version spoken>      stemma-protocol 1
@@ -1536,8 +1538,11 @@ impl StreamError {
     /// which includes a stream that is cut off and an unknown kind.
     ///
     /// `None` for [`Io`](Self::Io) and [`Failed`](Self::Failed), which say nothing about the
-    /// stream, and for [`TooLarge`](Self::TooLarge): the stream is well formed, and the kind of
-    /// error for a bound comes with the slice that sets the bounds.
+    /// stream, and for [`TooLarge`](Self::TooLarge): the stream is well formed. The receiver
+    /// refuses it with a typed error of its own
+    /// ([`ReceiveError::exceeds_bound`](crate::receive::ReceiveError::exceeds_bound)); the kind
+    /// of error message for a bound comes with the slice that carries an upload over a
+    /// transport (ADR-023).
     pub fn answer(&self) -> Option<ErrorMessage> {
         match self {
             Self::UnsupportedVersion { .. } => {

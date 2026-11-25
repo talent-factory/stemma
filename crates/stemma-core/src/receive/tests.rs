@@ -2,6 +2,7 @@
 //! the connectivity check, the bounds, the directory of a receiving operation in `tmp/`, and the
 //! journal of a running fetch.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
@@ -1883,4 +1884,257 @@ fn references_that_cannot_be_read_stop_a_fetch_before_it_makes_its_journal() {
     assert!(!error.is_incomplete());
     assert!(error.io_error().is_some());
     assert!(error.store_error().is_none());
+}
+
+/// Sets the hook of the test until the value is dropped.
+struct Hooking;
+
+fn hooking(hook: impl FnMut(Moment, &Path) -> Option<Lock> + 'static) -> Hooking {
+    HOOK.set(Some(Box::new(hook)));
+    Hooking
+}
+
+impl Drop for Hooking {
+    fn drop(&mut self) {
+        HOOK.set(None);
+    }
+}
+
+fn is_guard(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == GUARD)
+}
+
+fn is_journal(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == FETCH_JOURNAL)
+}
+
+#[test]
+fn a_receive_directory_that_a_cleanup_took_is_given_up_for_another_name() {
+    // What another process does between two steps of the operation, once: it removes the
+    // directory while it is empty, it removes the guard before the lock is taken, or it holds
+    // the guard for a moment.
+    for scene in ["removed empty", "guard removed", "guard held"] {
+        let dir = TempDir::new();
+        let hub = hub(&dir);
+        let first = std::rc::Rc::new(RefCell::new(None::<PathBuf>));
+        let seen = first.clone();
+        let hook = hooking(move |moment, path| {
+            if !is_guard(path) || seen.borrow().is_some() {
+                return None;
+            }
+            let directory = path.parent().unwrap().to_path_buf();
+            match (scene, moment) {
+                ("removed empty", Moment::Guard) => fs::remove_dir(&directory).unwrap(),
+                ("guard removed", Moment::Lock) => fs::remove_file(path).unwrap(),
+                ("guard held", Moment::Lock) => {}
+                _ => return None,
+            }
+            *seen.borrow_mut() = Some(directory);
+            (scene == "guard held").then_some(Lock::Busy)
+        });
+
+        let made = ReceiveDir::create(&hub.metadata_dir()).unwrap();
+        let first = first.borrow().clone().expect(scene);
+        assert_ne!(made.path, first, "{scene}");
+        assert!(made.path.join(GUARD).is_file(), "{scene}");
+        // The directory that was given up belongs to the cleanup, which removes it; the one in
+        // use stays until its operation ends.
+        drop(hook);
+        hub.remove_receive_leftovers();
+        assert_eq!(tmp_names(&hub).len(), 1, "{scene}");
+        assert!(made.path.is_dir(), "{scene}");
+        drop(made);
+        assert!(tmp_names(&hub).is_empty(), "{scene}");
+    }
+}
+
+#[test]
+fn a_receiving_operation_gives_up_when_every_name_is_taken_from_it() {
+    let dir = TempDir::new();
+    let hub = hub(&dir);
+    let attempts = std::rc::Rc::new(RefCell::new(0));
+    let counted = attempts.clone();
+    let hook = hooking(move |moment, path| {
+        (moment == Moment::Lock && is_guard(path)).then(|| {
+            *counted.borrow_mut() += 1;
+            Lock::Busy
+        })
+    });
+
+    let stream = ObjectStreamWriter::new(Vec::new()).unwrap().finish();
+    let error = hub
+        .receive_objects(&stream[..], Bounds::default())
+        .unwrap_err();
+    assert!(
+        matches!(&error, ReceiveError::Store(source) if matches!(**source, StoreError::Io { .. })),
+        "{error}"
+    );
+    assert_eq!(
+        error.io_error().map(io::Error::kind),
+        Some(io::ErrorKind::AlreadyExists)
+    );
+    assert!(
+        error.to_string().ends_with("every name was taken"),
+        "{error}"
+    );
+    assert_eq!(*attempts.borrow(), DIR_ATTEMPTS);
+    // Every directory that was tried has a free guard, and the cleanup removes them.
+    assert_eq!(tmp_names(&hub).len(), DIR_ATTEMPTS);
+    drop(hook);
+    hub.remove_receive_leftovers();
+    assert!(tmp_names(&hub).is_empty());
+}
+
+#[test]
+fn without_a_lock_of_the_system_a_receiving_operation_runs_and_a_cleanup_leaves_it() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let hub = hub(&dir);
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let stream = stream_of_commits(&sender, &[commit]);
+    // A file system without locks of files: no guard can be locked, by no one.
+    let hook = hooking(|moment, path| {
+        (moment == Moment::Lock && is_guard(path)).then_some(Lock::Unavailable)
+    });
+
+    let running = ReceiveDir::create(&hub.metadata_dir()).unwrap();
+    hub.remove_receive_leftovers();
+    assert!(running.path.join(GUARD).is_file());
+    // An upload beside it works, and removes its own directory and no other.
+    hub.receive_objects(&stream[..], Bounds::default()).unwrap();
+    hub.check_connectivity(&[commit]).unwrap();
+    assert_eq!(tmp_names(&hub).len(), 1);
+    // A directory that a crashed operation left stays as well: nothing says that it ended.
+    let left = ReceiveDir::create(&hub.metadata_dir()).unwrap().crash();
+    hub.remove_receive_leftovers();
+    assert!(left.is_dir());
+
+    // A cleanup that can lock, as after a failure that passed, takes a directory whose guard
+    // was never locked for one that was left.
+    drop(hook);
+    hub.remove_receive_leftovers();
+    assert!(!left.exists());
+    assert!(!running.path.exists());
+    drop(running);
+    assert!(tmp_names(&hub).is_empty());
+}
+
+#[test]
+fn a_fetch_that_locked_a_journal_whose_name_went_opens_the_journal_again() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let path = journal_path(&receiver);
+    fs::write(&path, "stemma-fetch 1\n").unwrap();
+    // Another fetch ends between the open and the lock: it removes the name of the journal.
+    let calls = std::rc::Rc::new(RefCell::new(0));
+    let counted = calls.clone();
+    let hook = hooking(move |moment, path| {
+        if moment == Moment::Lock && is_journal(path) {
+            *counted.borrow_mut() += 1;
+            if *counted.borrow() == 1 {
+                fs::remove_file(path).unwrap();
+            }
+        }
+        None
+    });
+
+    let mut fetch = receiver.begin_fetch().unwrap();
+    assert_eq!(*calls.borrow(), 2);
+    // The fetch works on the file under the name, not on the one that lost it.
+    assert!(names_file(&path, &fetch.journal.file));
+    fetch
+        .receive(
+            &stream_of_commits(&sender, &[commit])[..],
+            Bounds::default(),
+        )
+        .unwrap();
+    drop(fetch);
+    drop(hook);
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        format!("stemma-fetch 1\ncommit {commit}\n")
+    );
+    assert_eq!(receiver.begin_fetch().unwrap().resumed(), [commit]);
+}
+
+#[test]
+fn a_fetch_whose_journal_goes_every_time_uses_the_file_that_it_has() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let path = journal_path(&receiver);
+    let calls = std::rc::Rc::new(RefCell::new(0));
+    let counted = calls.clone();
+    let hook = hooking(move |moment, path| {
+        if moment == Moment::Lock && is_journal(path) {
+            *counted.borrow_mut() += 1;
+            fs::remove_file(path).unwrap();
+        }
+        None
+    });
+
+    let fetch = receiver.begin_fetch().unwrap();
+    assert_eq!(*calls.borrow(), JOURNAL_ATTEMPTS);
+    assert!(!names_file(&path, &fetch.journal.file));
+    drop(hook);
+    // The fetch runs without its resumption; ending it finds no name to remove.
+    fetch.finish().unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
+fn without_a_lock_of_the_system_two_fetches_run_at_once() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let _hook = hooking(|moment, path| {
+        (moment == Moment::Lock && is_journal(path)).then_some(Lock::Unavailable)
+    });
+
+    let first = receiver.begin_fetch().unwrap();
+    let second = receiver.begin_fetch().unwrap();
+    assert!(names_file(&journal_path(&receiver), &second.journal.file));
+    // The one that ends first removes the journal of both, which costs the other its
+    // resumption and nothing else.
+    first.finish().unwrap();
+    second.finish().unwrap();
+    assert!(!journal_path(&receiver).exists());
+}
+
+#[test]
+fn a_batch_closes_at_a_commit_once_enough_bytes_have_gathered() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let hub = hub(&dir);
+    // Three objects per commit, fewer than a batch of objects holds; the blob of the first
+    // commit alone is longer than a batch of bytes.
+    let large = "x".repeat(usize::try_from(FLUSH_BYTES).unwrap());
+    let mut commits = vec![commit_of(&sender, &[("a.txt", &large)], vec![])];
+    for round in 0..3 {
+        let text = format!("{round}\n");
+        let parent = *commits.last().unwrap();
+        commits.push(commit_of(&sender, &[("a.txt", &text)], vec![parent]));
+    }
+    let stream = stream_of_commits(&sender, &commits);
+
+    let mut batches = Vec::new();
+    receive_stream(
+        hub.objects(),
+        &hub.metadata_dir(),
+        &stream[..],
+        Bounds::default(),
+        |reported| {
+            if !reported.is_empty() {
+                batches.push(reported.to_vec());
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    // By the count of objects alone the batches would be the first two commits and the last
+    // two. The bytes close the first batch at the first commit, and are counted anew after it.
+    assert_eq!(
+        batches,
+        [&commits[..1], &commits[1..3], &commits[3..]].map(<[CommitId]>::to_vec)
+    );
 }

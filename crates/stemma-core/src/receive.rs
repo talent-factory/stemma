@@ -40,6 +40,8 @@
 //! other end is refused as damage, like every other content that no fetch writes. A commit may
 //! stand more than once: one that was recorded, lost its objects, and arrived again.
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
@@ -101,8 +103,8 @@ const JOURNAL_ATTEMPTS: usize = 16;
 const FLUSH_OBJECTS: u64 = if cfg!(test) { 4 } else { 1024 };
 
 /// The bytes of the bodies of these objects from which a receiver makes them durable at the
-/// next commit of the stream.
-const FLUSH_BYTES: u64 = 64 << 20;
+/// next commit of the stream. The tests take a small count here too.
+const FLUSH_BYTES: u64 = if cfg!(test) { 4096 } else { 64 << 20 };
 
 /// The upper bounds of a receiver (ADR-023). Both are counted in the bytes that the messages
 /// carry: the compression of a transport is taken off before, so a small compressed body cannot
@@ -521,6 +523,60 @@ impl From<FetchJournalError> for ReceiveError {
     }
 }
 
+/// What an attempt to take the lock of the system on a file gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lock {
+    /// The lock is held now.
+    Held,
+    /// Another handle holds it.
+    Busy,
+    /// The lock cannot be taken for another reason, as on a file system without locks of files.
+    Unavailable,
+}
+
+/// A place where a test may step in: before a receiving operation makes its guard, and before a
+/// lock is taken on the file at the path.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moment {
+    Guard,
+    Lock,
+}
+
+#[cfg(test)]
+type Hook = Box<dyn FnMut(Moment, &Path) -> Option<Lock>>;
+
+#[cfg(test)]
+thread_local! {
+    /// The hook of the running test, see [`moment`].
+    static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+}
+
+/// Calls the hook of the running test, if it set one. The hook may change the files, as another
+/// process would between two steps, and at [`Moment::Lock`] it may give the result of the lock in
+/// place of the system. While it runs no hook is set, so what it calls runs as usual.
+#[cfg(test)]
+fn moment(moment: Moment, path: &Path) -> Option<Lock> {
+    let mut hook = HOOK.take();
+    let answer = hook.as_mut().and_then(|hook| hook(moment, path));
+    HOOK.set(hook);
+    answer
+}
+
+/// Tries to take the lock of the system on `file`, which lies at `path`, without waiting.
+fn try_lock(file: &File, path: &Path) -> Lock {
+    #[cfg(test)]
+    if let Some(answer) = moment(Moment::Lock, path) {
+        return answer;
+    }
+    let _ = path;
+    match file.try_lock() {
+        Ok(()) => Lock::Held,
+        Err(TryLockError::WouldBlock) => Lock::Busy,
+        Err(TryLockError::Error(_)) => Lock::Unavailable,
+    }
+}
+
 /// Whether `name` is exactly a name that a receiving operation gives its directory in `tmp/`.
 fn is_receive_dir_name(name: &str) -> bool {
     is_scratch_name(name, RECEIVE_DIR_PREFIX)
@@ -565,6 +621,8 @@ impl ReceiveDir {
                 Err(error) => return Err(io("create the directory", &path, error)),
             }
             let guard_path = path.join(GUARD);
+            #[cfg(test)]
+            moment(Moment::Guard, &guard_path);
             let guard = match fault::create_new(&guard_path) {
                 Ok(guard) => guard,
                 // A cleanup removed the directory while it was empty.
@@ -577,8 +635,8 @@ impl ReceiveDir {
                     return Err(io("create the guard file", &guard_path, error));
                 }
             };
-            match guard.try_lock() {
-                Ok(()) if fs::symlink_metadata(&guard_path).is_ok() => {
+            match try_lock(&guard, &guard_path) {
+                Lock::Held if fs::symlink_metadata(&guard_path).is_ok() => {
                     return Ok(Self {
                         path,
                         guard: Some(guard),
@@ -586,8 +644,8 @@ impl ReceiveDir {
                 }
                 // A cleanup held the guard, or removed it before the lock was taken here: it
                 // removes the directory.
-                Ok(()) | Err(TryLockError::WouldBlock) => last = path,
-                Err(TryLockError::Error(_)) => {
+                Lock::Held | Lock::Busy => last = path,
+                Lock::Unavailable => {
                     return Ok(Self {
                         path,
                         guard: Some(guard),
@@ -643,7 +701,9 @@ fn remove_stale_receive_dirs(root: &Path) {
         let path = entry.path();
         match crate::open_without_following(&path.join(GUARD)) {
             Ok(guard) => {
-                if guard.try_lock().is_ok() && fault::remove_dir_all(&path).is_err() {
+                if try_lock(&guard, &path.join(GUARD)) == Lock::Held
+                    && fault::remove_dir_all(&path).is_err()
+                {
                     // Windows removes no file that is open.
                     drop(guard);
                     let _ = fault::remove_dir_all(&path);
@@ -1090,7 +1150,7 @@ impl Journal {
                     path: path.clone(),
                     source,
                 })?;
-            if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
+            if try_lock(&file, &path) == Lock::Busy {
                 return Err(FetchJournalError::Running { path });
             }
             attempts += 1;
