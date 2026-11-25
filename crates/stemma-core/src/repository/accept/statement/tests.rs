@@ -84,6 +84,7 @@ fn register_of() -> Register {
 struct Memory {
     bytes: Vec<u8>,
     fail_read: bool,
+    fail_append: bool,
 }
 
 impl Memory {
@@ -112,6 +113,9 @@ impl StatementDestination for Memory {
     }
 
     fn append(&mut self, held: &[u8]) -> io::Result<()> {
+        if self.fail_append {
+            return Err(io::Error::other("the disk is full"));
+        }
         self.bytes.extend_from_slice(held);
         Ok(())
     }
@@ -793,7 +797,7 @@ fn a_reader_without_the_lock_leaves_out_a_statement_that_is_being_written() {
     let (started, held) = opened();
     let mut memory = Memory {
         bytes: started.wire.side().held(),
-        fail_read: false,
+        ..Memory::default()
     };
     memory
         .bytes
@@ -945,4 +949,193 @@ fn a_fetch_brings_the_statements_of_the_open_pull_requests() {
     for (hash, held) in hashes.iter().zip(&selected) {
         assert_eq!(set.get(hash).unwrap().as_ref(), Some(held.statement()));
     }
+}
+
+#[test]
+fn a_policy_that_cannot_be_used_refuses_an_opening_where_a_lease_applies() {
+    let hub = Hub::new();
+    let root = hub.commit(
+        "daniel",
+        &[
+            (register::FILE, &register_of().encode()),
+            ("a.txt", "one\n"),
+        ],
+        vec![],
+    );
+    hub.push(&daniel(), vec![("heads/main", Some(root))]);
+    let feature = hub.commit("ana", &[("a.txt", "two\n")], vec![root]);
+    hub.push(&mia(), vec![("heads/feature", Some(feature))]);
+    let mut wire = MemoryTransport::new(hub);
+    assert!(matches!(
+        refused(&mut wire, &opening("feature", feature, &[], &mia())),
+        StatementRefusal::Policy(_)
+    ));
+}
+
+#[test]
+fn the_lease_counts_to_its_last_second() {
+    let mut started = started();
+    started.wire.side().time.set(START + LEASE - 1);
+    submit(
+        &mut started.wire,
+        &opening("feature", started.feature, &[], &mia()),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_closing_of_an_unknown_pull_request_is_refused() {
+    let mut started = started();
+    let unknown = opening("other", started.feature, &[], &mia()).hash();
+    assert_eq!(
+        refused(&mut started.wire, &closing(unknown, &daniel())),
+        StatementRefusal::NoPull
+    );
+}
+
+#[test]
+fn the_authorizer_is_asked_for_the_operation_of_every_kind() {
+    let (mut started, held) = opened();
+    let feature = started.feature;
+    let cases = [
+        (PR_APPROVE, approval(held.hash(), feature, &daniel())),
+        (PR_CLOSE, closing(held.hash(), &daniel())),
+        (CHECK, check(feature, CheckResult::Pass, &daniel())),
+    ];
+    for (operation, statement) in cases {
+        started.wire.side().also.set(Some(operation));
+        assert_eq!(
+            refused(&mut started.wire, &statement),
+            StatementRefusal::Denied(OperationName::try_new(operation).unwrap())
+        );
+    }
+}
+
+#[test]
+fn a_failed_append_holds_nothing_and_is_no_answer() {
+    let (started, held) = opened();
+    let hub = started.wire.side();
+    let before = hub.held();
+    hub.statements.borrow_mut().fail_append = true;
+    let error = hub
+        .accept(&approval(held.hash(), started.feature, &daniel()))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        StatementError::StatementsIo {
+            step: RecordStep::Append,
+            ..
+        }
+    ));
+    assert!(error.answer().is_none());
+    assert_eq!(hub.held(), before);
+}
+
+#[test]
+fn the_time_of_the_last_record_entry_bounds_the_time_of_a_statement() {
+    let started = started();
+    let hub = started.wire.side();
+    hub.time.set(START + 100);
+    hub.push(&daniel(), vec![("tags/v1", Some(started.root))]);
+    hub.time.set(START + 50);
+    assert!(matches!(
+        hub.accept(&check(started.root, CheckResult::Pass, &daniel())),
+        Err(StatementError::Time {
+            last: 1_000_100,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn damaged_numbers_of_the_held_statements_are_reported_by_the_reader_of_a_range() {
+    let (started, held) = opened();
+    let wrong = HeldStatement::seal(
+        held.statement().clone(),
+        HubLines {
+            number: 3,
+            ..held.lines().clone()
+        },
+        &hub_key(),
+    )
+    .unwrap();
+    let mut memory = Memory {
+        bytes: wrong.encode(),
+        ..Memory::default()
+    };
+    drop(started);
+    assert!(matches!(
+        held_in(&mut memory, &Range::all(), ReadAccess::Granted),
+        Err(RangeError::Order {
+            position: 1,
+            number: 3
+        })
+    ));
+}
+
+#[test]
+fn a_step_of_an_identity_that_the_register_no_longer_holds_still_counts() {
+    let (mut started, held) = opened();
+    // Ana opens and closes a pull request of her own.
+    started
+        .wire
+        .side()
+        .push(&ana(), vec![("heads/done", Some(started.root))]);
+    let done = submit(
+        &mut started.wire,
+        &opening("done", started.root, &[], &ana()),
+    )
+    .unwrap();
+    submit(&mut started.wire, &closing(done.hash(), &ana())).unwrap();
+    let all = read_held(&read_range(&mut started.wire, Range::all(), false).unwrap()).unwrap();
+    let record = read_record(&read_range(&mut started.wire, Range::all(), true).unwrap()).unwrap();
+    // A register without Ana and Mia: her closing still ends her pull request, and Mia's
+    // opening is still open.
+    let without = Register::with_owner(human("daniel"), daniel().public()).unwrap();
+    assert_eq!(statements_of_open_pulls(&all, &record, &without), [held]);
+}
+
+#[test]
+fn a_merge_in_the_record_ends_its_pull_request() {
+    use crate::protocol::record::{Acceptance, Chain};
+    let (mut started, held) = opened();
+    let all = read_held(&read_range(&mut started.wire, Range::all(), false).unwrap()).unwrap();
+    let mut record =
+        read_record(&read_range(&mut started.wire, Range::all(), true).unwrap()).unwrap();
+    // The hub moves no `main` past the first push yet, so the entry of the merge is written
+    // with the writer of the record, as the gate on a hub will write it.
+    let mut chain = Chain::new(repository_id());
+    for entry in &record {
+        chain.accept(entry).unwrap();
+    }
+    let main = name("heads/main");
+    let merged = Move::try_new(
+        main.clone(),
+        chain.entry_of(&main),
+        Some(started.root),
+        Some(started.feature),
+        Some(held.hash()),
+    )
+    .unwrap();
+    let update = RefUpdatePayload::try_new(
+        HubAddress::try_new(ADDRESS).unwrap(),
+        repository_id(),
+        vec![merged],
+        daniel().public(),
+    )
+    .unwrap()
+    .sign(&daniel())
+    .unwrap();
+    let acceptance = Acceptance {
+        time: START,
+        register: started.root,
+        policies: Vec::new(),
+        fast_forward: std::collections::BTreeSet::new(),
+        actor: human("daniel"),
+    };
+    let entry = chain
+        .append(&update, acceptance, &hub_key(), &mut Vec::new())
+        .unwrap();
+    record.push(entry);
+    assert_eq!(statements_of_open_pulls(&all, &record, &register_of()), []);
 }

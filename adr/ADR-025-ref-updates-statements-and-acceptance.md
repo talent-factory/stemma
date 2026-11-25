@@ -644,7 +644,10 @@ error not-readable                                             may not read
   numbers. It lies before a record entry whose number is larger than its `record` line
   (`HeldStatement::lies_before`), so before a retirement or a revocation that this entry
   brought to `main`. The fold of a hub takes the held statements and the merges of the record in
-  this one order; a merge is an entry that moves `main` with an opening as its evidence.
+  this one order; a merge is an entry that moves `main` with an opening as its evidence. The
+  fold takes the actor of each step from the identity in its lines; a step whose identity a
+  later register no longer holds still counts, so a closing or a merge of a removed actor does
+  not open its pull request again.
 - **The destination.** The hub keeps its held statements one after the other in a destination
   that it passes with every call (`StatementDestination`), as it keeps the record; the layout of
   ADR-009 gets no file. It is a parameter of `accept_statement` beside the context of the ref
@@ -685,7 +688,8 @@ error not-readable                                             may not read
   caller, which knows its sign-in and its namespaces (ADR-024, ADR-027); a requester that may
   not is answered `not-readable`, which says as little about a repository that does not exist.
   The reading takes no lock: what follows the last whole `hub-signature` line is an entry that
-  is being written, and is left out.
+  is being written, and is left out. A held statement that does not carry the number of its
+  place is damage, for the reader as for the writer.
 - **The fetch.** `statements_of_open_pulls` selects from the held statements and the record the
   openings of the open pull requests, the approvals and the closings that name them, and the
   checks of their heads. The clone puts them into its set after it checked that the pinned key

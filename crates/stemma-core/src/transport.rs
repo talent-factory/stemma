@@ -150,9 +150,9 @@ pub trait Transport {
     fn answer_challenge(&mut self, request: &mut dyn Read) -> Result<SignedIn<'_>, TransportError>;
 
     // The statements on a hub (ADR-025, STEMMA-299): submitting one, and reading the statements
-    // and the record by a range of numbers. The three methods have a body, which fails as a
-    // carrier fails that does not know the request, so that a transport that was written before
-    // them still builds; a transport that carries them replaces it.
+    // and the record by a range of numbers. The three methods have a body, which fails with
+    // `TransportError::Carrier` of the kind `Unsupported`, so that a transport that was written
+    // before them still builds; a transport that carries them replaces it.
 
     /// Submits a signed statement, which `request` holds as
     /// [`Statement::encode`](crate::protocol::statement::Statement::encode) writes it. The
@@ -200,11 +200,14 @@ pub trait Transport {
     }
 }
 
-/// The failure of a transport that does not carry a request (STEMMA-299).
+/// The failure of a transport that does not carry a request (STEMMA-299): its carrier cannot
+/// send it, which no retry mends, so the kind of the error is
+/// [`Unsupported`](io::ErrorKind::Unsupported).
 fn not_carried(request: &str) -> TransportError {
-    TransportError::NoAnswer {
-        detail: format!("this transport does not carry the request to {request}"),
-    }
+    TransportError::Carrier(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("this transport does not carry the request to {request}"),
+    ))
 }
 
 /// What the other side answered to a signed challenge ([`Transport::answer_challenge`]).

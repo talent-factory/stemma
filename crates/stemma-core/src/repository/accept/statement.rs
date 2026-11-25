@@ -28,11 +28,13 @@ use crate::protocol::statement::{Body, Statement, StatementHash};
 use crate::protocol::{ErrorMessage, QualifiedName, Reason};
 use crate::pull::{self, TARGET};
 use crate::refs::{BranchName, RefKind, WriteLock};
-use crate::register::{Identity, Mode, ModeError, Register, RegisterAuthorizer, Verified};
+use crate::register::{
+    Identity, IdentityKind, Mode, ModeError, Register, RegisterAuthorizer, Verified,
+};
 use crate::repository::{PolicyError, Repository};
 use crate::signature::PublicKey;
 use crate::statements::SetError;
-use crate::{AllowAll, Authorizer};
+use crate::{Actor, AllowAll, Authorizer};
 
 /// The destination of the statements that a hub holds for one repository (ADR-025): the held
 /// statements one after the other, in the order of their numbers. The layout of a repository
@@ -219,6 +221,13 @@ pub enum RangeError {
     Held(Box<HeldParseError>),
     /// An entry of the record is damaged.
     Record(Box<RecordParseError>),
+    /// The held statements are damaged: one does not carry the number after the one before it.
+    Order {
+        /// The position of the held statement, from 1.
+        position: usize,
+        /// The number that it carries.
+        number: u64,
+    },
 }
 
 impl RangeError {
@@ -239,6 +248,11 @@ impl fmt::Display for RangeError {
             Self::Io(error) => write!(f, "cannot read the destination: {error}"),
             Self::Held(error) => write!(f, "the statements of the hub are damaged: {error}"),
             Self::Record(error) => write!(f, "the record of ref updates is damaged: {error}"),
+            Self::Order { position, number } => write!(
+                f,
+                "the statements of the hub are damaged: held statement {position} carries the \
+                 number {number}"
+            ),
         }
     }
 }
@@ -265,6 +279,9 @@ pub fn held_in(
     let bytes = destination.read().map_err(RangeError::Io)?;
     let held =
         read_held(whole_entries(&bytes)).map_err(|error| RangeError::Held(Box::new(error)))?;
+    if let Some((position, number)) = out_of_order(&held) {
+        return Err(RangeError::Order { position, number });
+    }
     Ok(held
         .into_iter()
         .filter(|held| range.contains(held.number()))
@@ -307,8 +324,8 @@ fn branch_reference(branch: &BranchName) -> QualifiedName {
 ///
 /// A merge is an entry that moves `main` with the opening of a pull request as its evidence;
 /// its commit is the head that the opening names. The actor of a statement or of an entry is
-/// the one that `register` names for its identity, and a step whose identity it does not hold
-/// is left out: it counts for nothing.
+/// built from its identity ([`actor_for`]), so no step is left out: a closing or a merge of an
+/// actor that a later register no longer holds still ends its pull request.
 fn placed_in_order(
     held: &[HeldStatement],
     entries: &[RecordEntry],
@@ -341,10 +358,9 @@ fn placed_in_order(
     for (number, (_, step)) in (1..).zip(steps) {
         match step {
             Step::Held(held) => {
-                if let Some(actor) = register.actor_of(held.actor()) {
-                    let statement = held.statement().clone();
-                    placed.push(Placed::new(number, held.time(), actor, statement));
-                }
+                let actor = actor_for(held.actor(), register);
+                let statement = held.statement().clone();
+                placed.push(Placed::new(number, held.time(), actor, statement));
             }
             Step::Entry(entry) => {
                 let merged = entry
@@ -357,13 +373,14 @@ fn placed_in_order(
                 let Some(pull) = merged else {
                     continue;
                 };
-                if let (Some(by), Some(commit)) = (register.actor_of(entry.actor()), head_of(pull))
-                {
+                // An opening that the hub does not hold names no pull request that the fold
+                // knows, and the fold skips its merge.
+                if let Some(commit) = head_of(pull) {
                     merges.push(Merge {
                         pull,
                         number,
                         time: entry.time(),
-                        by,
+                        by: actor_for(entry.actor(), register),
                         commit,
                     });
                 }
@@ -371,6 +388,23 @@ fn placed_in_order(
         }
     }
     (placed, merges)
+}
+
+/// The actor of an identity from the lines of the hub, for the fold. The rules of the fold and
+/// of the writers compare identities only, so the actor is built from the identity: the one
+/// that `register` names, and where it holds no entry of the identity any more, the identity
+/// itself, for an agent with its own ID in the place of the sponsor, which no rule reads. The
+/// lines of the hub name an identity of the register of their time, so dropping the step would
+/// change the state of a pull request.
+fn actor_for(identity: &Identity, register: &Register) -> Actor {
+    register.actor_of(identity).unwrap_or_else(|| {
+        let id = identity.id();
+        match identity.kind() {
+            IdentityKind::Human => Actor::human(id),
+            IdentityKind::Agent => Actor::agent(id, "-", "-", id),
+        }
+        .expect("an identity of the lines of the hub is a valid actor")
+    })
 }
 
 /// What the held statements of a hub and its record add up to (see [`placed_in_order`]).
@@ -772,7 +806,10 @@ impl Repository {
                         Ok(commit) => {
                             stack.extend(commit.parents().iter().map(|&parent| (parent, Some(id))));
                         }
-                        Err(HistoryError::Missing { .. }) => {}
+                        // The record keeps no commit alive (ADR-025), so the commit that an
+                        // entry left may be gone; a missing parent of a commit that is there is
+                        // damage of the history.
+                        Err(HistoryError::Missing { child: None, .. }) => {}
                         Err(error) => return Err(error.into()),
                     }
                 }
@@ -841,15 +878,20 @@ fn read_destination(
             source,
         })?;
     let held = read_held(&bytes).map_err(|error| StatementError::Statements(Box::new(error)))?;
-    for (position, (expected, held)) in (1u64..).zip(&held).enumerate() {
-        if held.number() != expected {
-            return Err(StatementError::Order {
-                position: position + 1,
-                number: held.number(),
-            });
-        }
+    if let Some((position, number)) = out_of_order(&held) {
+        return Err(StatementError::Order { position, number });
     }
     Ok(held)
+}
+
+/// The position, from 1, and the number of the first held statement that does not carry the
+/// number of its place.
+fn out_of_order(held: &[HeldStatement]) -> Option<(usize, u64)> {
+    (1u64..)
+        .zip(held)
+        .enumerate()
+        .find(|(_, (expected, held))| held.number() != *expected)
+        .map(|(position, (_, held))| (position + 1, held.number()))
 }
 
 #[cfg(test)]
