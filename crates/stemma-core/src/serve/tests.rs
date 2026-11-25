@@ -10,11 +10,12 @@ use crate::change::ChangeId;
 use crate::index::Index;
 use crate::object::{Blob, Commit, FileMode};
 use crate::oplog::OperationName;
-use crate::protocol::{ObjectStreamReader, StreamObject};
+use crate::protocol::{FormerKey, ObjectStreamReader, StreamObject};
 use crate::receive::{Bounds, ConnectivityError};
 use crate::refs::encode_branch;
 use crate::refs::RefError;
 use crate::repository::InitOptions;
+use crate::signature::PublicKey;
 use crate::testutil::{conflicted_commit, damage, write_remote_ref, TempDir};
 use crate::transport::{Answer, MemoryTransport, Transport, TransportError};
 use crate::{Actor, AllowAll, Allowed};
@@ -46,10 +47,19 @@ fn absent(byte: u8) -> CommitId {
     CommitId::new(id)
 }
 
+fn key() -> PublicKey {
+    PublicKey::from_openssh(KEY).unwrap()
+}
+
+/// The keys of a hub without a former key. They are leaked, so that the facts of a test can
+/// borrow them for as long as the test runs.
+fn keys() -> &'static HubKeys {
+    Box::leak(Box::new(HubKeys::try_new(key(), Vec::new()).unwrap()))
+}
+
 /// The facts of a hub whose record names the same entry for every reference.
 fn facts() -> ListFacts<'static> {
-    let key = PublicKey::from_openssh(KEY).unwrap();
-    ListFacts::new(repository_id(), key, Vec::new(), |_| Some(record(0xa1)))
+    ListFacts::new(repository_id(), keys(), |_| Some(record(0xa1)))
 }
 
 /// A bare repository in the directory `name` below `dir`.
@@ -123,6 +133,15 @@ fn commits(stream: &[u8]) -> Vec<CommitId> {
         .filter(|object| matches!(object.kind, Kind::Commit | Kind::Commit2))
         .map(|object| CommitId::new(object.id()))
         .collect()
+}
+
+/// Panics if an object stands twice in the stream.
+fn assert_unique(stream: &[u8]) {
+    let all = ids(stream);
+    let mut unique = all.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), all.len(), "{all:?}");
 }
 
 fn blob_id(text: &str) -> ObjectId {
@@ -289,9 +308,12 @@ fn a_fetch_leaves_out_what_a_known_have_reaches_and_ignores_an_unknown_have() {
     // it lies above the wanted commit.
     let apart = commit_of(&hub, &[("z.txt", "apart\n")], vec![history.top]);
 
+    // Nor does one whose history has a gap, which a walk from it would run into.
+    let gapped = commit_of(&hub, &[("g.txt", "gap\n")], vec![absent(0x55)]);
+
     let stream = answer(
         &hub,
-        &request(&[history.top], &[history.left, absent(0x77), apart]),
+        &request(&[history.top], &[history.left, absent(0x77), apart, gapped]),
     );
 
     // The root lies below the known `have`, although the walk also reaches it around it.
@@ -385,7 +407,7 @@ fn a_want_that_no_reference_reaches_is_refused_before_anything_is_written() {
         (vec![missing], missing),
         // The first one in the order of the IDs is named, and a reachable one beside it does
         // not help.
-        (vec![unnamed, missing, history.merge], missing.min(unnamed)),
+        (vec![unnamed, missing, history.merge], missing),
         // Also one that comes after a commit that a reference reaches.
         (vec![history.merge, absent(0xff)], absent(0xff)),
     ] {
@@ -450,6 +472,7 @@ fn every_beginning_of_the_stream_that_ends_with_a_commit_is_a_complete_state() {
 
     // A clone: the receiver has nothing.
     let stream = answer(&hub, &request(&[top], &[]));
+    assert_unique(&stream);
     let all = prefixes(&stream);
     assert_eq!(all.len(), 7);
     assert_eq!(all.last().unwrap().0, stream);
@@ -472,6 +495,7 @@ fn every_beginning_of_the_stream_that_ends_with_a_commit_is_a_complete_state() {
     // A fetch: the receiver has the `have` and what lies below it.
     let have = answer(&hub, &request(&[history.left], &[]));
     let stream = answer(&hub, &request(&[top], &[history.left]));
+    assert_unique(&stream);
     let all = prefixes(&stream);
     assert_eq!(all.len(), 5);
     for (index, (prefix, commit)) in all.iter().enumerate() {
@@ -561,7 +585,6 @@ fn the_list_names_the_facts_of_the_caller_and_refuses_a_reference_without_an_ent
     let dir = TempDir::new();
     let hub = bare(&dir, "hub");
     let commit = commit_of(&hub, &[("a.txt", "one\n")], Vec::new());
-    let key = || PublicKey::from_openssh(KEY).unwrap();
     let former = |first, last| FormerKey::try_new(first, last, key()).unwrap();
 
     // A repository without a reference has a list without one.
@@ -576,36 +599,57 @@ fn the_list_names_the_facts_of_the_caller_and_refuses_a_reference_without_an_ent
         RefKind::Branch => Some(record(0xb1)),
         RefKind::Tag => Some(record(0xb2)),
     };
-    let named = ListFacts::new(repository_id(), key(), vec![former(1, 4)], entries);
+    let with_former = HubKeys::try_new(key(), vec![former(5, 9), former(1, 4)]).unwrap();
+    let named = ListFacts::new(repository_id(), &with_former, entries);
     let list = hub.answer_refs(&named).unwrap();
-    assert_eq!(list.former(), [former(1, 4)]);
+    assert_eq!(list.former(), [former(1, 4), former(5, 9)]);
     let listed: Vec<RecordHash> = list.references().iter().map(Reference::entry).collect();
     assert_eq!(listed, [record(0xb1), record(0xb2)]);
     assert_eq!(RefList::parse(&list.encode()).unwrap(), list);
     assert!(format!("{named:?}").contains("ListFacts"));
 
-    // The record of a repository gives the ID and the entries; a name that it does not list
-    // cannot stand in the list.
-    let chain = Chain::new(repository_id());
-    let error = hub
-        .answer_refs(&ListFacts::of_chain(&chain, key(), Vec::new()))
-        .unwrap_err();
+    // A name without an entry cannot stand in the list: the first one, a branch before a tag.
+    let tags_only = ListFacts::new(repository_id(), keys(), |name| {
+        (name.kind() == RefKind::Tag).then(|| record(0xb2))
+    });
+    let error = hub.answer_refs(&tags_only).unwrap_err();
     assert!(
-        matches!(&error, AnswerError::NoRecordEntry(name) if name.to_string() == "heads/main"),
+        matches!(&error, ListError::NoRecordEntry(name) if name.to_string() == "heads/main"),
         "{error:?}"
     );
     assert!(error.to_string().contains("heads/main"));
-    assert!(error.answer().is_none());
+    assert!(error.store_error().is_none() && error.io_error().is_none());
+}
 
-    let overlapping = ListFacts::new(
-        repository_id(),
-        key(),
-        vec![former(1, 4), former(4, 9)],
-        entries,
-    );
-    let error = hub.answer_refs(&overlapping).unwrap_err();
+#[test]
+fn the_list_takes_the_id_and_the_entries_from_the_record_of_the_repository() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let commit = commit_of(&hub, &[("a.txt", "one\n")], Vec::new());
+    // The record after the entry of the checked-in example, which lists `heads/main` and
+    // `tags/v0.2.0`.
+    let receipt = crate::protocol::record::tests::example_receipt();
+    let before = receipt.previous().unwrap();
+    let mut chain = Chain::after(repository_id(), receipt.number() - 1, before);
+    chain.accept(&receipt).unwrap();
+    set_reference(&hub, "heads/main", &commit);
+    set_reference(&hub, "tags/v0.2.0", &commit);
+
+    let list = hub
+        .answer_refs(&ListFacts::of_chain(&chain, keys()))
+        .unwrap();
+
+    assert_eq!(list.repository(), chain.repository());
+    let listed: Vec<RecordHash> = list.references().iter().map(Reference::entry).collect();
+    assert_eq!(listed, [receipt.hash(), receipt.hash()]);
+
+    // A name that the record does not list has no entry, whatever the last entry is.
+    set_reference(&hub, "heads/topic", &commit);
+    let error = hub
+        .answer_refs(&ListFacts::of_chain(&chain, keys()))
+        .unwrap_err();
     assert!(
-        matches!(error, AnswerError::List(RefListError::OverlappingRanges(4))),
+        matches!(&error, ListError::NoRecordEntry(name) if name.to_string() == "heads/topic"),
         "{error:?}"
     );
 }
@@ -697,7 +741,8 @@ fn a_writer_that_fails_is_reported_as_such() {
             .answer_fetch(&request(&[history.top], &[]), Full(room))
             .unwrap_err();
         assert!(matches!(error, AnswerError::Io(_)), "{error:?}");
-        assert!(error.io_error().is_some());
+        // The error of the writer is that of the carrier and no error of the file system.
+        assert!(error.io_error().is_none() && error.store_error().is_none());
         assert!(error.to_string().contains("the writer is full"));
         assert!(error.answer().is_none());
     }
@@ -768,12 +813,7 @@ fn a_refusal_travels_as_its_error_message_and_a_failure_as_no_answer() {
     assert!(detail.contains(&history.root.to_string()), "{detail}");
 
     // So is a list that cannot be made.
-    let no_entry = ListFacts::new(
-        repository_id(),
-        PublicKey::from_openssh(KEY).unwrap(),
-        Vec::new(),
-        |_| None,
-    );
+    let no_entry = ListFacts::new(repository_id(), keys(), |_| None);
     let mut transport = MemoryTransport::new(Answering::new(&hub, no_entry));
     let error = transport.refs().unwrap_err();
     assert!(
@@ -888,13 +928,16 @@ fn a_reference_that_cannot_be_read_fails_both_answers() {
         .answer_fetch(&request(&[commit], &[]), &mut stream)
         .unwrap_err();
 
-    for error in [&listed, &fetched] {
-        assert!(
-            matches!(error, AnswerError::Refs(source) if matches!(**source, RefError::Corrupt { .. })),
-            "{error:?}"
-        );
-        assert!(error.answer().is_none());
-    }
+    assert!(
+        matches!(&listed, ListError::Refs(source) if matches!(**source, RefError::Corrupt { .. })),
+        "{listed:?}"
+    );
+    assert!(
+        matches!(&fetched, AnswerError::Refs(source) if matches!(**source, RefError::Corrupt { .. })),
+        "{fetched:?}"
+    );
+    assert!(fetched.answer().is_none());
+    assert_eq!(listed.to_string(), fetched.to_string());
     assert!(stream.is_empty());
     let mut transport = MemoryTransport::new(Answering::new(&hub, facts()));
     let error = transport.refs().unwrap_err();
@@ -1003,5 +1046,58 @@ fn a_commit_that_is_gone_below_a_reference_or_a_have_fails_before_the_stream_beg
         ),
         "{error:?}"
     );
+    assert!(stream.is_empty());
+}
+
+#[test]
+fn a_tree_that_stands_twice_is_sent_once_and_one_that_a_parent_holds_not_at_all() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    // Two directories with the same content are one tree.
+    let twice = commit_of(
+        &hub,
+        &[("x/f.txt", "same\n"), ("y/f.txt", "same\n")],
+        Vec::new(),
+    );
+    // A commit with the tree of its parent adds nothing but itself.
+    let again = commit_of(
+        &hub,
+        &[("x/f.txt", "same\n"), ("y/f.txt", "same\n")],
+        vec![twice],
+    );
+    set_reference(&hub, "heads/main", &again);
+
+    let stream = answer(&hub, &request(&[twice], &[]));
+    // The blob, the tree of both directories, the root tree, and the commit.
+    assert_eq!(ids(&stream).len(), 4);
+    assert_unique(&stream);
+
+    let mut stream = Vec::new();
+    let sent = hub
+        .answer_fetch(&request(&[again], &[twice]), &mut stream)
+        .unwrap();
+    assert_eq!(ids(&stream), [again.object_id()]);
+    assert_eq!((sent.objects, sent.commits), (1, 1));
+}
+
+#[test]
+fn a_damaged_commit_fails_before_the_stream_begins_as_an_error_of_the_store() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let history = history(&hub);
+    set_reference(&hub, "heads/main", &history.top);
+    let path = hub.objects().object_path(&history.right.object_id());
+    damage(&path, b"no object");
+
+    let mut stream = Vec::new();
+    let error = hub
+        .answer_fetch(&request(&[history.top], &[]), &mut stream)
+        .unwrap_err();
+
+    assert!(matches!(error, AnswerError::History(_)), "{error:?}");
+    assert!(matches!(
+        error.store_error(),
+        Some(StoreError::Corrupt { .. })
+    ));
     assert!(stream.is_empty());
 }

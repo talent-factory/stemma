@@ -34,7 +34,8 @@
 //! [`transport::TransportError`] for the error of the carrier of a request. The errors of the
 //! receiving side ([`receive::ReceiveError`], [`receive::ConnectivityError`], and
 //! [`receive::FetchJournalError`]) have an `io_error()`, and the first two a `store_error()`;
-//! the error of the answering side ([`serve::AnswerError`]) has both. A
+//! the errors of the answering side ([`serve::ListError`] and [`serve::AnswerError`]) have
+//! both, and `io_error()` leaves out the error of the writer of the stream. A
 //! program that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;

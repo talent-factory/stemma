@@ -245,17 +245,21 @@ bare or with a working copy, take no lock, keep no state and leave no file.
 
 - **The list.** It names the branches and the tags of the store. The ID of the repository, the
   keys of the hub and the record entry of each name are not kept by a store; the caller passes
-  them (`ListFacts`), a hub the ID and the entries from its record (`Chain`, ADR-025). A reference without a record
-  entry cannot be listed and fails the call. The references are read one after the other, so the
-  list is no snapshot (ADR-025), and a reference is not compared with the record.
+  them (`ListFacts`), a hub the ID and the entries from its record (`Chain`, ADR-025) and its
+  keys as `HubKeys`, whose ranges were checked when they were built. A reference without a
+  record entry cannot be listed and fails the call (`ListError`). The references are read one
+  after the other, so the list is no snapshot (ADR-025), and a reference is not compared with
+  the record.
 - **`want`.** Every `want` must be reachable from a branch or a tag, the references that the list
-  names, which is what "a reference of the repository" means for a fetch. A remote reference of a clone names nothing that is served. The refusal comes before
-  the first byte of the stream and names the first such commit in the order of the IDs. It is
-  the same for a commit that the store lacks and for one that it holds unnamed, so it does not
-  say whether an object exists.
+  names, which is what "a reference of the repository" means for a fetch. A remote reference
+  of a clone names nothing that is served. The refusal comes before the first byte of the
+  stream and names the first such commit in the order of the IDs. It is the same for a commit
+  that the store lacks and for one that it holds unnamed, and it costs the same walk for both,
+  so it does not say whether an object exists.
 - **`have`.** A `have` is known if a branch or a tag reaches it. One that the store does not
-  hold is ignored after one lookup, and so is one that the store holds unnamed: its history may
-  have gaps, and it would tell the sender that an unnamed object exists.
+  hold is ignored after one lookup. One that the store holds unnamed is ignored too, after the
+  walk below the references did not find it: its history may have gaps, and it would tell the
+  requester that an unnamed object exists.
 - **The commits.** Sent are the commits that a `want` reaches and no known `have` reaches. The
   walk does not stop at a `have` only: it first collects everything below the known `have`
   commits, because a `want` can reach a commit below a `have` by a way around it, as after a
@@ -281,7 +285,8 @@ bare or with a working copy, take no lock, keep no state and leave no file.
 - **The cost.** The walk over the commits reads every commit that it sends, and every commit
   below the known `have` commits, once, also for a fetch that brings one commit. A `want` or a
   `have` that is no tip of a reference costs the history below the references on top, until it
-  is found. Writing the stream reads each commit that is sent once more, its parents, its new
+  is found, and all of that history if it is not found: a `want` that is refused, and a `have`
+  that the store holds unnamed. Writing the stream reads each commit that is sent once more, its parents, its new
   trees and blobs, and the trees of the parents at the changed paths. See the open items.
 
 ### One number covers every message

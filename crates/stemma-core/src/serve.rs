@@ -24,15 +24,18 @@
 //!   commit is a complete state for a receiver that has the `have` commits, and a transfer that
 //!   was cut off resumes with the commits that arrived as further `have` lines.
 //! - **The refusal.** A `want` that no branch and no tag reaches is refused before the first
-//!   byte of the stream is written ([`AnswerError::UnknownWant`]), in the same words for a commit that
-//!   the store lacks and for one that it holds unnamed, as the objects of a refused push are.
+//!   byte of the stream is written ([`AnswerError::UnknownWant`]), in the same words for a
+//!   commit that the store lacks and for one that it holds unnamed, as the objects of a refused
+//!   push are.
 //!
 //! The walk over the commits reads every commit that it sends, and every commit below the known
 //! `have` commits, once, also for a fetch that brings one new commit: only the whole of that
 //! history says which commits a `have` reaches. A `want` or a `have` that is no tip of a
-//! reference costs the history below the references on top, until it is found; a `have` that
-//! the store does not hold costs one lookup. Writing the stream then reads every commit that is
-//! sent once more, its parents, its new trees and blobs, and the trees of the parents at the
+//! reference costs the history below the references on top, until it is found, and all of it
+//! if it is not found: a `want` that is refused, and a `have` that the store holds unnamed. A
+//! `have` that the store does not hold costs one lookup. Writing the stream then reads every
+//! commit that is sent once more, its parents, its new trees and blobs, and the trees of the
+//! parents at the
 //! changed paths.
 //!
 //! [`Answering`] joins the two operations to the trait [`OtherSide`], so that a
@@ -46,54 +49,53 @@ use std::io::{self, Write};
 use crate::conflict::AnyCommit;
 use crate::history::{read_commit, HistoryError};
 use crate::object::{CommitId, EntryMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
-use crate::protocol::record::Chain;
+use crate::protocol::record::{Chain, HubKeys};
 use crate::protocol::{
-    ErrorMessage, FetchRequest, FormerKey, ObjectStreamWriter, QualifiedName, RecordHash, RefList,
-    RefListError, Reference, RepositoryId,
+    ErrorMessage, FetchRequest, ObjectStreamWriter, QualifiedName, RecordHash, RefList, Reference,
+    RepositoryId,
 };
 use crate::refs::{RefError, RefKind};
 use crate::repository::Repository;
-use crate::signature::PublicKey;
 use crate::store::{FsObjectStore, ObjectStore, ReadError, StoreError};
 use crate::transport::{OtherSide, Refusal};
 
 /// The hash of the last record entry of a name, or `None` for a name that the record does not
 /// list.
-type EntryOf<'a> = Box<dyn Fn(&QualifiedName) -> Option<RecordHash> + 'a>;
+type EntryOf<'a> = Box<dyn Fn(&QualifiedName) -> Option<RecordHash> + Send + Sync + 'a>;
 
 /// What a list of references names beyond the references of a store (ADR-023): the ID of the
-/// repository (ADR-027), the public key of the hub with its former keys (ADR-026), and for each
-/// name the hash of its last record entry (ADR-025). A hub knows the ID and the entries from
-/// its record and holds its keys itself; a store holds none of them.
+/// repository (ADR-027), the keys of the hub (ADR-026), and for each name the hash of its last
+/// record entry (ADR-025). A hub knows the ID and the entries from its record and holds its
+/// keys itself; a store holds none of them.
+///
+/// The value borrows what it names, so a hub builds one per request.
 pub struct ListFacts<'a> {
     repository: RepositoryId,
-    key: PublicKey,
-    former: Vec<FormerKey>,
+    keys: &'a HubKeys,
     entry_of: EntryOf<'a>,
 }
 
 impl<'a> ListFacts<'a> {
-    /// The facts of a repository: its ID, the current key of the hub, its former keys, and the
-    /// hash of the last record entry of a name, or `None` for a name that the record does not
-    /// list.
+    /// The facts of a repository: its ID, the keys of the hub, and the hash of the last record
+    /// entry of a name, or `None` for a name that the record does not list.
     pub fn new(
         repository: RepositoryId,
-        key: PublicKey,
-        former: Vec<FormerKey>,
-        entry_of: impl Fn(&QualifiedName) -> Option<RecordHash> + 'a,
+        keys: &'a HubKeys,
+        entry_of: impl Fn(&QualifiedName) -> Option<RecordHash> + Send + Sync + 'a,
     ) -> Self {
         Self {
             repository,
-            key,
-            former,
+            keys,
             entry_of: Box::new(entry_of),
         }
     }
 
     /// The facts as the record of a repository leaves them: the ID and the entries of `chain`,
-    /// with the keys of the hub.
-    pub fn of_chain(chain: &'a Chain, key: PublicKey, former: Vec<FormerKey>) -> Self {
-        Self::new(chain.repository(), key, former, |name| chain.entry_of(name))
+    /// with the keys of the hub. The chain must have been read from its first entry: one that
+    /// began in the middle ([`Chain::after`]) knows no entry of a name that was listed before,
+    /// and the list then fails for that name.
+    pub fn of_chain(chain: &'a Chain, keys: &'a HubKeys) -> Self {
+        Self::new(chain.repository(), keys, |name| chain.entry_of(name))
     }
 }
 
@@ -102,9 +104,68 @@ impl fmt::Debug for ListFacts<'_> {
         // The entries are a function, so only the values are shown.
         f.debug_struct("ListFacts")
             .field("repository", &self.repository)
-            .field("key", &self.key)
-            .field("former", &self.former)
+            .field("keys", &self.keys)
             .finish_non_exhaustive()
+    }
+}
+
+/// Why the list of references cannot be answered. Both are failures of this side and no message
+/// of the protocol.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ListError {
+    /// The references of the repository could not be read.
+    Refs(Box<RefError>),
+    /// A reference of the store has no record entry in the facts of the caller, so the list
+    /// cannot name it.
+    NoRecordEntry(QualifiedName),
+}
+
+impl ListError {
+    /// Returns the error of the store inside the error of the references, if the store could
+    /// not answer.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Refs(source) => source.store_error(),
+            Self::NoRecordEntry(_) => None,
+        }
+    }
+
+    /// Returns the error of the file system if that is what failed while the references were
+    /// read (see the crate documentation).
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Refs(source) => source.io_error(),
+            Self::NoRecordEntry(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for ListError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refs(source) => write!(f, "{source}"),
+            Self::NoRecordEntry(name) => {
+                write!(f, "the reference {name} has no entry in the record")
+            }
+        }
+    }
+}
+
+impl Error for ListError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        // The message includes that of the cause, so the source is the cause of the cause (see
+        // the crate documentation).
+        match self {
+            Self::Refs(source) => source.source(),
+            Self::NoRecordEntry(_) => None,
+        }
+    }
+}
+
+impl From<RefError> for ListError {
+    fn from(source: RefError) -> Self {
+        Self::Refs(Box::new(source))
     }
 }
 
@@ -120,9 +181,9 @@ pub struct Sent {
     pub bytes: u64,
 }
 
-/// Why a request is not answered with the message that it asks for. One of them is a refusal
-/// that the other side hears as an error message ([`answer`](Self::answer)); every other one is
-/// a failure of this side. The errors inside are boxed, because the unboxed ones are too large
+/// Why a fetch request is not answered with its object stream. One of them is a refusal that
+/// the other side hears as an error message ([`answer`](Self::answer)); every other one is a
+/// failure of this side. The errors inside are boxed, because the unboxed ones are too large
 /// for clippy's `result_large_err` lint.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -130,15 +191,12 @@ pub enum AnswerError {
     /// A fetch request wants a commit that no branch and no tag of the repository reaches
     /// (ADR-023). Carries the first such commit in the order of the IDs. Nothing was written.
     UnknownWant(CommitId),
-    /// A reference of the store has no record entry in the facts of the caller, so the list
-    /// cannot name it.
-    NoRecordEntry(QualifiedName),
-    /// The former keys of the facts do not make a list (their ranges overlap).
-    List(RefListError),
     /// The references of the repository could not be read.
     Refs(Box<RefError>),
     /// The history below the references or below a wanted commit cannot be read: a commit is
-    /// missing or is refused by its reader.
+    /// missing, is refused by its reader, or the store could not return it, because the storage
+    /// failed, the file is damaged, or the object is no commit
+    /// ([`store_error`](Self::store_error)).
     History(Box<HistoryError>),
     /// A tree or a blob that a commit of the answer names is not in the store.
     Missing {
@@ -160,7 +218,8 @@ pub enum AnswerError {
     },
     /// The store could not answer: it could not say whether it holds a `have`, or it could not
     /// return a tree or a blob of the answer, because the storage failed, the file is damaged,
-    /// or the object has another kind than the tree that names it claims.
+    /// or the object has another kind than the commit or the tree that names it claims. The
+    /// same failure for a commit is [`History`](Self::History).
     Store(Box<StoreError>),
     /// The stream could not be written: its first line, or an object after it. The other side
     /// may hold a part of it, cut off anywhere.
@@ -187,20 +246,19 @@ impl AnswerError {
             Self::Refs(source) => source.store_error(),
             Self::History(source) => source.store_error(),
             Self::Store(source) => Some(source),
-            Self::UnknownWant(_)
-            | Self::NoRecordEntry(_)
-            | Self::List(_)
-            | Self::Missing { .. }
-            | Self::Unreadable { .. }
-            | Self::Io(_) => None,
+            Self::UnknownWant(_) | Self::Missing { .. } | Self::Unreadable { .. } | Self::Io(_) => {
+                None
+            }
         }
     }
 
-    /// Returns the error of the file system or of the writer of the stream if that is what
-    /// failed (see the crate documentation).
+    /// Returns the error of the file system if that is what failed, in the store or while the
+    /// references were read (see the crate documentation). `None` for [`Io`](Self::Io): the
+    /// error of the writer of the stream is that of the carrier, so that a connection that
+    /// broke is not taken for a failing disk. A caller that wants it matches on the variant.
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io(source) => Some(source),
+            Self::Io(_) => None,
             Self::Refs(source) => source.io_error(),
             _ => self.store_error().and_then(StoreError::io_error),
         }
@@ -214,10 +272,6 @@ impl fmt::Display for AnswerError {
                 f,
                 "no reference of this repository reaches the wanted commit {commit}"
             ),
-            Self::NoRecordEntry(name) => {
-                write!(f, "the reference {name} has no entry in the record")
-            }
-            Self::List(source) => write!(f, "{source}"),
             Self::Refs(source) => write!(f, "{source}"),
             Self::History(source) => write!(f, "{source}"),
             Self::Missing {
@@ -243,8 +297,7 @@ impl Error for AnswerError {
         // The message includes that of the cause, so the source is the cause of the cause (see
         // the crate documentation).
         match self {
-            Self::UnknownWant(_) | Self::NoRecordEntry(_) | Self::Missing { .. } => None,
-            Self::List(source) => source.source(),
+            Self::UnknownWant(_) | Self::Missing { .. } => None,
             Self::Refs(source) => source.source(),
             Self::History(source) => source.source(),
             Self::Unreadable { source, .. } => source.source(),
@@ -562,10 +615,9 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`AnswerError::Refs`] if the references cannot be read, [`AnswerError::NoRecordEntry`]
-    /// for the first reference that `facts` names no entry for, and [`AnswerError::List`] if
-    /// the ranges of the former keys overlap.
-    pub fn answer_refs(&self, facts: &ListFacts<'_>) -> Result<RefList, AnswerError> {
+    /// [`ListError::Refs`] if the references cannot be read, and [`ListError::NoRecordEntry`]
+    /// for the first reference that `facts` names no entry for, the branches before the tags.
+    pub fn answer_refs(&self, facts: &ListFacts<'_>) -> Result<RefList, ListError> {
         let refs = self.refs();
         let branches = refs.branches()?.into_iter().map(|at| (RefKind::Branch, at));
         let tags = refs.tags()?.into_iter().map(|at| (RefKind::Tag, at));
@@ -573,17 +625,19 @@ impl Repository {
         for (kind, (name, commit)) in branches.chain(tags) {
             let name = QualifiedName::new(kind, name);
             let Some(entry) = (facts.entry_of)(&name) else {
-                return Err(AnswerError::NoRecordEntry(name));
+                return Err(ListError::NoRecordEntry(name));
             };
             references.push(Reference::new(name, commit, entry));
         }
-        RefList::try_new(
+        // The ranges of the former keys were checked when the keys were built, and a store
+        // lists a name once per kind.
+        Ok(RefList::try_new(
             facts.repository,
-            facts.key.clone(),
-            facts.former.clone(),
+            facts.keys.current().clone(),
+            facts.keys.former().to_vec(),
             references,
         )
-        .map_err(AnswerError::List)
+        .expect("the keys of a hub and the references of a store make a list"))
     }
 
     /// Answers a fetch request (ADR-023): writes to `stream` the object stream of everything
@@ -602,7 +656,8 @@ impl Repository {
     /// A purge that runs beside the call may remove an object that the answer sends. A commit
     /// that is gone when the graph is walked fails the call before the first byte; a commit, a
     /// tree, or a blob that is gone when it is written cuts the stream off. A parent or a tree
-    /// of a parent that is gone fails nothing: the answer then holds more.
+    /// of a parent that is gone, or that cannot be read for any other reason, fails nothing and
+    /// is not reported: the answer then holds more.
     ///
     /// # Errors
     ///
@@ -612,7 +667,8 @@ impl Repository {
     /// and [`AnswerError::Store`] if the store cannot say whether it holds a `have`. After it,
     /// with a stream that is cut off: [`AnswerError::Missing`],
     /// [`AnswerError::Unreadable`], [`AnswerError::Store`], and [`AnswerError::History`] for an
-    /// object that the store does not return, and [`AnswerError::Io`] if `stream` fails.
+    /// object that the store does not return. [`AnswerError::Io`] if `stream` fails, at its
+    /// first line or later.
     pub fn answer_fetch<W: Write>(
         &self,
         request: &FetchRequest,
@@ -655,8 +711,9 @@ impl Repository {
 /// [`Repository::answer_refs`] and [`Repository::answer_fetch`] (ADR-022).
 ///
 /// A refusal travels as its error message ([`AnswerError::answer`]), and every other error as
-/// a side that failed. What such a call had written of a stream is discarded by the transport
-/// in memory, so its caller sees no stream that is cut off.
+/// a side that failed, with its message as the detail. What such a call had written of a stream
+/// is discarded by the transport in memory, so its caller sees no stream that is cut off. A
+/// carrier over a network answers a failure in its own words and does not pass the message on.
 #[derive(Debug)]
 pub struct Answering<'a> {
     repository: &'a Repository,
@@ -670,24 +727,21 @@ impl<'a> Answering<'a> {
     }
 }
 
-/// The refusal that an error of an answering operation travels as.
-fn refusal(error: AnswerError) -> Refusal {
-    match error.answer() {
-        Some(message) => Refusal::Error(message),
-        None => Refusal::Failed(error.to_string()),
-    }
-}
-
 impl OtherSide for Answering<'_> {
     fn refs(&self) -> Result<RefList, Refusal> {
-        self.repository.answer_refs(&self.facts).map_err(refusal)
+        self.repository
+            .answer_refs(&self.facts)
+            .map_err(|error| Refusal::Failed(error.to_string()))
     }
 
     fn fetch(&self, request: &FetchRequest, stream: &mut dyn Write) -> Result<(), Refusal> {
         self.repository
             .answer_fetch(request, stream)
             .map(|_| ())
-            .map_err(refusal)
+            .map_err(|error| match error.answer() {
+                Some(message) => Refusal::Error(message),
+                None => Refusal::Failed(error.to_string()),
+            })
     }
 }
 

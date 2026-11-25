@@ -205,7 +205,8 @@ selben Pfad mit derselben ID hat, einen Tree nach dem, was er nennt, und danach 
 Jedes Objekt steht im Strom nur einmal.
 \stopitemize
 
-Die ersten drei Schritte lesen nur Commits und liegen vor dem ersten Byte des Stroms.
+Die ersten drei Schritte lesen ausser den Referenzen nur Commits und liegen vor dem ersten Byte
+des Stroms.
 Ein \type{want}, das kein Branch und kein Tag erreicht, lehnt die Operation deshalb ab, bevor
 sie etwas schreibt, mit dem Fehler \type{unknown-want} und dem ersten solchen Commit.
 Die Antwort ist dieselbe für einen Commit, den der Speicher nicht hat, und für einen, den er
@@ -215,19 +216,22 @@ Dass jeder Anfang des Stroms, der mit einem Commit endet, ein vollständiger Sta
 der Reihenfolge, durch Induktion über den Strom.
 Die Eltern eines Commits stehen vor ihm im Strom oder liegen unter einem \type{have}; der
 Empfänger hat sie also vollständig.
-Ein Objekt in den Trees des Commits hat entweder ein Elter am selben Pfad mit derselben ID, oder
-es steht vor dem Commit im Strom.
+Ein Objekt in den Trees des Commits hat ein Elter am selben Pfad mit derselben ID, oder es steht
+vor dem Commit im Strom, oder die Antwort hat es bei einem früheren Commit des Stroms
+ausgelassen, der selbst vollständig ist.
 Der Vergleich in Schritt 4 ist derselbe, den der Empfänger bei seiner Prüfung anstellt.
 
 Die Kosten: Der Lauf liest die $n$ Commits, die er sendet, und einmal jeden der $m$ Commits unter
 den bekannten \type{have}, also $O(n + m)$ Commits, auch für einen Fetch, der einen einzigen
 Commit bringt.
+Das gilt, wenn jedes \type{want} und jedes \type{have} die Spitze einer Referenz ist oder
+nahe darunter liegt; den anderen Fall nennt der Kasten.
 Erst der ganze Verlauf unter einem \type{have} sagt, welche Commits es erreicht.
 Ein Lauf, der schon am \type{have} selbst umkehrt, würde nach einem Merge den Verlauf des
 hereingeholten Branch bis zur Wurzel noch einmal senden.
 Ein Klon hat kein \type{have} und kostet nur die $n$ Commits.
-Beim Schreiben kommen die neuen Trees und Blobs dazu und die Trees der Eltern an den geänderten
-Pfaden, wie beim Empfänger.
+Beim Schreiben liest die Antwort jeden gesendeten Commit und seine Eltern noch einmal, dazu die
+neuen Trees und Blobs und die Trees der Eltern an den geänderten Pfaden, wie beim Empfänger.
 Was den Lauf abkürzen könnte, etwa eine Generationsnummer je Commit, ist ein offener Punkt von
 ADR-023.
 
@@ -240,6 +244,8 @@ Das kostet Bytes und sonst nichts.
 \item Ein \type{have}, das der Speicher nicht hat, kostet ein Nachschlagen.
 Eines, das er hat und das keine Spitze einer Referenz ist, kostet den Verlauf unter den
 Referenzen, bis es gefunden ist.
+Den ganzen Verlauf unter den Referenzen kosten ein \type{have}, das der Speicher nur unbenannt
+hält, und ein \type{want}, das abgelehnt wird.
 \item Sind alle \type{want} schon unter einem bekannten \type{have}, besteht der Strom aus der
 ersten Zeile allein.
 \item Entfernt ein Purge ein Objekt, das die Antwort gerade senden will, bricht der Strom ab.
