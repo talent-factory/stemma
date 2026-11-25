@@ -1156,6 +1156,25 @@ mod tests {
              digits"
         );
         assert_eq!(CaFile::try_new("-").unwrap_err().field, RemoteField::CaFile);
+        assert_eq!(
+            CaFile::try_new("own-ca.pem").unwrap_err().to_string(),
+            "invalid value `own-ca.pem` for `ca-file`: the path of a CA file is absolute, has no \
+             control character, and neither starts nor ends with a space; `-` alone stands for \
+             no file"
+        );
+    }
+
+    #[test]
+    fn a_ca_file_of_another_platform_is_not_absolute() {
+        let other = if cfg!(windows) {
+            "/etc/ca.pem"
+        } else {
+            r"C:\ca.pem"
+        };
+        assert_eq!(
+            CaFile::try_new(other),
+            Err(rejected(RemoteField::CaFile, other))
+        );
     }
 
     fn write(dir: &TempDir, name: &str, content: &[u8]) -> PathBuf {

@@ -192,11 +192,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     key in the OpenSSH format without a comment, or `-` as long as none is pinned. The path of
     the CA file is absolute by the rule of the platform, has no control character, and neither
     starts nor ends with a space, or `-` for none. It is absolute because every worktree shares
-    the file and a relative path would name another file from another directory. The reader
-    accepts what
-    the writer writes and nothing else (ADR-005), and an
-    entry of the directory whose name is no name of a remote is damage, except one that starts
-    with a dot. One file per remote follows the branches and the leases: a change replaces one
+    the configuration, and a relative path would name another file from another directory. The
+    reader accepts what the writer writes and nothing else (ADR-005), and an entry of the
+    directory whose name is no name of a remote is damage, except one that starts with a dot.
+    One file per remote follows the branches and the leases: a change replaces one
     file atomically, and two remotes do not touch each other. A repository without the directory
     knows no remote. The core reads the configuration (`Repository::remote`, `remotes`) and has
     the encoding; the commands that write it (`remote add`, `clone`, pinning a key again) come

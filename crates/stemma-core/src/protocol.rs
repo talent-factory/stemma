@@ -89,8 +89,8 @@ fn parse_positive<T: FromStr>(text: &str) -> Option<T> {
 /// The ID that a hub assigned to a repository: 128 random bits, written as 32 lowercase
 /// hexadecimal digits (ADR-027). The list of references names it, and a ref update binds it
 /// (ADR-025). A clone keeps it in the configuration of the remote
-/// ([`RemoteConfig`](crate::remote::RemoteConfig)) and notices when another repository lies under
-/// the same address.
+/// ([`RemoteConfig`](crate::remote::RemoteConfig)), so that it can notice when another repository
+/// lies under the same address; that check belongs to a later slice.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RepositoryId([u8; 16]);
 
