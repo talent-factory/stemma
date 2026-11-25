@@ -36,7 +36,11 @@ use crate::{lease, AllowAll, Authorizer};
 /// and passes the way to it with every call.
 ///
 /// The accepting operation calls both methods under the lock of the references, so no other
-/// writer of the same repository runs between them.
+/// writer of the same repository runs between them. There is one exception: in a repository
+/// without `main` it calls [`read`](Self::read) once before it takes the lock, to learn whether
+/// a first push stopped after its entry. That read may meet the entry of another process half
+/// written; the operation takes nothing from a record that it cannot read there and reads again
+/// under the lock.
 pub trait RecordDestination {
     /// The whole record: the bytes of every entry that [`append`](Self::append) took, in their
     /// order, and nothing else. A repository without an accepted update has an empty record.
@@ -59,7 +63,10 @@ pub trait RecordDestination {
 }
 
 /// What a hub passes to the accepting operation with a ref update (ADR-025): who it is, which
-/// repository the update was sent to, where the record lies, its time, and its signer.
+/// repository the update was sent to, where the record lies, its time, and its signer. The
+/// slices of the gate add to it (the namespace policy, the statements), so a caller outside
+/// the crate builds it with [`new`](Self::new).
+#[non_exhaustive]
 pub struct AcceptContext<'a> {
     /// The public address under which the hub was called. An update that names another address
     /// was signed for another hub.
@@ -73,6 +80,27 @@ pub struct AcceptContext<'a> {
     pub time: i64,
     /// The signer of the hub (ADR-026). The core never holds the key.
     pub signer: &'a dyn Signer,
+}
+
+impl<'a> AcceptContext<'a> {
+    /// The context of one call: the address under which the hub was called, the ID of the
+    /// repository, its record, the time of the hub in seconds since the Unix epoch, and the
+    /// signer of the hub.
+    pub fn new(
+        hub: &'a HubAddress,
+        repository: RepositoryId,
+        record: &'a mut dyn RecordDestination,
+        time: i64,
+        signer: &'a dyn Signer,
+    ) -> Self {
+        Self {
+            hub,
+            repository,
+            record,
+            time,
+            signer,
+        }
+    }
 }
 
 impl fmt::Debug for AcceptContext<'_> {
@@ -130,7 +158,8 @@ pub enum AcceptError {
         /// The commit of the reference, or `None`.
         found: Option<CommitId>,
     },
-    /// The register at the tip of `main` cannot be read, or `main` holds none.
+    /// The register at the tip of `main` cannot be read, or `main` holds none. For a first
+    /// push it is the register of the pushed commit that the store could not return.
     Register(Box<ModeError>),
     /// The policy at the tip of `main` could not be read: the storage failed. A policy that is
     /// missing or not valid is [`Refused`](Self::Refused) instead.
@@ -160,6 +189,18 @@ impl AcceptError {
         match self {
             Self::Stale(stale) => Some(ErrorMessage::Stale(stale.clone())),
             Self::Refused(refused) => Some(ErrorMessage::Refused(refused.clone())),
+            _ => None,
+        }
+    }
+
+    /// The entry of an update that is accepted although the call failed
+    /// ([`NotCompleted`](Self::NotCompleted)): it is in the record, and the next call makes its
+    /// moves. [`answer`](Self::answer) is `None` for it, because the hub sends no receipt
+    /// before the references moved; a hub that drops the entry here loses nothing, as the
+    /// sender reads the outcome from the list of references. `None` for every other error.
+    pub fn receipt(&self) -> Option<&RecordEntry> {
+        match self {
+            Self::NotCompleted { receipt, .. } => Some(receipt),
             _ => None,
         }
     }
@@ -369,7 +410,7 @@ struct Owner {
     commit: Option<CommitId>,
 }
 
-/// The record of a repository, as it was read under the lock.
+/// The record of a repository, as it was read.
 struct Record {
     chain: Chain,
     /// The last entry, whose moves may not be made yet.
@@ -476,7 +517,8 @@ impl Repository {
     /// references cannot be read, [`AcceptError::RecordIo`], [`AcceptError::Record`],
     /// [`AcceptError::Chain`], and [`AcceptError::Diverged`] for a record that cannot be read
     /// or written, is damaged, or does not agree with the references,
-    /// [`AcceptError::Register`] if the register at the tip of `main` cannot be read, is not
+    /// [`AcceptError::Register`] if the store cannot return the register that counts, or if
+    /// the register at the tip of `main` is not
     /// valid, or is not there, [`AcceptError::Policy`], [`AcceptError::Connectivity`], and
     /// [`AcceptError::History`] if the store fails, [`AcceptError::Write`] if the signer fails,
     /// and
@@ -520,13 +562,7 @@ impl Repository {
         // decided again under the lock.
         let tip = match self.main_tip()? {
             Some(tip) => Some(tip),
-            // A first push that stopped after its entry left no `main`, and the record names
-            // it. Without this the pass would answer `no-main` to every other sender, and the
-            // completion under the lock would never be reached.
-            None => Record::read(context.record, context.repository)?
-                .owners
-                .get(&main_reference())
-                .and_then(|main| main.commit),
+            None => self.main_of_stopped_first_push(context.record, context.repository)?,
         };
         let allowed = self.sender_of(update, tip, false)?.ask_all(update, also)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
@@ -632,6 +668,32 @@ impl Repository {
                 receipt: Box::new(entry),
                 source: Box::new(source),
             }),
+        }
+    }
+
+    /// The commit that the record leaves `main` at, for the pass before the lock in a
+    /// repository without `main`: a first push that stopped after its entry left no reference,
+    /// and the record names it. Without this the pass would answer `no-main` to every other
+    /// sender, and the completion under the lock would never be reached.
+    ///
+    /// The record is read without the lock here, so a first push of another process may be
+    /// writing its entry. A record that cannot be read is therefore no damage yet: beside a
+    /// writer the answer is that the references are locked, as it would be a moment later, and
+    /// otherwise the record counts as unknown and the pass under the lock reads it again.
+    fn main_of_stopped_first_push(
+        &self,
+        record: &mut dyn RecordDestination,
+        repository: RepositoryId,
+    ) -> Result<Option<CommitId>, AcceptError> {
+        match Record::read(record, repository) {
+            Ok(record) => Ok(record
+                .owners
+                .get(&main_reference())
+                .and_then(|main| main.commit)),
+            Err(_) => {
+                self.refs_store().refuse_beside_writer()?;
+                Ok(None)
+            }
         }
     }
 

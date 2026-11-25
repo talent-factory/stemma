@@ -782,6 +782,8 @@ und der Owner-Override folgen.
 \item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload, bestimmt
 den Absender nach dem Stand der Referenzen, wie er gerade ist, und fragt den Authorizer ein
 erstes Mal.
+Fehlt \type{main}, liest sie dafür die Aufzeichnung: Ein erster Push, der nach seinem Eintrag
+abgebrochen ist, hat \type{main} dort schon gesetzt.
 Die Sperre der Referenzen öffnet nur der Beleg dieser Frage (ADR-002).
 Dieser Durchgang kann ein Ref-Update wegen seines Absenders ablehnen, auch eines, das zugleich
 veraltet ist; angenommen wird erst unter der Sperre, wo alles noch einmal entschieden wird.
@@ -819,7 +821,6 @@ stemma-protocol 1
 error refused
 ref heads/feature leased human mia 1767225600
 ref heads/main gate -
-ref tags/v0.2.0 denied tag
 \stoptyping
 
 Endet der Prozess zwischen Schritt 8 und dem Ende von Schritt 9, steht der Eintrag in der
@@ -867,8 +868,9 @@ Referenz belegt ihn im Dateisystem. \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{no-register}, \type{bad-register}, \type{not-owner} \stopxcell
-\startxcell Der erste Push: Der Commit enthält kein Register, eines, das sich nicht lesen lässt,
-oder eines, das den Schlüssel nicht als aktiven Schlüssel eines Owners führt. \stopxcell
+\startxcell Der erste Push: Der Commit enthält kein Register, eines, das sich nicht verwenden
+lässt (auch weil der Commit einen offenen Konflikt festhält), oder eines, das den Schlüssel nicht
+als aktiven Schlüssel eines Owners führt. \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{incomplete} \stopxcell
@@ -900,8 +902,9 @@ etwa \type{heads/a} und \type{heads/a/b} oder zwei Namen, die sich nur in der
 Gross-/Kleinschreibung unterscheiden; der Hub lehnt den späteren ab.
 Die Payload nennt keinen Akteur: Die Identität folgt aus dem Schlüssel, und Modell und Session
 eines Agenten kennt der Hub nicht.
-Scheitert der Speicher nach dem Eintrag, sendet der Hub keine Quittung; der Klon erfährt den
-Ausgang aus der Liste der Referenzen.
+Scheitert der Speicher nach dem Eintrag, sendet der Hub keine Quittung.
+Die Liste der Referenzen zeigt das Ref-Update, sobald der nächste Aufruf seine Bewegungen
+vollendet hat; bis dahin kann eine seiner Referenzen noch am alten Wert stehen.
 \stopinfobox
 
 \subsection{Garantien und Grenzen}

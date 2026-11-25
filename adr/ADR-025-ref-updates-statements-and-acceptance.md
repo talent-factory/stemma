@@ -384,8 +384,8 @@ failure of the hub. The commit of a first push that records an open conflict is 
 `bad-register`: `main` never holds such a commit (ADR-019).
 
 **The destination of the record** is a trait with two methods: read the whole record, and append
-the bytes of one entry durably. The operation reads the record under the lock, so a second
-process of the hub cannot write between the reading and the entry. This first version reads and
+the bytes of one entry durably. The operation reads the record under the lock before it judges,
+so a second process of the hub cannot write between that reading and the entry. This first version reads and
 checks the whole record with every call, which is linear in the entries; the trigger for keeping
 the state of the chains between two calls is the measured holding time of the lock.
 
@@ -398,7 +398,10 @@ refuse an update for its sender before the lock is taken (the key, the first pus
 authorizer), so such an update is answered `refused` even if it is `stale` as well. It accepts
 nothing: everything is decided again under the lock. Where `main` is missing, the pass takes the
 commit of `main` from the record, so a first push that stopped after its entry does not make the
-repository look empty to the next sender. Under the lock:
+repository look empty to the next sender. This one read of the record happens without the lock,
+so the entry of another process may be half written: a record that cannot be read there is
+answered as a held lock beside a writer and counts as unknown otherwise, and the pass under the
+lock reads the record again. Under the lock:
 
 1. The record is read and its chains are checked.
 2. An update that stopped after its entry is completed (see below), and every branch and tag
@@ -452,7 +455,8 @@ entry under the lock and makes its moves again before it judges its own update. 
 can be incomplete, because every call completes the last one before it appends. A reference of
 the last entry that is at neither its old nor its new value was not left by a stop; the call
 fails. A call whose storage fails after the entry reports that the entry is written and names
-it, and the hub sends no receipt: the client learns the outcome from the list of references.
+it, and the hub sends no receipt. The list of references shows the update once the next call
+has completed its moves; until then a reference of it can still stand at its old value.
 
 **The answers.** Both are kinds of the error message of ADR-023, read under number 1 only:
 

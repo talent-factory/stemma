@@ -1665,6 +1665,20 @@ impl FsRefStore {
         exists(&self.lock_path())
     }
 
+    /// The error [`RefError::Locked`] if a writer holds the lock now
+    /// ([`is_locked`](Self::is_locked)), for a caller that must not go on beside a writer and
+    /// has no proof to take the lock with. The holder is not read, so it is
+    /// [`LockHolder::Unknown`].
+    pub(crate) fn refuse_beside_writer(&self) -> Result<(), RefError> {
+        if self.is_locked()? {
+            return Err(RefError::Locked {
+                path: self.lock_path(),
+                holder: LockHolder::Unknown,
+            });
+        }
+        Ok(())
+    }
+
     fn journal_path(&self) -> PathBuf {
         self.root.join(PURGE_JOURNAL)
     }
@@ -2652,7 +2666,8 @@ impl FsRefStore {
     /// # Errors
     ///
     /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] if `new` is no commit of
-    /// `objects`, [`RefError::Conflict`] if the name is held by another entry,
+    /// `objects`, [`RefError::Conflict`] if the name is held by another entry and `new` is a
+    /// commit (a name that is to be deleted and is held by another entry is gone already),
     /// [`RefError::Io`] if the storage fails, and [`RefError::NotFlushed`] if the reference
     /// changed and the directory could not be flushed.
     pub(crate) fn set_recorded(
@@ -2666,7 +2681,13 @@ impl FsRefStore {
         if let Some(new) = &new {
             Self::require_commit(new, objects)?;
         }
-        if self.recorded(lock, kind, name)? == new {
+        let current = match self.recorded(lock, kind, name) {
+            Ok(current) => current,
+            // What holds the name is in the way of a reference only: nothing is there to delete.
+            Err(RefError::Conflict { .. }) if new.is_none() => None,
+            Err(error) => return Err(error),
+        };
+        if current == new {
             return Ok(false);
         }
         let Some(new) = new else {

@@ -93,7 +93,7 @@ pub trait Transport {
     /// of the answer is the receipt, one record entry ([`RecordEntry`]), which the caller checks
     /// before it moves a remote reference ([`RecordEntry::check_receipt`]). An update that is
     /// stale or refused is answered with an error ([`ErrorMessage::Stale`],
-    /// [`ErrorMessage::Refused`]), and nothing moved on the other side.
+    /// [`ErrorMessage::Refused`]), and no reference of the update moved on the other side.
     ///
     /// # Errors
     ///

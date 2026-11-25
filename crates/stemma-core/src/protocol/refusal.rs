@@ -91,7 +91,8 @@ pub enum RefusalReason {
     /// enforcing repositories (ADR-024).
     NoRegister,
     /// The first push: the register of the commit that it sets `main` to cannot be used. Carries
-    /// what the reader of the register reported.
+    /// what the reader of the register reported, or that the commit records an open conflict,
+    /// which has no one tree to read a register from.
     BadRegister(Reason),
     /// The first push: the register of the commit that it sets `main` to does not hold the key
     /// of the update as an active key of an owner (ADR-024).
@@ -265,8 +266,8 @@ impl RefusedReferences {
     }
 }
 
-/// Why a ref update is refused (ADR-025): the update as a whole, or references of it. Nothing
-/// moved and nothing was recorded.
+/// Why a ref update is refused (ADR-025): the update as a whole, or references of it. No
+/// reference of the update moved, and nothing was recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Refused {
@@ -296,7 +297,9 @@ pub enum Refused {
 impl Refused {
     /// Whether a reference is refused because the objects of its new commit do not hold
     /// together ([`RefusalReason::Incomplete`]). The sender then uploads once more and sends the
-    /// same update again; a carrier names this class of refusal apart (ADR-023).
+    /// same update again; a carrier names this class of refusal apart (ADR-023). It is `true`
+    /// as soon as one reference is refused so, also beside references that are refused for
+    /// another reason, which no upload mends.
     pub fn wants_upload(&self) -> bool {
         matches!(self, Self::References(refused) if refused
             .0

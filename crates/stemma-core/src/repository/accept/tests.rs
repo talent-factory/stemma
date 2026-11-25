@@ -164,13 +164,13 @@ impl Hub {
         let hub = address();
         let signer = hub_key();
         let mut record = self.record.borrow_mut();
-        let context = AcceptContext {
-            hub: &hub,
-            repository: repository_id(),
-            record: &mut *record,
-            time: self.time.get(),
-            signer: &signer,
-        };
+        let context = AcceptContext::new(
+            &hub,
+            repository_id(),
+            &mut *record,
+            self.time.get(),
+            &signer,
+        );
         self.repository
             .accept_ref_update_with(update, context, also)
     }
@@ -777,6 +777,7 @@ fn a_stop_between_the_entry_and_the_move_is_completed_from_the_entry() {
     let AcceptError::NotCompleted { receipt, .. } = &error else {
         panic!("{error:?}");
     };
+    assert_eq!(error.receipt(), Some(&**receipt));
     assert_eq!(error.kind(), FailureKind::Other);
     assert_eq!(error.answer(), None);
     assert_eq!(wire.side().entries().last(), Some(&**receipt));
@@ -1506,4 +1507,42 @@ fn an_agent_is_a_write_owner_by_its_identity() {
     );
     push(&mut wire, &bot, vec![moved]).unwrap();
     assert_eq!(wire.side().reference("heads/feature"), Some(one));
+}
+
+#[test]
+fn a_record_that_cannot_be_read_before_the_lock_is_no_damage_beside_a_writer() {
+    let wire = wire();
+    let root = wire.side().governed("one\n", vec![]);
+    let topic = Move::try_new(name("heads/topic"), None, None, Some(root), None).unwrap();
+    let update = signed(&mia(), vec![topic]);
+    // The entry of a first push of another process is half written.
+    wire.side().record.borrow_mut().bytes = b"stemma-protocol 1\nhub".to_vec();
+
+    // Beside the writer the answer is the lock, as it would be a moment later.
+    let lock = wire
+        .side()
+        .repository
+        .refs_store()
+        .lock_writer(&Allowed::granted())
+        .unwrap();
+    let error = wire.side().accept(&update).unwrap_err();
+    assert_eq!(error.kind(), FailureKind::Locked, "{error:?}");
+    assert_eq!(error.receipt(), None);
+    drop(lock);
+
+    // Without a writer the record counts as unknown before the lock: an update that does not
+    // set `main` is refused as in an empty repository, and one that sets it reaches the pass
+    // under the lock, which reports the record.
+    assert_eq!(
+        wire.side().accept(&update).unwrap_err().answer(),
+        Some(ErrorMessage::Refused(Refused::NoMain))
+    );
+    let main = Move::try_new(name("heads/main"), None, None, Some(root), None).unwrap();
+    let error = wire
+        .side()
+        .accept(&signed(&daniel(), vec![main]))
+        .unwrap_err();
+    assert!(matches!(error, AcceptError::Record(_)), "{error:?}");
+    assert_eq!(error.kind(), FailureKind::Damaged);
+    assert_eq!(wire.side().reference("heads/main"), None);
 }
