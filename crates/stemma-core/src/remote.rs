@@ -42,7 +42,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::fault;
-use crate::object::{CommitId, ObjectId, ObjectIdParseError};
+use crate::object::{CommitId, ObjectId};
+use crate::protocol::{RecordHash, RepositoryId};
 use crate::refs::{
     BranchName, BranchNameError, BranchNameProblem, RefKind, RefMalformed, RefParseError,
 };
@@ -229,27 +230,6 @@ impl FromStr for RemoteRefName {
     }
 }
 
-/// The hash of an entry in the record of ref updates of a hub (ADR-025). Its text is that of an
-/// object ID, `b3:` and 64 lowercase hexadecimal digits, but it names an entry of the record, not
-/// an object, and nothing in the object store is looked up by it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RecordHash(ObjectId);
-
-impl fmt::Display for RecordHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl FromStr for RecordHash {
-    type Err = ObjectIdParseError;
-
-    /// Reads the canonical form only, as [`ObjectId`] does.
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        ObjectId::from_str(text).map(Self)
-    }
-}
-
 /// What a remote reference holds: the state of a branch or a tag on a hub as the clone last saw
 /// it (ADR-008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,8 +308,8 @@ impl RemoteField {
                  comment, or `-`"
             }
             Self::CaFile => {
-                "the path of a CA file is not empty, is not `-`, has no control character, and \
-                 neither starts nor ends with a space; `-` alone stands for no file"
+                "the path of a CA file is absolute, has no control character, and neither starts \
+                 nor ends with a space; `-` alone stands for no file"
             }
             Self::SignIn => "the value is `yes` or `no`",
         }
@@ -427,44 +407,12 @@ impl fmt::Display for RemoteAddress {
     }
 }
 
-/// The ID that a hub assigned to a repository: 128 random bits as 32 lowercase hexadecimal digits
-/// (ADR-027). A clone keeps it and notices when another repository lies under the same address
-/// (ADR-025).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RepositoryId(String);
-
-impl RepositoryId {
-    /// Checks the ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RemoteValueError`] unless the text is 32 lowercase hexadecimal digits.
-    pub fn try_new(id: impl Into<String>) -> Result<Self, RemoteValueError> {
-        let id = id.into();
-        if id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-            Ok(Self(id))
-        } else {
-            Err(rejected(RemoteField::RepositoryId, &id))
-        }
-    }
-
-    /// Returns the ID.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for RepositoryId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 /// The path of an additional CA file of a remote, for a hub with a certificate of an own CA
 /// (ADR-028). It is text that fits a line; whether the file exists is the business of the client
-/// that reads it. The type does not ask for an absolute path. The configuration is shared by
-/// every worktree, so a relative path would name another file from another directory: the
-/// command that writes the configuration has to make the path absolute.
+/// that reads it. The path is absolute by the rule of the platform
+/// ([`Path::is_absolute`]): the configuration is shared by every worktree, and a relative path
+/// would name another file from another directory. The file belongs to one machine, so a path of
+/// another platform is rejected like any other that is not absolute.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CaFile(String);
 
@@ -473,13 +421,11 @@ impl CaFile {
     ///
     /// # Errors
     ///
-    /// Returns [`RemoteValueError`] for a path that is empty, is `-` (which stands for no file;
-    /// write `./-` for a file of that name), has a control character, or starts or ends with a
-    /// space.
+    /// Returns [`RemoteValueError`] for a path that is not absolute (so for an empty one and for
+    /// `-`, which stands for no file), has a control character, or starts or ends with a space.
     pub fn try_new(path: impl Into<String>) -> Result<Self, RemoteValueError> {
         let path = path.into();
-        if path.is_empty()
-            || path == UNSET
+        if !Path::new(&path).is_absolute()
             || path.chars().any(char::is_control)
             || path.starts_with(' ')
             || path.ends_with(' ')
@@ -574,7 +520,10 @@ impl RemoteConfig {
                 .ok_or(RemoteParseError::Line { expected: field })
         };
         let address = RemoteAddress::try_new(value(RemoteField::Address)?)?;
-        let repository = RepositoryId::try_new(value(RemoteField::RepositoryId)?)?;
+        let repository = value(RemoteField::RepositoryId)?;
+        let repository = repository
+            .parse::<RepositoryId>()
+            .map_err(|_| rejected(RemoteField::RepositoryId, repository))?;
         let hub_key = match value(RemoteField::HubKey)? {
             UNSET => None,
             text => Some(
@@ -826,6 +775,12 @@ mod tests {
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMt6BisKCOOMdkWowXYqXUrS1zKF4aE6QenzZ1SSB/Md";
     const ID: &str = "0123456789abcdef0123456789abcdef";
     const ADDRESS: &str = "https://hub.example/talent-factory/stemma";
+    /// An absolute path with a space, by the rule of the platform.
+    const CA_FILE: &str = if cfg!(windows) {
+        r"C:\stemma\own ca.pem"
+    } else {
+        "/etc/stemma/own ca.pem"
+    };
 
     fn id(digit: char) -> String {
         format!("b3:{}", digit.to_string().repeat(64))
@@ -834,14 +789,14 @@ mod tests {
     fn config() -> RemoteConfig {
         RemoteConfig::new(
             RemoteAddress::try_new(ADDRESS).unwrap(),
-            RepositoryId::try_new(ID).unwrap(),
+            ID.parse().unwrap(),
         )
     }
 
     fn full() -> RemoteConfig {
         RemoteConfig {
             hub_key: Some(KEY.parse().unwrap()),
-            ca_file: Some(CaFile::try_new("/etc/stemma/own ca.pem").unwrap()),
+            ca_file: Some(CaFile::try_new(CA_FILE).unwrap()),
             sign_in: true,
             ..config()
         }
@@ -999,15 +954,12 @@ mod tests {
             "address https://hub.example/talent-factory/stemma",
             "repository 0123456789abcdef0123456789abcdef",
             &format!("hub-key {KEY}"),
-            "ca-file /etc/stemma/own ca.pem",
+            &format!("ca-file {CA_FILE}"),
             "sign-in yes",
         ]);
         assert_eq!(full().encode(), all);
         assert_eq!(RemoteConfig::parse(&all).unwrap(), full());
-        assert_eq!(
-            full().ca_file.unwrap().as_path(),
-            Path::new("/etc/stemma/own ca.pem")
-        );
+        assert_eq!(full().ca_file.unwrap().as_path(), Path::new(CA_FILE));
     }
 
     /// The lines of the full configuration with one line replaced, removed, or added.
@@ -1089,6 +1041,14 @@ mod tests {
             (changed(3, &["hub-key "]), value(RemoteField::HubKey, "")),
             (changed(4, &["ca-file "]), value(RemoteField::CaFile, "")),
             (
+                changed(4, &["ca-file own-ca.pem"]),
+                value(RemoteField::CaFile, "own-ca.pem"),
+            ),
+            (
+                changed(4, &["ca-file ./-"]),
+                value(RemoteField::CaFile, "./-"),
+            ),
+            (
                 changed(4, &["ca-file /a "]),
                 value(RemoteField::CaFile, "/a "),
             ),
@@ -1166,10 +1126,9 @@ mod tests {
     #[test]
     fn every_accepted_configuration_reads_back_to_its_bytes() {
         // `http://` is a valid address; that only a loopback address may have it is a rule of
-        // the client. A file called `-` is written `./-`.
+        // the client.
         let local = RemoteConfig {
             address: RemoteAddress::try_new("http://127.0.0.1:8080/a/b").unwrap(),
-            ca_file: Some(CaFile::try_new("./-").unwrap()),
             ..config()
         };
         for config in [config(), full(), local] {
@@ -1192,11 +1151,30 @@ mod tests {
             "the first line is not `stemma-remote 1`"
         );
         assert_eq!(
-            RepositoryId::try_new("x\n").unwrap_err().to_string(),
+            rejected(RemoteField::RepositoryId, "x\n").to_string(),
             "invalid value `x\\n` for `repository`: a repository ID is 32 lowercase hexadecimal \
              digits"
         );
         assert_eq!(CaFile::try_new("-").unwrap_err().field, RemoteField::CaFile);
+        assert_eq!(
+            CaFile::try_new("own-ca.pem").unwrap_err().to_string(),
+            "invalid value `own-ca.pem` for `ca-file`: the path of a CA file is absolute, has no \
+             control character, and neither starts nor ends with a space; `-` alone stands for \
+             no file"
+        );
+    }
+
+    #[test]
+    fn a_ca_file_of_another_platform_is_not_absolute() {
+        let other = if cfg!(windows) {
+            "/etc/ca.pem"
+        } else {
+            r"C:\ca.pem"
+        };
+        assert_eq!(
+            CaFile::try_new(other),
+            Err(rejected(RemoteField::CaFile, other))
+        );
     }
 
     fn write(dir: &TempDir, name: &str, content: &[u8]) -> PathBuf {

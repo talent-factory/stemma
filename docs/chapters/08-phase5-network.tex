@@ -24,7 +24,8 @@ Operationen des Kerns wie lokal (ADR-025).
 \stopitemize
 
 Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs festgehalten,
-umgesetzt sind erst die ersten Nachrichten des Protokolls und das Bare-Repository.
+umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository
+und die Remotes im Layout des Klons mit ihren Remote-Referenzen.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -444,6 +445,8 @@ Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mi
 fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
 dem festgehaltenen Schlüssel des Hubs, einer zusätzlichen CA-Datei und der Angabe, ob der Hub
 eine Anmeldung verlangt.
+Der Pfad der CA-Datei ist absolut, denn alle Worktrees teilen die Konfiguration,
+und ein relativer Pfad meinte je nach Verzeichnis eine andere Datei.
 Der Name eines Remote ist eine einzelne Komponente nach den Regeln eines Branch-Namens.
 Die zweite Zeile einer Remote-Referenz lautet \type{entry} und der Hash des Eintrags.
 Für beide Dateien gilt die Regel der Objekte: Der Leser nimmt an, was der Schreiber schreibt,

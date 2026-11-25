@@ -88,7 +88,9 @@ fn parse_positive<T: FromStr>(text: &str) -> Option<T> {
 
 /// The ID that a hub assigned to a repository: 128 random bits, written as 32 lowercase
 /// hexadecimal digits (ADR-027). The list of references names it, and a ref update binds it
-/// (ADR-025).
+/// (ADR-025). A clone keeps it in the configuration of the remote
+/// ([`RemoteConfig`](crate::remote::RemoteConfig)), so that it can notice when another repository
+/// lies under the same address; that check belongs to a later slice.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RepositoryId([u8; 16]);
 
@@ -167,8 +169,8 @@ impl FromStr for RepositoryId {
 
 /// The hash of an entry of the record of ref updates on a hub (ADR-025). Its text is that of an
 /// object ID, `b3:` and 64 lowercase hexadecimal digits, but it names an entry of the record, not
-/// an object. A value comes from a message only; the record and its hash belong to a later
-/// slice.
+/// an object. A value comes from a message or from the file of a remote reference
+/// ([`RemoteRef`](crate::remote::RemoteRef)); the record and its hash belong to a later slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordHash(ObjectId);
 
