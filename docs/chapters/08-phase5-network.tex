@@ -24,7 +24,8 @@ Operationen des Kerns wie lokal (ADR-025).
 \stopitemize
 
 Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs festgehalten,
-umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository
+umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository,
+die Schnittstelle für den Transport
 und die Remotes im Layout des Klons mit ihren Remote-Referenzen.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
@@ -46,6 +47,12 @@ Berechnung der fehlenden Objekte, die Prüfung empfangener Objekte und die Eintr
 \type{fetch} und \type{push} im Operation Log.
 Der Kern spricht mit der Gegenseite über eine Schnittstelle (\type{Transport}), die nur Nachrichten
 überträgt und nichts über HTTP annimmt.
+Sie hat eine Methode pro Anfrage des Protokolls, vorerst für die Liste der Referenzen und für
+\type{fetch}, und sie überträgt Bytes: Eine Nachricht schreibt und liest der Kern, nie der
+Transport.
+Jeder Body ist ein Strom, sodass ein Objektstrom nie als Ganzes im Speicher liegen muss.
+Der Transport sagt zu einer Antwort nur, ob sie die verlangte Nachricht ist oder ein Fehler an
+ihrer Stelle; danach wählt der Kern den Leser.
 Ein eigenes Crate (\type{stemma-remote}) enthält den HTTP-Client, der sie umsetzt; der Kern selbst
 bekommt keine Netzwerk-Abhängigkeit.
 
@@ -108,6 +115,8 @@ Eine Referenz bewegt auf einem Bare-Repository erst die annehmende Operation
 {\bf Wie Klon und Hub gemeinsam getestet werden.}
 Die Tests dieses Repositorys verbinden zwei Repositories im Speicher über \type{Transport}; die
 Gegenseite ist dabei die annehmende Operation des Kerns, kein zweiter Server.
+Auch dieser Transport überträgt Bytes: Er liest eine Anfrage mit dem strengen Leser, wie ein Hub
+es tut, und beantwortet eine Anfrage, die der Leser ablehnt, mit dem Fehler des Protokolls.
 Dazu kommen eingecheckte Beispielnachrichten, gegen die auch der Hub seine Leser prüft.
 Tests mit echtem HTTP liegen beim Hub.
 \stopinfobox

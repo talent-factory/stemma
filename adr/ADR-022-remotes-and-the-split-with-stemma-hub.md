@@ -2,8 +2,9 @@
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-269) and, for the
 properties that must stay, on 2026-11-24 (STEMMA-277), and carried into the ADRs by STEMMA-280.
-The bare repository is implemented (STEMMA-284, ADR-009); the other slices are children of
-STEMMA-15.
+The bare repository is implemented (STEMMA-284, ADR-009), and so are the trait `Transport` with
+its first two requests and the in-memory `Transport` (STEMMA-287, see "The shape of `Transport`");
+the other slices are children of STEMMA-15.
 
 ## Context
 
@@ -29,6 +30,34 @@ exists.
 
 Rejected: the HTTP client in the core, and a crate that also holds state and logic (`RefStore` is
 sealed).
+
+### The shape of `Transport`
+
+The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not values:
+
+- It has one synchronous method per request of the protocol (ADR-023). The first two are `refs`
+  and `fetch`; a slice that adds a message adds its request, and the sign-in adds its step
+  (ADR-024).
+- Every body is a stream. A request body is read from a reader, and the body of an answer is a
+  reader that borrows the transport, so one request runs at a time and an object stream never
+  has to lie in memory as a whole.
+- A transport reads no message. The caller writes a request with the writers of
+  `stemma_core::protocol` and reads an answer with its readers, so the rules of `fetch` and
+  `push` stand once, above every transport.
+- An answer is one of two cases, and the transport says which: the message that was asked for, or
+  an error message in its place (ADR-023). The caller chooses the reader by the case.
+- A request fails with a transport error in two cases only: the carrier failed (which includes a
+  request body that cannot be read), or what came back is no answer of the other side in the
+  protocol, such as the page of a proxy; the error then carries the words of the carrier. A body
+  that ends early is an error of its reader, never an early end, because no message carries a
+  count or an end mark.
+- The trait names no address, path, status, header, token or compression.
+
+Rejected: methods that take and return the values of `stemma_core::protocol` (every transport
+would call the readers itself, and the in-memory `Transport` would pass values and never run the
+writer and the reader of a message, which it must cover according to ADR-023), and a transport
+that reads the error message itself (the same reason, and the rule which error means what would
+then stand once per transport).
 
 ### The protocol types live in the core, with a version of their own
 
@@ -87,6 +116,14 @@ dependency.
   in-memory `Transport` that joins two repositories through the operations of the core (no second
   server: the other side is the accepting operation), and the protocol types against checked-in
   example messages, which the hub reads as conformance tests through its git dependency.
+- The in-memory `Transport` (`MemoryTransport`, STEMMA-287) passes bytes as a network does: it
+  parses a request with the strict reader, answers a request that the reader refuses with the
+  error message of the protocol, and encodes the answer with its writer. The other side is a
+  trait of two methods (`OtherSide`) that take and return the values of the protocol. Its
+  implementation is the answering operation of the core once that is built (STEMMA-288), and the
+  accepting operation follows with the requests of a push; until then the tests of the transport
+  answer from a bare repository themselves. A test may also implement the trait to answer what a
+  correct side never answers.
 - The end-to-end tests with real HTTP live in stemma-hub and use `stemma-remote` and the CLI of
   the pinned commit.
 - A scheduled job of the hub builds and tests against the tip of stemma `main` instead of the

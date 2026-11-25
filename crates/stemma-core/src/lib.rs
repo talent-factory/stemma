@@ -2,8 +2,9 @@
 //! index, object storage, references (branches, tags, and HEAD, ADR-008), the repository (ADR-009),
 //! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), the best common
 //! ancestors of two commits ([`merge_base`]), conflicts as sums of trees ([`conflict`]), the merge
-//! of trees ([`merge`]), the SSHSIG signatures of proofs ([`signature`], ADR-020), and the messages
-//! between a clone and a hub ([`protocol`], ADR-023).
+//! of trees ([`merge`]), the SSHSIG signatures of proofs ([`signature`], ADR-020), the messages
+//! between a clone and a hub ([`protocol`], ADR-023), and the trait that carries them
+//! ([`transport`], ADR-022).
 //!
 //! # Errors
 //!
@@ -28,7 +29,8 @@
 //! for the error of the store inside. [`repository::InitError`], [`repository::OpenError`], and
 //! [`change::GenerateError`] have an `io_error()` for the error of the file system or of the
 //! operating system, and so do [`oplog::OpLogError`] and [`repository::UpdateError`];
-//! [`protocol::StreamError`] has one for the error of the carrier of an object stream. A program
+//! [`protocol::StreamError`] has one for the error of the carrier of an object stream, and
+//! [`transport::TransportError`] for the error of the carrier of a request. A program
 //! that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
@@ -71,6 +73,7 @@ pub mod signature;
 pub mod store;
 #[cfg(test)]
 mod testutil;
+pub mod transport;
 pub mod verify;
 pub mod weakened;
 
