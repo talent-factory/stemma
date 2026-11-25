@@ -518,9 +518,9 @@ pub enum RefError {
         kind: ConflictKind,
     },
     /// A remote reference cannot be written, because a name below `refs/remotes` is in the way
-    /// (ADR-008). A hub never lists two names of which one is a directory of the other, so this
-    /// is a reference that the clone holds from an earlier list and that the new state does not
-    /// remove, or a file that no writer of the clone made.
+    /// (ADR-008): a reference that the new state does not remove, a file that no writer of the
+    /// clone made, or another name of the same new state, one below the other or differing in
+    /// case alone, which a list of a hub must not hold.
     RemoteConflict {
         /// The remote reference that was to be written.
         name: RemoteRefName,
@@ -817,7 +817,7 @@ impl fmt::Display for RefError {
                     with.escape_debug()
                 )?;
                 match kind {
-                    ConflictKind::Reference => f.write_str("is a remote reference"),
+                    ConflictKind::Reference => f.write_str("is a file in the way"),
                     ConflictKind::Directory => f.write_str("is a directory of remote references"),
                     ConflictKind::CaseVariant => write!(f, "{kind}"),
                 }
@@ -3806,7 +3806,10 @@ impl FsRefStore {
     /// now, value after)`, and the empty directories that stand where a reference is written. A
     /// reference that has its value already is left out. The commit of every new value has to be
     /// in `objects`. A name that something is in the way of is [`RefError::RemoteConflict`],
-    /// unless the moves delete what is in the way, as when `a` gives way to `a/b`.
+    /// unless the moves delete what is in the way, as when `a` gives way to `a/b` or `Main` to
+    /// `main`. Two names of the targets that both take a value and of which one lies below the
+    /// other, or that differ in case alone, are refused the same way: one file system could not
+    /// hold both, and the entry would name a move that cannot be made.
     pub(crate) fn plan_remote_moves(
         &self,
         targets: &[(RemoteRefName, Option<RemoteRef>)],
@@ -3816,6 +3819,7 @@ impl FsRefStore {
         for target in targets.iter().filter_map(|(_, target)| target.as_ref()) {
             Self::require_commit(&target.commit, objects)?;
         }
+        Self::refuse_colliding(targets)?;
         let mut currents = Vec::with_capacity(targets.len());
         for (name, _) in targets {
             currents.push(self.remote_current(name)?);
@@ -3841,7 +3845,8 @@ impl FsRefStore {
                             .filter(|path| path.starts_with(&prefix))
                             .all(|path| deleted.contains(&path))
                     }
-                    ConflictKind::CaseVariant => false,
+                    // A variant that the moves delete goes before the write, as a reference does.
+                    ConflictKind::CaseVariant => deleted.contains(with),
                 };
                 if target.is_some() && !cleared {
                     return Err(RefError::RemoteConflict {
@@ -3857,6 +3862,37 @@ impl FsRefStore {
             }
         }
         Ok((moves, empty_directories))
+    }
+
+    /// Refuses two targets with a value of which one lies below the other, or that differ in case
+    /// alone (see [`plan_remote_moves`](Self::plan_remote_moves)).
+    fn refuse_colliding(targets: &[(RemoteRefName, Option<RemoteRef>)]) -> Result<(), RefError> {
+        let conflict =
+            |name: &RemoteRefName, with: &RemoteRefName, kind| RefError::RemoteConflict {
+                name: name.clone(),
+                with: remote_relative(with),
+                kind,
+            };
+        // The written names by their path in lower case: a second name with the same key differs
+        // in case alone.
+        let mut written: std::collections::BTreeMap<String, &RemoteRefName> =
+            std::collections::BTreeMap::new();
+        for (name, _) in targets.iter().filter(|(_, target)| target.is_some()) {
+            if let Some(other) = written.insert(remote_relative(name).to_ascii_lowercase(), name) {
+                return Err(conflict(name, other, ConflictKind::CaseVariant));
+            }
+        }
+        // A name below another: one of its directories is a written name.
+        for (path, name) in &written {
+            let mut prefix = path.as_str();
+            while let Some((parent, _)) = prefix.rsplit_once('/') {
+                if let Some(other) = written.get(parent) {
+                    return Err(conflict(name, other, ConflictKind::Reference));
+                }
+                prefix = parent;
+            }
+        }
+        Ok(())
     }
 
     /// Gives the remote references of `targets` their values, as a fetch does (ADR-008), and runs

@@ -278,8 +278,11 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     `have`, and checks every listed commit for connectivity before it takes the lock. Under the
     lock it writes the entry `fetch` with every remote reference of the remote whose state
     changes, the commit or only the record entry, and moves them, the deletions first, so that
-    `a` gives way to `a/b`. A name below `refs/remotes` that is in the way and that the fetch
-    does not remove is `RefError::RemoteConflict`. A purge entry or a stub after the start of
+    `a` gives way to `a/b`, `a/b` to `a`, and `main` to `Main`. A name below `refs/remotes`
+    that is in the way and that the fetch does not remove is `RefError::RemoteConflict`, and
+    so are two listed names of which one lies below the other or that differ in case alone:
+    one file system cannot hold both, so the list is refused before the entry. The names to
+    remove are read under the lock. A purge entry or a stub after the start of
     the fetch makes it check the listed commits once more under the lock (ADR-023). A fetch
     whose references have their state already writes no entry. A clone reads the list first,
     then runs `init`, writes the configuration with the address and the ID of the list, and

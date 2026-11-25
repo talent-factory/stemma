@@ -121,7 +121,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Fetched, FetchError> {
         self.require_oplog("fetch").map_err(FetchError::Refs)?;
-        let allowed = self.authorize_fetch(remote, actor, authorizer)?;
+        let allowed = authorize_fetch(remote, actor, authorizer)?;
         let config = self
             .remote(remote)
             .map_err(FetchError::Remote)?
@@ -144,8 +144,8 @@ impl Repository {
     /// runs with that list, so the clone costs the two requests of a fetch. It pins no key of the
     /// hub (ADR-026) and makes no local branch.
     ///
-    /// The authorizer is asked for `init` by `init`, and for `fetch` before the configuration is
-    /// written.
+    /// The authorizer is asked for `fetch` first, before anything is made, and for `init` by
+    /// `init`.
     ///
     /// # Errors
     ///
@@ -163,15 +163,14 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<(Self, Fetched), CloneError> {
         let path = path.as_ref();
+        // The authorizer is asked before anything is made, so a refusal leaves no directory.
+        let allowed = authorize_fetch(remote, actor, authorizer).map_err(CloneError::Before)?;
         let list = read_list(transport).map_err(CloneError::Before)?;
         let repository = Self::init(path, options, actor, authorizer).map_err(CloneError::Init)?;
         let after = |source| CloneError::After {
             path: path.to_path_buf(),
             source: Box::new(source),
         };
-        let allowed = repository
-            .authorize_fetch(remote, actor, authorizer)
-            .map_err(after)?;
         {
             // The configuration is written under the lock, as every file of the shared metadata
             // directory that a writer changes.
@@ -195,18 +194,6 @@ impl Repository {
         Ok((repository, fetched))
     }
 
-    /// Asks the authorizer for `fetch` from the remote `remote`.
-    fn authorize_fetch(
-        &self,
-        remote: &RemoteName,
-        actor: &Actor,
-        authorizer: &dyn Authorizer,
-    ) -> Result<Allowed, FetchError> {
-        let operation = OperationName::try_new(FETCH).expect("`fetch` is a valid operation name");
-        self.authorize(actor, authorizer, &operation, &format!("remote {remote}"))
-            .map_err(FetchError::Update)
-    }
-
     /// Steps 3 to 7 of a fetch, with the list that was read.
     fn fetch_listed(
         &self,
@@ -220,7 +207,18 @@ impl Repository {
         // that stopped before its entry may be aborted meanwhile, which removes the objects
         // that it wrote and writes no entry, so its journal counts as well.
         let before = self.last_entry().map_err(log_error)?;
-        let purge_pending = self.metadata_dir().join(PURGE_JOURNAL).exists();
+        let journal = self.metadata_dir().join(PURGE_JOURNAL);
+        let purge_pending = match std::fs::symlink_metadata(&journal) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(FetchError::Refs(RefError::Io {
+                    operation: "inspect the journal of a purge",
+                    path: journal,
+                    source,
+                }))
+            }
+        };
         let listed: BTreeSet<CommitId> = list
             .references()
             .iter()
@@ -266,18 +264,19 @@ impl Repository {
                 (name, Some(value))
             })
             .collect();
+        let operation = OperationName::try_new(FETCH).expect("`fetch` is a valid operation name");
+        let lock = self
+            .refs_store()
+            .lock_writer(allowed)
+            .map_err(|error| FetchError::Update(UpdateError::Refs(error)))?;
+        // The references to remove are read under the lock, so that none that a writer made in
+        // between stays beside the list.
         let kept: BTreeSet<RemoteRefName> = targets.iter().map(|(name, _)| name.clone()).collect();
         for (name, _) in self.refs_store().remote_refs().map_err(FetchError::Refs)? {
             if name.remote == *remote && !kept.contains(&name) {
                 targets.push((name, None));
             }
         }
-
-        let operation = OperationName::try_new(FETCH).expect("`fetch` is a valid operation name");
-        let lock = self
-            .refs_store()
-            .lock_writer(allowed)
-            .map_err(|error| FetchError::Update(UpdateError::Refs(error)))?;
         if purge_pending || self.purged_since(before).map_err(log_error)? {
             let tips: Vec<CommitId> = listed.iter().copied().collect();
             self.check_connectivity(&tips)
@@ -336,6 +335,22 @@ impl Repository {
         }
         Ok(false)
     }
+}
+
+/// Asks the authorizer for `fetch` from the remote `remote`, with the target `remote <name>`.
+fn authorize_fetch(
+    remote: &RemoteName,
+    actor: &Actor,
+    authorizer: &dyn Authorizer,
+) -> Result<Allowed, FetchError> {
+    let operation = OperationName::try_new(FETCH).expect("`fetch` is a valid operation name");
+    let target = format!("remote {remote}");
+    Allowed::ask(authorizer, actor, &operation, &target).ok_or_else(|| {
+        FetchError::Update(UpdateError::Denied {
+            operation: operation.to_string(),
+            target,
+        })
+    })
 }
 
 /// An error of the log before any entry of the fetch was written.
@@ -419,8 +434,9 @@ pub enum FetchError {
     Receive(ReceiveError),
     /// A listed commit is not complete in the store, or the check could not be made.
     Connectivity(ConnectivityError),
-    /// The remote references moved and the entry is written, but the journal `fetch-pending`
-    /// could not be removed. The fetch has happened; the next one reads the journal that stayed.
+    /// The fetch has happened (the entry is written and the remote references moved, or they had
+    /// their values already), but the journal `fetch-pending` could not be removed. The next
+    /// fetch reads the journal that stayed.
     JournalLeft {
         /// What the fetch did.
         fetched: Box<Fetched>,
@@ -491,7 +507,7 @@ impl fmt::Display for FetchError {
             Self::Connectivity(error) => error.fmt(f),
             Self::JournalLeft { source, .. } => write!(
                 f,
-                "the remote references moved, but the journal of the fetch stayed: {source}"
+                "the fetch has happened, but its journal stayed: {source}"
             ),
         }
     }
@@ -523,7 +539,8 @@ impl Error for FetchError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum CloneError {
-    /// The list of references could not be read. Nothing was made.
+    /// The authorizer refused `fetch`, or the list of references could not be read. Nothing was
+    /// made.
     Before(FetchError),
     /// The repository could not be made.
     Init(InitError),
@@ -555,7 +572,8 @@ impl fmt::Display for CloneError {
             Self::Init(error) => error.fmt(f),
             Self::After { path, source } => write!(
                 f,
-                "the clone in `{}` was made, but not filled: {source}",
+                "the clone in `{}` was made, but not filled: {source}; a fetch there goes on if \
+                 the remote is configured, otherwise remove the directory and clone again",
                 path.display()
             ),
         }

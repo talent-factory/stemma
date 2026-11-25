@@ -772,7 +772,9 @@ pub(crate) fn read_one(
 /// clone does: to a temporary file in `scratch` (the `tmp/` of the metadata directory, on the
 /// same file system), flushed, then renamed over `remotes/<name>`, and the directory is flushed,
 /// so a reader sees the old or the new file and never a part of one. The directory `remotes/` is
-/// made if it is missing. The caller holds the lock of the references; this function takes none.
+/// made if it is missing. A configuration that exists is replaced without a check, which is
+/// right for a new clone; a command that adds a remote to an existing repository checks first.
+/// The caller holds the lock of the references; this function takes none.
 ///
 /// # Errors
 ///

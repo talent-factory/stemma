@@ -13,7 +13,7 @@ use crate::oplog::{EntryMalformed, EntryParseError};
 use crate::protocol::record::HubKeys;
 use crate::protocol::RecordHash;
 use crate::receive::FETCH_JOURNAL;
-use crate::refs::{encode_branch, RefKind};
+use crate::refs::{encode_branch, ConflictKind, RefKind};
 use crate::serve::{Answering, ListFacts};
 use crate::signature::PublicKey;
 use crate::store::ObjectStore;
@@ -664,4 +664,307 @@ fn a_clone_whose_list_fails_makes_nothing() {
         "{error}"
     );
     assert!(!dir.path().join("clone").exists());
+}
+
+#[test]
+fn a_fetch_leaves_the_references_of_another_remote_alone() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/main", main);
+    hub.set("heads/old", main);
+    let (repository, _) = clone(&dir, &hub);
+    // A second remote that lists the same hub under another name.
+    let upstream = RemoteName::try_new("upstream").unwrap();
+    remote::write_config(
+        &repository.metadata_dir(),
+        &repository.metadata_dir().join("tmp"),
+        &upstream,
+        &RemoteConfig::new(address(), hub.id),
+    )
+    .unwrap();
+    repository
+        .fetch(&upstream, &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap();
+
+    hub.remove("heads/old");
+    let fetched = repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap();
+
+    let entry = fetched.entry.unwrap();
+    let [(name, _)] = entry.change().unwrap().remotes() else {
+        panic!("{entry:?}");
+    };
+    assert_eq!(*name, branch("old"));
+    assert_eq!(
+        remote_refs(&repository),
+        vec![
+            ("remotes/origin/heads/main".to_owned(), main),
+            ("remotes/upstream/heads/main".to_owned(), main),
+            ("remotes/upstream/heads/old".to_owned(), main),
+        ]
+    );
+}
+
+#[test]
+fn a_reference_below_a_name_gives_way_to_the_name() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/a/b", main);
+    hub.set("heads/a/c", main);
+    let (repository, _) = clone(&dir, &hub);
+
+    hub.remove("heads/a/b");
+    hub.remove("heads/a/c");
+    fs::remove_dir(hub.repository.metadata_dir().join("refs/heads/a")).unwrap();
+    hub.set("heads/a", main);
+    let fetched = repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap();
+
+    assert_eq!(fetched.entry.unwrap().change().unwrap().remotes().len(), 3);
+    assert_eq!(
+        remote_refs(&repository),
+        vec![("remotes/origin/heads/a".to_owned(), main)]
+    );
+}
+
+#[test]
+fn a_branch_renamed_in_case_alone_moves_its_remote_reference() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/main", main);
+    let (repository, _) = clone(&dir, &hub);
+
+    hub.remove("heads/main");
+    hub.set("heads/Main", main);
+    repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap();
+
+    assert_eq!(
+        remote_refs(&repository),
+        vec![("remotes/origin/heads/Main".to_owned(), main)]
+    );
+}
+
+#[test]
+fn names_of_one_state_that_collide_are_refused_before_anything_is_written() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/main", main);
+    let (repository, _) = clone(&dir, &hub);
+    let target = |name: &str| (branch(name), Some(value(main, hub.entry)));
+    for (names, kind) in [
+        (["a", "a/b"], ConflictKind::Reference),
+        (["x/y", "x/y/z"], ConflictKind::Reference),
+        (["Main", "main"], ConflictKind::CaseVariant),
+    ] {
+        let targets: Vec<_> = names.iter().map(|name| target(name)).collect();
+        let error = repository
+            .refs_store()
+            .plan_remote_moves(&targets, repository.objects())
+            .unwrap_err();
+        assert!(
+            matches!(&error, RefError::RemoteConflict { kind: found, .. } if *found == kind),
+            "{names:?}: {error}"
+        );
+        assert!(
+            error.to_string().contains("refs/remotes/origin/heads/"),
+            "{error}"
+        );
+    }
+    // Names that only share a beginning are no conflict.
+    let targets = vec![target("a"), target("a-b"), target("ab/c")];
+    repository
+        .refs_store()
+        .plan_remote_moves(&targets, repository.objects())
+        .unwrap();
+}
+
+#[test]
+fn a_restore_of_the_entry_of_a_clone_removes_what_it_created() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/main", main);
+    hub.set("tags/v1", main);
+    let (repository, fetched) = clone(&dir, &hub);
+
+    repository
+        .restore(fetched.entry.unwrap().number(), false, &daniel(), &AllowAll)
+        .unwrap();
+
+    assert!(repository.refs().remote_refs().unwrap().is_empty());
+    // The next fetch brings them back. No reference names the commits any more, so the clone
+    // has no `have`, and the hub sends them again.
+    repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap();
+    assert_eq!(remote_refs(&repository).len(), 2);
+}
+
+/// A side that lists the hub and refuses every fetch request.
+struct Refusing<'a>(Answering<'a>);
+
+impl OtherSide for Refusing<'_> {
+    fn refs(&self) -> Result<RefList, Refusal> {
+        self.0.refs()
+    }
+
+    fn fetch(&self, request: &FetchRequest, _: &mut dyn Write) -> Result<(), Refusal> {
+        let want = *request.want().iter().next().unwrap();
+        Err(Refusal::Error(ErrorMessage::UnknownWant(want)))
+    }
+}
+
+#[test]
+fn a_refused_fetch_request_moves_nothing() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let first = hub.line(1)[0];
+    hub.set("heads/main", first);
+    let (repository, _) = clone(&dir, &hub);
+    let next = hub.commit("next", vec![first]);
+    hub.set("heads/main", next);
+    let entry = hub.entry;
+    let facts = ListFacts::new(hub.id, keys(), move |_| Some(entry));
+    let mut transport = MemoryTransport::new(Refusing(Answering::new(&hub.repository, facts)));
+    let entries = repository.oplog().entries().unwrap().len();
+
+    let error = repository
+        .fetch(&origin(), &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+
+    assert!(
+        matches!(error, FetchError::Refused(ErrorMessage::UnknownWant(want)) if want == next),
+        "{error}"
+    );
+    assert_eq!(remote_refs(&repository)[0].1, first);
+    assert_eq!(repository.oplog().entries().unwrap().len(), entries);
+}
+
+#[test]
+fn a_clone_that_the_authorizer_refuses_makes_nothing() {
+    struct Deny;
+    impl Authorizer for Deny {
+        fn authorize(&self, _: &Actor, _: &OperationName, _: &str) -> Decision {
+            Decision::Deny
+        }
+    }
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let error = Repository::clone_remote(
+        dir.path().join("clone"),
+        &InitOptions::default(),
+        &origin(),
+        address(),
+        &mut hub.transport(),
+        &daniel(),
+        &Deny,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            CloneError::Before(FetchError::Update(UpdateError::Denied { .. }))
+        ),
+        "{error}"
+    );
+    assert!(!dir.path().join("clone").exists());
+}
+
+#[test]
+fn a_line_of_a_remote_reference_is_read_strictly() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/main", main);
+    let (_, fetched) = clone(&dir, &hub);
+    let text = String::from_utf8(fetched.entry.unwrap().encode()).unwrap();
+    let line = format!(
+        "remote remotes/origin/heads/main - - {main} {}\n",
+        hub.entry
+    );
+    let with = |replacement: &str| text.replace(&line, replacement);
+
+    let cases = [
+        format!("remote remotes/origin/main - - {main} {}\n", hub.entry),
+        format!("remote remotes/origin/heads/main - - b3:zz {}\n", hub.entry),
+        format!("remote remotes/origin/heads/main - - {main} b3:zz\n"),
+        "remote remotes/origin/heads/main - - - -\n".to_owned(),
+        format!("remote remotes/origin/heads/main - - {main}\n"),
+        format!("{line}branch main - {main}\n"),
+        format!("{line}tag v1 - {main}\n"),
+    ];
+    for case in &cases {
+        let error = Entry::parse(with(case).as_bytes()).unwrap_err();
+        let expected = matches!(
+            error,
+            EntryParseError::InvalidRemoteName { .. }
+                | EntryParseError::InvalidObjectId { .. }
+                | EntryParseError::InvalidHash { .. }
+                | EntryParseError::Unchanged { .. }
+                | EntryParseError::Malformed {
+                    reason: EntryMalformed::WrongValueCount | EntryMalformed::PointerOutOfOrder,
+                    ..
+                }
+        );
+        assert!(expected, "{case:?}: {error:?}");
+    }
+    // A change that lists a reference twice, or one that does not change, is refused.
+    let moved = Moved::from_to(None, Some(value(main, hub.entry)));
+    let operation = OperationName::try_new(FETCH).unwrap();
+    assert_eq!(
+        Change::try_new_with_remotes(
+            1,
+            daniel(),
+            operation.clone(),
+            vec![(branch("main"), moved.clone()), (branch("main"), moved)],
+        ),
+        Err(crate::oplog::EntryError::DuplicateRemote(branch("main")))
+    );
+    let same = Moved::from_to(Some(value(main, hub.entry)), Some(value(main, hub.entry)));
+    assert!(
+        Change::try_new_with_remotes(1, daniel(), operation, vec![(branch("main"), same)]).is_err()
+    );
+}
+
+#[test]
+fn the_commits_of_a_fetch_entry_are_roots_and_its_outcome_is_judged() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(2);
+    hub.set("heads/main", main[1]);
+    let (repository, first) = clone(&dir, &hub);
+    hub.set("heads/main", main[0]);
+    let second = repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap()
+        .entry
+        .unwrap();
+    assert_eq!(second.change().unwrap().commits(), vec![main[1], main[0]]);
+
+    let entries = repository.oplog().entries().unwrap();
+    let current = crate::oplog::Current::new(repository.refs().head().unwrap(), [], true)
+        .with_remotes(repository.refs().remote_refs().unwrap());
+    let outcomes = crate::oplog::outcomes(&entries, Some(&current));
+    let position = |number| entries.iter().position(|e| e.number() == number).unwrap();
+    use crate::oplog::Outcome;
+    // The clone is confirmed by the fetch after it, the fetch by the reference now.
+    assert_eq!(
+        outcomes[position(first.entry.unwrap().number())],
+        Outcome::Took
+    );
+    assert_eq!(outcomes[position(second.number())], Outcome::Took);
+    // Without the remote references, the newest one is unknown.
+    let blind = crate::oplog::Current::new(repository.refs().head().unwrap(), [], true);
+    assert_eq!(
+        crate::oplog::outcomes(&entries, Some(&blind))[position(second.number())],
+        Outcome::Unknown
+    );
 }
