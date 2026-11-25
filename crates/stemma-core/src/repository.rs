@@ -6104,7 +6104,7 @@ mod tests {
 
     #[test]
     fn the_configuration_of_the_remotes_is_read_from_the_shared_metadata_directory() {
-        use crate::remote::{RemoteAddress, RemoteConfig, RemoteName, RepositoryId};
+        use crate::remote::{RemoteAddress, RemoteConfig, RemoteName};
         let (_dir, repository, _) = with_main_and_topic();
         let origin: RemoteName = "origin".parse().unwrap();
         assert!(repository.remotes().unwrap().is_empty());
@@ -6112,7 +6112,7 @@ mod tests {
 
         let config = RemoteConfig::new(
             RemoteAddress::try_new("https://hub.example/talent-factory/stemma").unwrap(),
-            RepositoryId::try_new("0123456789abcdef0123456789abcdef").unwrap(),
+            "0123456789abcdef0123456789abcdef".parse().unwrap(),
         );
         let remotes = repository.metadata_dir().join("remotes");
         fs::create_dir(&remotes).unwrap();

@@ -1713,7 +1713,8 @@ fn the_remote_reference_reader_accepts_only_what_the_encoder_writes_and_never_pa
 
 #[test]
 fn the_remote_configuration_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
-    use crate::remote::{CaFile, RemoteAddress, RemoteConfig, RepositoryId};
+    use crate::protocol::RepositoryId;
+    use crate::remote::{CaFile, RemoteAddress, RemoteConfig};
     const KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMt6BisKCOOMdkWowXYqXUrS1zKF4aE6QenzZ1SSB/Md";
     let (seed, mut rng) = (seed(), Rng::new(seed(), 34));
@@ -1724,7 +1725,7 @@ fn the_remote_configuration_reader_accepts_only_what_the_encoder_writes_and_neve
             let id: String = random_commit_id(&mut rng).to_string()[3..35].to_owned();
             let mut config = RemoteConfig::new(
                 RemoteAddress::try_new(address).expect("a valid address"),
-                RepositoryId::try_new(id).expect("32 hexadecimal digits"),
+                id.parse::<RepositoryId>().expect("32 hexadecimal digits"),
             );
             if rng.one_in(2) {
                 config.hub_key = Some(KEY.parse().expect("a valid key"));

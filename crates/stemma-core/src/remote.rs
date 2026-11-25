@@ -42,7 +42,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::fault;
-use crate::object::{CommitId, ObjectId, ObjectIdParseError};
+use crate::object::{CommitId, ObjectId};
+use crate::protocol::{RecordHash, RepositoryId};
 use crate::refs::{
     BranchName, BranchNameError, BranchNameProblem, RefKind, RefMalformed, RefParseError,
 };
@@ -229,27 +230,6 @@ impl FromStr for RemoteRefName {
     }
 }
 
-/// The hash of an entry in the record of ref updates of a hub (ADR-025). Its text is that of an
-/// object ID, `b3:` and 64 lowercase hexadecimal digits, but it names an entry of the record, not
-/// an object, and nothing in the object store is looked up by it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RecordHash(ObjectId);
-
-impl fmt::Display for RecordHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl FromStr for RecordHash {
-    type Err = ObjectIdParseError;
-
-    /// Reads the canonical form only, as [`ObjectId`] does.
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        ObjectId::from_str(text).map(Self)
-    }
-}
-
 /// What a remote reference holds: the state of a branch or a tag on a hub as the clone last saw
 /// it (ADR-008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,39 +407,6 @@ impl fmt::Display for RemoteAddress {
     }
 }
 
-/// The ID that a hub assigned to a repository: 128 random bits as 32 lowercase hexadecimal digits
-/// (ADR-027). A clone keeps it and notices when another repository lies under the same address
-/// (ADR-025).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RepositoryId(String);
-
-impl RepositoryId {
-    /// Checks the ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RemoteValueError`] unless the text is 32 lowercase hexadecimal digits.
-    pub fn try_new(id: impl Into<String>) -> Result<Self, RemoteValueError> {
-        let id = id.into();
-        if id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-            Ok(Self(id))
-        } else {
-            Err(rejected(RemoteField::RepositoryId, &id))
-        }
-    }
-
-    /// Returns the ID.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for RepositoryId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 /// The path of an additional CA file of a remote, for a hub with a certificate of an own CA
 /// (ADR-028). It is text that fits a line; whether the file exists is the business of the client
 /// that reads it. The type does not ask for an absolute path. The configuration is shared by
@@ -574,7 +521,10 @@ impl RemoteConfig {
                 .ok_or(RemoteParseError::Line { expected: field })
         };
         let address = RemoteAddress::try_new(value(RemoteField::Address)?)?;
-        let repository = RepositoryId::try_new(value(RemoteField::RepositoryId)?)?;
+        let repository = value(RemoteField::RepositoryId)?;
+        let repository = repository
+            .parse::<RepositoryId>()
+            .map_err(|_| rejected(RemoteField::RepositoryId, repository))?;
         let hub_key = match value(RemoteField::HubKey)? {
             UNSET => None,
             text => Some(
@@ -834,7 +784,7 @@ mod tests {
     fn config() -> RemoteConfig {
         RemoteConfig::new(
             RemoteAddress::try_new(ADDRESS).unwrap(),
-            RepositoryId::try_new(ID).unwrap(),
+            ID.parse().unwrap(),
         )
     }
 
@@ -1192,7 +1142,7 @@ mod tests {
             "the first line is not `stemma-remote 1`"
         );
         assert_eq!(
-            RepositoryId::try_new("x\n").unwrap_err().to_string(),
+            rejected(RemoteField::RepositoryId, "x\n").to_string(),
             "invalid value `x\\n` for `repository`: a repository ID is 32 lowercase hexadecimal \
              digits"
         );

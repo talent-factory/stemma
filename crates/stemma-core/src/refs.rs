@@ -4843,7 +4843,7 @@ mod tests {
                 "remotes/origin/tags/v1",
             ]
         );
-        let entry: crate::remote::RecordHash = ENTRY.parse().unwrap();
+        let entry: crate::protocol::RecordHash = ENTRY.parse().unwrap();
         assert!(listed.iter().all(|(_, found)| found.entry == entry));
         assert_eq!(listed[1].1.commit, first);
 
