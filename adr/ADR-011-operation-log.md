@@ -644,7 +644,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   names no commit, so no purge lists it, and a restore refuses it, as it moved no pointer. It is
   always in the chain and keeps the encoding `stemma-oplog 3`. An older program would read it as
   a change without a pointer, which is damage, so the repository format rises to 18 with it
-  (ADR-009). The same key as the pinned one writes no entry.
+  (ADR-009). The same key as the pinned one writes no entry. Only a human pins, so the reader
+  refuses an entry whose actor is an agent, as the writer does.
 
 - **The entries that name a signed statement** *(decided in STEMMA-273; implemented in
   STEMMA-290)*. The evidence about a pull request is signed statements (ADR-025): its opening,

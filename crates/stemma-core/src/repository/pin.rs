@@ -88,7 +88,7 @@ impl Repository {
             config.hub_key.take(),
             list.key().clone(),
         )
-        .expect("the old key differs from the new one");
+        .expect("a human pins, and the old key differs from the new one");
         let entry = self.append_remote_pin(&lock, &pin)?;
         config.hub_key = Some(list.key().clone());
         self.write_remote_config(&lock, remote, &config)?;
@@ -105,10 +105,11 @@ impl Repository {
     ) -> Result<(), PinError> {
         let metadata = self.metadata_dir();
         let dir = metadata.join(REMOTES_DIR);
-        create_dirs_synced(&metadata, &dir)?;
+        create_dirs_synced(&metadata, &dir).map_err(PinError::store(&dir))?;
         let temp_dir = metadata.join("tmp");
-        create_dirs_synced(&metadata, &temp_dir)?;
-        let (mut file, mut temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
+        create_dirs_synced(&metadata, &temp_dir).map_err(PinError::store(&temp_dir))?;
+        let (mut file, mut temp) =
+            create_temp(&temp_dir, &mut unique_temp_name).map_err(PinError::store(&temp_dir))?;
         file.write_all(&config.encode()).map_err(PinError::io(
             "write the configuration of the remote",
             &temp.path,
@@ -124,7 +125,7 @@ impl Repository {
             &path,
         ))?;
         temp.disarm();
-        sync_directory(&dir)?;
+        sync_directory(&dir).map_err(PinError::store(&dir))?;
         Ok(())
     }
 }
@@ -177,6 +178,27 @@ impl PinError {
             operation,
             path,
             source,
+        }
+    }
+
+    /// The error of a helper of the store while the configuration is replaced in `path`. An
+    /// error of the file system keeps its own operation and path.
+    fn store(path: &Path) -> impl FnOnce(StoreError) -> Self + '_ {
+        move |error| match error {
+            StoreError::Io {
+                operation,
+                path,
+                source,
+            } => Self::Io {
+                operation,
+                path,
+                source,
+            },
+            other => Self::Io {
+                operation: "replace the configuration of the remote in",
+                path: path.to_path_buf(),
+                source: io::Error::other(other.to_string()),
+            },
         }
     }
 
@@ -261,27 +283,6 @@ impl From<RemoteError> for PinError {
 impl From<OpLogError> for PinError {
     fn from(error: OpLogError) -> Self {
         Self::Log(error)
-    }
-}
-
-impl From<StoreError> for PinError {
-    fn from(error: StoreError) -> Self {
-        match error {
-            StoreError::Io {
-                operation,
-                path,
-                source,
-            } => Self::Io {
-                operation,
-                path,
-                source,
-            },
-            other => Self::Io {
-                operation: "replace the configuration of the remote",
-                path: PathBuf::new(),
-                source: io::Error::other(other.to_string()),
-            },
-        }
     }
 }
 
@@ -394,6 +395,40 @@ mod tests {
             None
         );
         assert_eq!(entries(&repository).len(), before + 1);
+    }
+
+    #[test]
+    fn a_failure_after_the_entry_leaves_the_old_key_and_pinning_again_finishes() {
+        let dir = TempDir::new();
+        let repository = repository(&dir, Some(&old_hub()));
+        let before = entries(&repository).len();
+        let list = rotated();
+        let expected = new_hub().public().fingerprint();
+        let remotes = repository.metadata_dir().join(REMOTES_DIR);
+        let error = {
+            let _guard = crate::fault::deny_writes_in(&remotes);
+            repository
+                .pin_hub_key_again(&origin(), &list, &expected, &daniel(), &AllowAll)
+                .unwrap_err()
+        };
+        assert!(matches!(error, PinError::Io { .. }), "{error:?}");
+        assert!(error.io_error().is_some());
+        assert!(error.to_string().contains("remote-pin"), "{error}");
+        // The entry is in the log, and the configuration still holds the old key.
+        let log = entries(&repository);
+        assert_eq!(log.len(), before + 1);
+        assert!(log.last().unwrap().remote_pin().is_some());
+        let config = repository.remote(&origin()).unwrap().unwrap();
+        assert_eq!(config.pinned_key(), Ok(&old_hub().public()));
+        // Pinning again writes a second entry, from the same old key, and finishes.
+        let entry = repository
+            .pin_hub_key_again(&origin(), &list, &expected, &daniel(), &AllowAll)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.remote_pin().unwrap().old(), Some(&old_hub().public()));
+        assert_eq!(entries(&repository).len(), before + 2);
+        let config = repository.remote(&origin()).unwrap().unwrap();
+        assert_eq!(config.pinned_key(), Ok(&new_hub().public()));
     }
 
     #[test]

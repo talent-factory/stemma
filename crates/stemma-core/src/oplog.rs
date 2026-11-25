@@ -524,6 +524,8 @@ pub enum EntryError {
     RemotePinOutsideChain(u64),
     /// The entry of a pinning names the same key as the old and the new key: nothing changed.
     RemotePinUnchanged,
+    /// The entry of a pinning names an agent as its actor. Only a human pins the key of a hub.
+    RemotePinByAgent,
     /// The entry of a pinning names no commit, so a purge never replaces it with a stub.
     /// Carries its number.
     RemotePinNotReplaceable(u64),
@@ -644,6 +646,9 @@ impl fmt::Display for EntryError {
                 f,
                 "the entry {number} that pins the key of a hub names no commit and is never a stub"
             ),
+            Self::RemotePinByAgent => {
+                f.write_str("the entry of a pinning names an agent; only a human pins a key")
+            }
             Self::RemotePinUnchanged => {
                 f.write_str("the entry of a pinning names the same key as its old and its new key")
             }
@@ -1932,7 +1937,8 @@ impl RemotePinEntry {
     ///
     /// # Errors
     ///
-    /// Returns [`EntryError::RemotePinUnchanged`] if `old` is `new`.
+    /// Returns [`EntryError::RemotePinByAgent`] if `actor` is an agent, as only a human pins the
+    /// key of a hub (ADR-026), and [`EntryError::RemotePinUnchanged`] if `old` is `new`.
     pub fn try_new(
         time: i64,
         actor: Actor,
@@ -1940,6 +1946,9 @@ impl RemotePinEntry {
         old: Option<PublicKey>,
         new: PublicKey,
     ) -> Result<Self, EntryError> {
+        if matches!(actor.view(), ActorRef::Agent { .. }) {
+            return Err(EntryError::RemotePinByAgent);
+        }
         if old.as_ref() == Some(&new) {
             return Err(EntryError::RemotePinUnchanged);
         }
@@ -9821,6 +9830,11 @@ mod tests {
             good.replace(&format!("old {old}"), &format!("old {old} comment")),
             good.replace(&format!("new {new}"), "new -"),
             good.replace(&format!("old {old}"), &format!("old {new}")),
+            // An agent does not pin the key of a hub.
+            good.replace(
+                "actor human daniel",
+                "actor agent a1 model=m session=s1 sponsor=daniel",
+            ),
         ];
         for bad in cases {
             assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
@@ -9851,7 +9865,18 @@ mod tests {
             pin_entry(remote_pin(None)).to_stub(),
             Err(EntryError::RemotePinNotReplaceable(7))
         );
+        assert_eq!(
+            RemotePinEntry::try_new(
+                TIME,
+                Actor::agent("a1", "m", "s1", "daniel").unwrap(),
+                RemoteName::try_new("origin").unwrap(),
+                None,
+                hub_key(0x71),
+            ),
+            Err(EntryError::RemotePinByAgent)
+        );
         for error in [
+            EntryError::RemotePinByAgent,
             EntryError::RemotePinUnchanged,
             EntryError::RemotePinOutsideChain(3),
             EntryError::RemotePinNotReplaceable(7),
