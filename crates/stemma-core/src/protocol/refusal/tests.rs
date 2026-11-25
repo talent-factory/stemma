@@ -432,7 +432,7 @@ fn the_reader_of_a_refusal_refuses_what_the_writer_does_not_write() {
         parse("error refused\nref heads/a incomplete \u{2028}\n"),
         Err(at(3, Malformed::Reason))
     );
-    for name in ["", "a b", "a//b", "-x/"] {
+    for name in ["", "a b", "a//b", "-x/", "a.", ".a", "a/con", "a/"] {
         assert_eq!(
             parse(&format!("error refused\nref heads/a conflict {name}\n")),
             Err(at(3, Malformed::Fields)),

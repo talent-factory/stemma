@@ -164,8 +164,9 @@ pub enum AcceptError {
         /// The commit of the reference, or `None`.
         found: Option<CommitId>,
     },
-    /// The register at the tip of `main` cannot be read, or `main` holds none. For a first
-    /// push it is the register of the pushed commit that the store could not return.
+    /// The register that counts cannot be read, or `main` holds none. It is the register at the
+    /// tip of `main`, of the pushed commit of a first push, or of the commit that the last entry
+    /// of the record names when that entry is completed.
     Register(Box<ModeError>),
     /// The policy at the tip of `main` could not be read from the store. A policy that is
     /// missing or not valid is [`Refused`](Self::Refused) instead.
@@ -176,9 +177,10 @@ pub enum AcceptError {
         /// in canonical form. `false` if the storage failed, so that a later call can succeed.
         damaged: bool,
     },
-    /// The last entry of the record names an actor that does not stand in the register that it
-    /// names, so its moves, which stopped, are not completed. The operation writes no such
-    /// entry.
+    /// The last entry of the record stopped before its moves, and the register that it names
+    /// does not allow them: the commit holds no register, the register does not hold the key of
+    /// the update as an active key of the actor that the entry names, or its authorizer refuses
+    /// a move. The operation writes no such entry, so its moves are not completed.
     LastEntry {
         /// The number of the entry.
         number: u64,
@@ -188,8 +190,11 @@ pub enum AcceptError {
     Connectivity(Box<ConnectivityError>),
     /// The history between the old and the new commit of a branch cannot be read.
     History(Box<HistoryError>),
-    /// The entry could not be made: the signer of the hub failed, or its signature does not
-    /// verify. Nothing was written.
+    /// The entry could not be made: the signer of the hub failed or its signature does not
+    /// verify, the time of the hub lies before the time of the last entry
+    /// ([`ChainError::Time`]: its clock stepped back), or the record holds the largest number.
+    /// No entry was written and no reference of this update moved; an earlier update may have
+    /// been completed.
     Write(Box<WriteError>),
     /// The entry is in the record, and a reference did not move: the storage failed. The update
     /// is accepted, and the next call for this repository completes its moves from the entry.
@@ -284,14 +289,14 @@ impl fmt::Display for AcceptError {
             Self::Register(error) => {
                 write!(
                     f,
-                    "cannot read the register at the tip of `{TARGET}`: {error}"
+                    "cannot read the register that counts for the ref update: {error}"
                 )
             }
             Self::Policy { source, .. } => source.fmt(f),
             Self::LastEntry { number } => write!(
                 f,
-                "the actor of the record entry {number} does not stand in the register that the \
-                 entry names, so its moves are not completed"
+                "the register that the record entry {number} names does not allow its moves, so \
+                 they are not completed"
             ),
             Self::Connectivity(error) => error.fmt(f),
             Self::History(error) => error.fmt(f),
@@ -563,8 +568,9 @@ impl Repository {
     /// [`AcceptError::Register`] if the store cannot return the register that counts, or if
     /// the register at the tip of `main` is not
     /// valid, or is not there, [`AcceptError::Policy`], [`AcceptError::Connectivity`], and
-    /// [`AcceptError::History`] if the store fails, [`AcceptError::Write`] if the signer fails,
-    /// and
+    /// [`AcceptError::History`] if the store fails, [`AcceptError::LastEntry`] if an earlier
+    /// update that stopped cannot be completed, [`AcceptError::Write`] if the signer fails, the
+    /// time of the hub lies before the time of the last entry, or the record is full, and
     /// [`AcceptError::NotCompleted`] if the entry is written and a reference did not move.
     pub fn accept_ref_update(
         &self,
@@ -942,9 +948,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`AcceptError::Register`] if the register of the entry cannot be read, and
-    /// [`AcceptError::LastEntry`] if it does not hold the key of the update as an active key:
-    /// the operation wrote no such entry.
+    /// [`AcceptError::Register`] if the store cannot return the register of the entry, and
+    /// [`AcceptError::LastEntry`] if that register does not allow the moves (see there).
     fn allowed_again(&self, last: &RecordEntry) -> Result<Allowed, AcceptError> {
         let unstanding = || AcceptError::LastEntry {
             number: last.number(),
@@ -1008,29 +1013,35 @@ impl Repository {
 
     /// Whether a policy that could not be read is damage of the store: the commit, its tree, or
     /// the file of the policy is missing or not in canonical form. The error of the policy
-    /// carries text only, so the objects are read once more. A failure of the storage is no
-    /// damage.
+    /// carries text only, so the objects are read once more, and only what that read finds
+    /// counts as damage. A failure of the storage is none, and neither is a read that succeeds
+    /// now: the first failure was then one of the storage that passed.
     fn policy_is_damaged(&self, tip: &CommitId) -> bool {
         let store = self.objects();
-        let io = |error: &ReadError| matches!(error.store_error(), Some(StoreError::Io { .. }));
+        let damage =
+            |error: &ReadError| !matches!(error.store_error(), Some(StoreError::Io { .. }));
         let commit = match store.get_commit(tip) {
             Ok(Some(commit)) => commit,
             Ok(None) => return true,
-            Err(error) => return !io(&error),
+            Err(error) => return damage(&error),
         };
         let tree = match store.get_tree(&commit.tree()) {
             Ok(Some(tree)) => tree,
             Ok(None) => return true,
-            Err(error) => return !io(&error),
+            Err(error) => return damage(&error),
         };
         let Some(entry) = tree
             .entries()
             .iter()
             .find(|entry| entry.name() == crate::policy::FILE_NAME)
         else {
-            return true;
+            // The first read found a file of the policy here.
+            return false;
         };
-        !matches!(store.get(&entry.id()), Err(StoreError::Io { .. }))
+        match store.get(&entry.id()) {
+            Ok(Some(_)) | Err(StoreError::Io { .. }) => false,
+            Ok(None) | Err(_) => true,
+        }
     }
 
     /// Makes the references agree with an update whose entry is in the record: the moves of an

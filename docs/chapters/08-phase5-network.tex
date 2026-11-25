@@ -115,8 +115,8 @@ braucht: das Register und die Policy eines Basis-Commits, die Stufe einer Änder
 Eskalation bei abgeschwächten Tests, der Tree-Merge und die Prüfung von Objekten, Branches und
 Tags.
 Sie lesen nur den Objektspeicher, die Branches und Tags und ihre Argumente.
-Eine Referenz bewegt auf einem Bare-Repository erst die annehmende Operation
-(\in{Abschnitt}[sec:hub-enforcement]); bis sie gebaut ist, bewegt der Kern dort keine.
+Eine Referenz bewegt auf einem Bare-Repository nur die annehmende Operation
+(\in{Abschnitt}[sec:accept-ref-update]).
 
 \startinfobox
 {\bf Wie Klon und Hub gemeinsam getestet werden.}
@@ -269,8 +269,8 @@ Er fragt den Hub nicht vorher.
 Der Hub berechnet ihre Hashes, legt sie unbenannt ab und bestätigt, sobald sie dauerhaft
 gespeichert sind.
 \item Er sendet ein kleines, signiertes Ref-Update (\in{Abschnitt}[sec:ref-update]).
-Erst jetzt prüft der Hub, ob die Objekte zusammenhängen, ruft die annehmende Operation auf und
-bewegt die Referenz mit Compare-and-Swap.
+Erst jetzt ruft der Hub die annehmende Operation auf; sie prüft unter der Sperre, ob die Objekte
+zusammenhängen, und bewegt die Referenz mit Compare-and-Swap.
 \stopitemize
 
 Der Upload ist idempotent: Er kann wiederholt und an Commit-Grenzen in mehrere Anfragen geteilt

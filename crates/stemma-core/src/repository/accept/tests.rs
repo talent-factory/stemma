@@ -1576,22 +1576,23 @@ fn the_time_of_the_hub_does_not_step_back() {
     send(&mut wire, &update).unwrap();
 }
 
-#[test]
-fn an_entry_whose_actor_does_not_stand_is_not_completed() {
+/// A hub after the first push whose record ends with an entry that this operation would not
+/// write: the update of `signer` for `heads/feature`, recorded as an update of `actor`, whose
+/// move did not happen.
+fn with_forged_last_entry(signer: &Seeded, actor: &str) -> (Wire, CommitId) {
     let (mut wire, root) = started();
-    // An entry that this operation would not write: the key of a stranger, named as Mia.
     let moved = to(&mut wire, "heads/feature", Some(root));
-    let forged = signed(&stranger(), vec![moved]);
-    let mut chain = wire.side().chain();
+    let forged = signed(signer, vec![moved]);
     let acceptance = Acceptance {
         time: START,
         register: root,
         policies: Vec::new(),
         fast_forward: BTreeSet::new(),
-        actor: human("mia"),
+        actor: human(actor),
     };
     let mut bytes = Vec::new();
-    chain
+    wire.side()
+        .chain()
         .append(&forged, acceptance, &hub_key(), &mut bytes)
         .unwrap();
     wire.side()
@@ -1599,22 +1600,60 @@ fn an_entry_whose_actor_does_not_stand_is_not_completed() {
         .borrow_mut()
         .bytes
         .extend_from_slice(&bytes);
-    let before = record_of(&wire);
+    (wire, root)
+}
 
+#[test]
+fn an_entry_whose_moves_its_register_does_not_allow_is_not_completed() {
+    // A key that the register does not hold, and a key of Mia recorded as an update of Ana.
+    for (signer, actor) in [(stranger(), "mia"), (mia(), "ana")] {
+        let (wire, root) = with_forged_last_entry(&signer, actor);
+        let before = record_of(&wire);
+        let tagged = Move::try_new(name("tags/v1"), None, None, Some(root), None).unwrap();
+        let error = wire
+            .side()
+            .accept(&signed(&ana(), vec![tagged]))
+            .unwrap_err();
+        assert!(
+            matches!(error, AcceptError::LastEntry { number: 2 }),
+            "{actor}: {error:?}"
+        );
+        assert_eq!(error.kind(), FailureKind::Damaged);
+        assert!(error.to_string().contains("record entry 2"), "{error}");
+        unchanged(
+            &wire,
+            &before,
+            &[("heads/feature", None), ("tags/v1", None)],
+        );
+    }
+    // The same entry with its true actor is completed.
+    let (mut wire, root) = with_forged_last_entry(&mia(), "mia");
     let tagged = Move::try_new(name("tags/v1"), None, None, Some(root), None).unwrap();
-    let error = wire
-        .side()
-        .accept(&signed(&ana(), vec![tagged]))
-        .unwrap_err();
+    send(&mut wire, &signed(&ana(), vec![tagged])).unwrap();
+    assert_eq!(wire.side().reference("heads/feature"), Some(root));
+}
+
+#[test]
+fn a_policy_that_the_storage_cannot_read_now_is_no_damage() {
+    let (mut wire, root) = started();
+    let moved = to(&mut wire, "heads/feature", Some(root));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let before = record_of(&wire);
+    let one = wire.side().commit(&[("b.txt", "one\n")], vec![root]);
+    let update = signed(&ana(), vec![to(&mut wire, "heads/feature", Some(one))]);
+    let store = wire.side().repository.objects();
+    let blob = store.put_blob(&Blob::new(POLICY)).unwrap();
+    let denied = fault::deny_reads_of(&store.object_path(&blob.object_id()));
+    let error = wire.side().accept(&update).unwrap_err();
+    drop(denied);
     assert!(
-        matches!(error, AcceptError::LastEntry { number: 2 }),
+        matches!(error, AcceptError::Policy { damaged: false, .. }),
         "{error:?}"
     );
-    assert_eq!(error.kind(), FailureKind::Damaged);
-    assert!(error.to_string().contains("record entry 2"), "{error}");
-    unchanged(
-        &wire,
-        &before,
-        &[("heads/feature", None), ("tags/v1", None)],
-    );
+    assert_eq!(error.kind(), FailureKind::Other);
+    assert_eq!(error.answer(), None);
+    unchanged(&wire, &before, &[("heads/feature", Some(root))]);
+    // Once the storage reads again, the same update is judged.
+    wire.side().time.set(START + LEASE);
+    send(&mut wire, &update).unwrap();
 }

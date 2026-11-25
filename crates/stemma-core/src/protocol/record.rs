@@ -1656,8 +1656,8 @@ impl Chain {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WriteError {
-    /// The chain began in the middle of the record, the update does not continue the record, or
-    /// the record is full.
+    /// The chain began in the middle of the record, the update does not continue the record, the
+    /// record is full, or the time of the entry lies before the time of the last entry.
     Chain(ChainError),
     /// A fast-forward is named for a reference that the update does not list, or that it
     /// creates or deletes.

@@ -925,7 +925,8 @@ impl ErrorMessage {
     /// `stale` and `refused` also refuse a `ref` line that does not come after the one before it
     /// in the order of the qualified names, a name, a hash, a commit, an address, a repository
     /// ID, an actor, or a time that is not in canonical form, a reference of a `stale` that names
-    /// a commit and no entry, and a reason of a `refused` that this version does not know.
+    /// a commit and no entry, and a reason of a `refused` that this version does not know or
+    /// that does not fit its reference.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let (version, rest) = read_version(bytes)?;
         // Under another number only the second line of an `unsupported-version` is known, so

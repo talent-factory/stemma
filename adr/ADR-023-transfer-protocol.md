@@ -88,8 +88,8 @@ regularly sends too much).
    confirms once they are durable. The request is idempotent; the client may split a large push
    at commit boundaries into several requests and continues after an interruption at the first
    piece that was not confirmed.
-2. A small ref update follows (ADR-025). Only here the hub checks connectivity, calls the
-   accepting operation and performs the compare-and-swap.
+2. A small ref update follows (ADR-025). Only here the hub calls the accepting operation, which
+   checks connectivity under the lock and performs the compare-and-swap.
 
 A stale remote reference shows as `Stale` in the compare-and-swap (ADR-008), and the client
 fetches first. The client sends too much when the hub has objects by a way the client does not

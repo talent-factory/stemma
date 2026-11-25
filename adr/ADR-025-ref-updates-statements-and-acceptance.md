@@ -381,19 +381,22 @@ through the operation log (ADR-011).
 A policy at the tip of `main` that is missing, no file or not valid refuses the reference
 (`policy`), because the sender can read that commit; a policy that the store cannot return is a
 failure of the hub, classified as damage where an object on the way to it is missing or not in
-canonical form.
+canonical form. The commit of a first push that records an open conflict is refused as
+`bad-register`: `main` never holds such a commit (ADR-019).
 
 **The time of the hub does not step back.** The leases are counted by the time in the entries,
 so an entry never carries an earlier time than the entry before it; the same second is allowed.
 The rule stands in the chain: the writer refuses such an entry before it writes, which the
 accepting operation reports as a failure of the hub, and the reader of a record refuses it too.
-A chain that began in the middle knows no time until it has read an entry. The commit of a first push that records an open conflict is refused as
-`bad-register`: `main` never holds such a commit (ADR-019).
+A chain that began in the middle knows no time until it has read an entry. A hub whose clock
+stepped back below the last entry therefore accepts no update until its clock has passed it;
+the leases are judged by that clock until then.
 
 **The destination of the record** is a trait with two methods: read the whole record, and append
 the bytes of one entry durably. The operation reads the record under the lock before it judges,
-so a second process of the hub cannot write between that reading and the entry. This first version reads and
-checks the whole record with every call, which is linear in the entries; the trigger for keeping
+so a second process of the hub cannot write between that reading and the entry. This first
+version reads and checks the whole record with every call, which is linear in the entries; the
+trigger for keeping
 the state of the chains between two calls is the measured holding time of the lock.
 
 **The order.** Before the lock: the address and the ID against the payload, and nothing of the
@@ -456,7 +459,9 @@ moves (the order of ADR-011), so a process that ends in between leaves an accept
 references stand partly at their old values. The next call for the repository reads the last
 entry under the lock and makes its moves again before it judges its own update, with the proof
 of the authorizer for the actor of that entry by the register that the entry names. An entry
-whose actor does not stand there was not written by the operation; the call fails. No earlier entry
+whose moves that register does not allow (no register, the key not an active key of the actor
+that the entry names, or a move that its authorizer refuses) was not written by the operation;
+the call fails. No earlier entry
 can be incomplete, because every call completes the last one before it appends. A reference of
 the last entry that is at neither its old nor its new value was not left by a stop; the call
 fails. A call whose storage fails after the entry reports that the entry is written and names
