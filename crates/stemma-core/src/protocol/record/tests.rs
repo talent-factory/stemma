@@ -697,6 +697,15 @@ fn an_actor_that_the_register_does_not_hold_does_not_stand() {
         Err(StandingError::NotActive)
     ));
 
+    // A register commit that names a stored object of another kind is damage as well.
+    let blob = Blob::new("no commit\n");
+    store.put_blob(&blob).unwrap();
+    let no_commit = CommitId::new(blob.id().object_id());
+    assert!(matches!(
+        record_at(no_commit)[0].standing(&store),
+        Err(StandingError::Unreadable(ModeError::Store(_)))
+    ));
+
     // A register that cannot be read is damage, not "no longer checkable".
     let garbage = register_tree(&store, |store| {
         let blob = Blob::new("no register\n");
@@ -840,6 +849,11 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
         }))
     ));
     assert_eq!(chain.last_number(), 1);
+    // An entry that fails for its key and for the chain is refused for its key first.
+    assert!(matches!(
+        chain.verify(&entries, &former, &store_dir.store()),
+        Err(RecordError::HubKey { number: 1 })
+    ));
 }
 
 #[test]
@@ -1670,8 +1684,27 @@ fn a_record_is_read_entry_by_entry_and_a_cut_is_reported_with_its_entry() {
         &mut record,
         update(vec![moved("heads/b", None, None, Some(commit(1)))]),
     );
-    assert_eq!(read_record(&record), Ok(vec![first.clone(), second]));
-    assert_eq!(read_record(&record[..one]), Ok(vec![first]));
+    assert_eq!(
+        read_record(&record),
+        Ok(vec![first.clone(), second.clone()])
+    );
+    assert_eq!(read_record(&record[..one]), Ok(vec![first.clone()]));
+    // An entry ends at a line that begins with `hub-signature`, not at a name that holds it.
+    let mut longer = (chain.clone(), record.clone());
+    let third = append(
+        &mut longer.0,
+        &mut longer.1,
+        update(vec![moved(
+            "heads/hub-signature",
+            None,
+            None,
+            Some(commit(1)),
+        )]),
+    );
+    assert_eq!(
+        read_record(&longer.1),
+        Ok(vec![first.clone(), second, third])
+    );
     // A single entry is refused by the reader of a receipt when another follows it.
     assert_eq!(
         RecordEntry::parse(&record),

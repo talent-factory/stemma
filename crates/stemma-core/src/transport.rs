@@ -8,9 +8,11 @@
 //! `fetch` or a `push` lives in the core once, whatever carries the bytes, and can be tested
 //! without a socket.
 //!
-//! The trait has one method per request of the protocol (ADR-023). This version has the two
-//! requests whose messages exist, the list of references and the fetch; the slices that add a
-//! message add its request, and the sign-in adds its step.
+//! The trait has one method per request of the protocol (ADR-023). This version has two
+//! requests, the list of references and the fetch; the slices that add a request add its
+//! method, and the sign-in adds its step. The ref update and its receipt exist as messages
+//! already ([`record`](crate::protocol::record), ADR-025); their request comes with the slice
+//! of `push`, which builds the operation that answers it.
 //!
 //! The trait names nothing of a carrier: no address, no path, no status, no header, and no
 //! compression. They belong to the implementation, as TLS and the token do (ADR-023). What a
