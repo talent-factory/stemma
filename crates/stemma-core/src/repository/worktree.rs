@@ -1522,6 +1522,7 @@ impl fmt::Display for WorktreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not add the worktree: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => {
                 write!(f, "the references refuse the worktree: {error}")
             }

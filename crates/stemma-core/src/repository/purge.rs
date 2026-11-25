@@ -1048,6 +1048,7 @@ impl PurgeError {
                 f,
                 "the blob {id} cannot be read, so it is not known that it is one: {source}"
             ),
+            Self::Refs(error @ RefError::Bare { .. }) => write!(f, "{error}"),
             Self::Refs(error) => write!(f, "the references cannot be read: {error}"),
             Self::Log(error) => write!(f, "the operation log cannot be read: {error}"),
             Self::Read(error) => write!(f, "the history cannot be read: {error}"),
@@ -1114,7 +1115,8 @@ impl PurgeError {
 impl fmt::Display for PurgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Agent => self.reason(f),
+            // A refusal is no failure to plan: nothing was looked at.
+            Self::Agent | Self::Refs(RefError::Bare { .. }) => self.reason(f),
             _ => {
                 write!(f, "could not plan the purge, nothing was written: ")?;
                 self.reason(f)

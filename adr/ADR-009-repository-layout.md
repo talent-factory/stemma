@@ -233,7 +233,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     the apply of a checkout, `switch`, `op restore`, `merge`, `rebase`, the rewrite of the
     working copy, `follow_main`, the three worktree operations, and the moves of `HEAD` and of
     the working-copy commit.
-    The operation log is lacking for everything that writes an entry or reads the log: the
+    The operation log is lacking for every other operation that writes an entry or reads the
+    log: the
     moves of a branch and a tag (`update_branch`, `create_branch`, `delete_branch`,
     `rename_branch`, `create_tag`, `delete_tag`), the leases, the pull requests with their
     approvals, the checks and the bounds of the gate that read them, the merge gate, and the
@@ -255,16 +256,18 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     branches and the tags, or their arguments, take no lock, create no commit by themselves, and
     move no reference (ADR-025). `verify_refs` refuses while the journal of a purge exists, as
     in every repository; nothing makes one in a bare repository.
-    The refusal is found by matching the error of the operation that was called, not through
-    the chain of sources, and its field `operation` is wording for the message. `init_bare`
+    The refusal is found by matching the error of the operation that was called: the chain of
+    sources leads to it for some errors only. The message of such an error is the refusal
+    alone, without a prefix that says a read or a write failed, and the field `operation` is
+    wording for the message. `init_bare`
     reports a final flush that failed with the directory above the repository
     (`NotDurable`), and an entry of the log that code past the checks tries to write is
     refused once more (`OpLogError::Io` of the kind `Unsupported`).
     The mode of a repository (`Mode::of`) is read from the commit of `HEAD` and is refused; a
     hub reads the register of the tip of `main` (ADR-024). The step to the enforcing
     mode (`enter_enforcing`) writes the register file into the working copy and is refused too.
-    `Repository::oplog()` is still handed out: reading through it fails with an error of the
-    storage, as the directory does not exist, so a caller asks `is_bare` first.
+    `Repository::oplog()` is still handed out: reading through it fails with `OpLogError::Io`
+    or `OpLogError::Missing`, as the directory does not exist, so a caller asks `is_bare` first.
   - **What lies beside it.** The record of ref updates, the statements and the anchors of a hub
     lie beside the bare repository, not inside it: the core knows their formats and writes them
     into a destination that the caller passes, so the layout gets no file that only a hub knows

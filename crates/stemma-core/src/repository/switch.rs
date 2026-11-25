@@ -1078,6 +1078,7 @@ impl fmt::Display for SwitchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not switch: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not switch, nothing of it was written: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
             Self::Store(error) => write!(f, "could not look up a commit: {error}"),

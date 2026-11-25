@@ -753,6 +753,7 @@ impl fmt::Display for RebaseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not rebase: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not rebase, nothing of it was written: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
             Self::Store(error) => write!(f, "could not look up a commit: {error}"),

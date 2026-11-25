@@ -679,6 +679,7 @@ impl fmt::Display for MergeBranchError {
                 "the branch `{name}` has no commit yet, so there is nothing to merge into"
             ),
             Self::Update(error) => write!(f, "could not merge: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not merge, nothing of it was written: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
             Self::Store(error) => write!(f, "could not store a commit: {error}"),

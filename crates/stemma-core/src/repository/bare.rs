@@ -117,9 +117,14 @@ macro_rules! assert_refused {
         assert_refused!(false, $lacks, $result, $error in $pattern)
     };
     ($from_store:expr, $lacks:expr, $result:expr, $error:ident in $pattern:pat) => {{
-        match $result.map(|_| ()) {
+        let result = $result.map(|_| ());
+        let message = result.as_ref().err().map(ToString::to_string);
+        match result {
             Err($pattern) => {
                 assert_eq!($error.kind(), FailureKind::Other, "{}", $error);
+                // The message is the refusal alone: no prefix says that a read or a write
+                // failed, as nothing was read or written.
+                assert_eq!(message, Some($error.to_string()));
                 match $error {
                     RefError::Bare {
                         path,
@@ -298,6 +303,13 @@ fn open_bare_names_a_missing_directory_a_file_and_an_unsupported_format() {
         );
         assert_eq!(error.kind(), FailureKind::Damaged);
     }
+    // A version between two that are read is not read.
+    fs::write(repository.path().join("format"), "stemma-repository 14\n").unwrap();
+    let error = Repository::open_bare(repository.path()).unwrap_err();
+    assert!(
+        matches!(&error, OpenError::UnsupportedFormat { found, .. } if found == "14"),
+        "{error}"
+    );
     fs::remove_file(repository.path().join("format")).unwrap();
     let error = Repository::open_bare(repository.path()).unwrap_err();
     assert!(matches!(error, OpenError::MissingFormat { .. }), "{error}");
@@ -972,12 +984,92 @@ fn the_temporary_directory_of_init_bare_is_none_that_a_writer_removes_as_stale()
     let work = Repository::init(dir.path(), &InitOptions::default(), &daniel(), &AllowAll).unwrap();
     let staging = dir.path().join(&made);
     fs::create_dir(&staging).unwrap();
+    // A directory of `init` beside it shows that the cleanup ran.
+    let stale = dir.path().join(".stemma-init-1-0-0123456789abcdef");
+    fs::create_dir(&stale).unwrap();
     // A writer takes the lock and cleans up.
     work.snapshot(&daniel(), &AllowAll).unwrap();
     fs::write(dir.path().join("a.txt"), "one\n").unwrap();
     work.track(&["a.txt".to_owned()], &daniel(), &AllowAll)
         .unwrap();
+    assert!(!stale.exists());
     assert!(staging.is_dir());
+}
+
+#[test]
+fn init_bare_builds_in_a_directory_of_its_own_name_beside_the_target() {
+    // The name that `init_bare` really uses: the directory above refuses a new name, so the
+    // error names the temporary directory.
+    let dir = TempDir::new();
+    let denied = crate::fault::deny_writes_in(dir.path());
+    let error = Repository::init_bare(dir.path().join("hub"), &daniel(), &AllowAll).unwrap_err();
+    drop(denied);
+    let InitError::Io { path, .. } = &error else {
+        panic!("{error:?}");
+    };
+    let made = path.file_name().unwrap().to_str().unwrap();
+    assert!(made.starts_with(BARE_STAGING_PREFIX), "{made}");
+    assert!(!crate::store::is_init_staging_name(made), "{made}");
+    assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn init_bare_reports_a_final_flush_that_failed_with_the_directory_above() {
+    let dir = TempDir::new();
+    let root = dir.path().join("hub");
+    let failure = crate::store::fail_flush_of(dir.path());
+    let error = Repository::init_bare(&root, &daniel(), &AllowAll).unwrap_err();
+    drop(failure);
+    assert!(
+        matches!(&error, InitError::NotDurable { path, .. } if path == dir.path()),
+        "{error:?}"
+    );
+    // The repository is complete; only its name in the directory above may be lost.
+    assert!(Repository::open_bare(&root).unwrap().is_bare());
+}
+
+#[test]
+fn a_bare_repository_that_cannot_be_installed_leaves_no_temporary_directory() {
+    // The content cannot be written.
+    let dir = TempDir::new();
+    let staging = dir.path().join("staging");
+    let target = dir.path().join("hub");
+    fs::create_dir(&staging).unwrap();
+    let denied = crate::fault::deny_writes_in(&staging);
+    let error = install_with(&staging, &target, &Allowed::granted(), fill_bare).unwrap_err();
+    drop(denied);
+    assert!(matches!(error, InitError::Io { .. }), "{error:?}");
+    assert!(!staging.exists());
+    assert!(!target.exists());
+
+    // Something appeared at the target since the check.
+    fs::create_dir(&staging).unwrap();
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("other"), "x").unwrap();
+    let error = install_with(&staging, &target, &Allowed::granted(), fill_bare).unwrap_err();
+    assert!(
+        matches!(&error, InitError::AlreadyExists { path } if path == &target),
+        "{error:?}"
+    );
+    assert!(!staging.exists());
+    assert_eq!(fs::read(target.join("other")).unwrap(), b"x");
+}
+
+#[test]
+fn discover_finds_no_repository_in_a_bare_one() {
+    // The directory is the metadata directory itself; `discover` looks for a `.stemma`.
+    let dir = TempDir::new();
+    let repository = bare(&dir);
+    for start in [
+        repository.path().to_path_buf(),
+        repository.path().join("objects"),
+    ] {
+        let error = Repository::discover(&start).unwrap_err();
+        assert!(
+            matches!(error, OpenError::NoRepositoryAbove { .. }),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -1111,9 +1203,9 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
     assert!(matches!(error, OpenError::Missing { .. }), "{error}");
 }
 
-/// The public methods of `Repository` that run on a bare repository, or that make or open one.
-/// Every other public method starts with the check of the bare repository.
-const WITHOUT_CHECK: [&str; 18] = [
+/// The public methods of `Repository` that run on a bare repository, or that make or open a
+/// repository. Every other public method starts with the check of the bare repository.
+const WITHOUT_CHECK: [&str; 17] = [
     "init",
     "init_bare",
     "open",
@@ -1131,11 +1223,10 @@ const WITHOUT_CHECK: [&str; 18] = [
     "taken_over",
     "policy_of",
     "level_of_change",
-    "refs_store",
 ];
 
 /// The public methods of the `impl Repository` blocks in `source`, each with the first statement
-/// of its body. The reading relies on the layout of rustfmt.
+/// of its body, joined into one line. The reading relies on the layout of rustfmt.
 fn public_methods(source: &str) -> Vec<(String, String)> {
     let lines: Vec<&str> = source.lines().collect();
     let mut found = Vec::new();
@@ -1148,7 +1239,13 @@ fn public_methods(source: &str) -> Vec<(String, String)> {
         } else if line == "}" {
             inside = false;
         } else if inside {
-            if let Some(rest) = line.strip_prefix("    pub fn ") {
+            let modifiers = ["const ", "async ", "unsafe "];
+            let rest = line.strip_prefix("    pub ").map(|rest| {
+                modifiers
+                    .iter()
+                    .fold(rest, |rest, word| rest.strip_prefix(word).unwrap_or(rest))
+            });
+            if let Some(rest) = rest.and_then(|rest| rest.strip_prefix("fn ")) {
                 let name: String = rest
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
@@ -1156,7 +1253,12 @@ fn public_methods(source: &str) -> Vec<(String, String)> {
                 while !lines[index].ends_with('{') {
                     index += 1;
                 }
-                found.push((name, lines[index + 1].trim().to_owned()));
+                let mut first = String::new();
+                while !first.ends_with(';') && !first.ends_with('}') {
+                    index += 1;
+                    first.push_str(lines[index].trim());
+                }
+                found.push((name, first));
             }
         }
         index += 1;
@@ -1168,12 +1270,15 @@ fn public_methods(source: &str) -> Vec<(String, String)> {
 fn every_public_operation_starts_with_the_check_of_the_bare_repository() {
     // A method that is added without the check would run on a bare repository until it meets a
     // missing file; this test names it instead.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut sources = vec![root.join("repository.rs")];
-    for directory in [root.join("repository"), root.join("repository/purge")] {
+    // Every source of the crate: a block in a new module or directory is read too.
+    let mut sources = Vec::new();
+    let mut directories = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(directory) = directories.pop() {
         for entry in fs::read_dir(directory).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().is_some_and(|extension| extension == "rs") {
+            if path.is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
                 sources.push(path);
             }
         }
@@ -1186,9 +1291,11 @@ fn every_public_operation_starts_with_the_check_of_the_bare_repository() {
             if WITHOUT_CHECK.contains(&name.as_str()) {
                 continue;
             }
+            // The statement ends with `?`: a check whose result is dropped refuses nothing.
             assert!(
-                first.starts_with("self.require_working_copy(\"")
-                    || first.starts_with("self.require_oplog(\""),
+                (first.starts_with("self.require_working_copy(\"")
+                    || first.starts_with("self.require_oplog(\""))
+                    && first.ends_with("?;"),
                 "`{name}` in {} does not start with the check: `{first}`",
                 path.display()
             );
@@ -1198,7 +1305,7 @@ fn every_public_operation_starts_with_the_check_of_the_bare_repository() {
     // The reading found the methods: a change of the layout must not empty the test.
     assert!(checked >= 50, "{checked}");
     for name in WITHOUT_CHECK {
-        assert!(name == "refs_store" || seen.contains(name), "{name}");
+        assert!(seen.contains(name), "{name}");
     }
 }
 
@@ -1222,21 +1329,32 @@ fn an_entry_of_the_log_is_refused_even_past_the_checks_of_the_operations() {
     )
     .unwrap();
 
-    let error = repository.append(&lock, &change).unwrap_err();
+    let lease = LeaseEntry::release(1, daniel(), name("main"));
+    let pull = PullEntry::close(1, daniel(), 1).unwrap();
+    let check = CheckEntry::new(1, daniel(), commit, None, CheckResult::Pass);
 
-    let OpLogError::Io { source, .. } = &error else {
-        panic!("{error:?}");
-    };
-    assert_eq!(source.kind(), io::ErrorKind::Unsupported);
-    assert!(matches!(
-        source
-            .get_ref()
-            .and_then(|inner| inner.downcast_ref::<RefError>()),
-        Some(RefError::Bare {
-            lacks: BareLacks::OperationLog,
-            ..
-        })
-    ));
+    let errors = [
+        repository.append(&lock, &change).unwrap_err(),
+        repository.append_lease(&lock, &lease).unwrap_err(),
+        repository.append_pull(&lock, &pull).unwrap_err(),
+        repository.append_check(&lock, &check).unwrap_err(),
+    ];
+
+    for error in &errors {
+        let OpLogError::Io { source, .. } = error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(source.kind(), io::ErrorKind::Unsupported);
+        assert!(matches!(
+            source
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<RefError>()),
+            Some(RefError::Bare {
+                lacks: BareLacks::OperationLog,
+                ..
+            })
+        ));
+    }
     drop(lock);
     // No entry and no tip were written.
     assert!(fs::read_dir(repository.path().join("oplog"))
@@ -1258,8 +1376,11 @@ fn the_message_of_an_unsupported_version_names_the_versions_that_are_read() {
         });
         assert!(named, "{version} in `{text}`");
     }
-    // A version between two that are read is not named as supported.
-    let gaps =
-        (READ_VERSIONS[0]..FORMAT_VERSION).filter(|version| !READ_VERSIONS.contains(version));
-    assert_eq!(text.matches(" and ").count(), gaps.count(), "{text}");
+    // A version between two that are read is not named as supported: the text has one run for
+    // each run of versions that follow each other.
+    let breaks = READ_VERSIONS
+        .windows(2)
+        .filter(|pair| pair[1] != pair[0] + 1)
+        .count();
+    assert_eq!(text.matches(" and ").count(), breaks, "{text}");
 }

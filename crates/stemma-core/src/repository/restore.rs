@@ -843,6 +843,7 @@ impl fmt::Display for RestoreError {
                 "entry {number} created {}, which cannot be absent, so it cannot be restored",
                 pointer
             ),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not restore, nothing of it was written: {error}"),
             Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(

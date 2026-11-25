@@ -260,6 +260,7 @@ impl fmt::Display for DiffError {
         match self {
             Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(f, "the working copy could not be saved: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "the references could not be read: {error}"),
             Self::Store(error) => write!(f, "an object could not be read from the store: {error}"),
             Self::Missing { id } => write!(f, "object {id} is missing from the store"),

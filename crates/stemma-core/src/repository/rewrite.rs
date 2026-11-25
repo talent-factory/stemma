@@ -662,6 +662,7 @@ impl fmt::Display for RewriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not rewrite the working-copy commit: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(
                 f,
                 "could not rewrite the working-copy commit, nothing of it was written: {error}"

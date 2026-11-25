@@ -318,8 +318,8 @@ fn parse_format(bytes: &[u8]) -> Option<&str> {
 
 /// Reads the file `format` in the metadata directory `metadata_dir` and checks that this code reads
 /// its version. With `owned` (Unix), the file is read through a handle on the directory that was
-/// checked for its owner (see [`Repository::open_with`]).
-fn check_format(metadata_dir: &Path, owned: bool) -> Result<(), OpenError> {
+/// checked for its owner (see [`Repository::open_with`]). Returns the version.
+fn check_format(metadata_dir: &Path, owned: bool) -> Result<u32, OpenError> {
     let format_path = metadata_dir.join("format");
     #[cfg(unix)]
     let bytes = if owned {
@@ -332,19 +332,18 @@ fn check_format(metadata_dir: &Path, owned: bool) -> Result<(), OpenError> {
         let _ = owned;
         read_format(&format_path)?
     };
-    match parse_format(&bytes) {
-        Some(version)
-            if READ_VERSIONS
-                .iter()
-                .any(|known| version == known.to_string()) =>
-        {
-            Ok(())
-        }
-        Some(found) => Err(OpenError::UnsupportedFormat {
+    let Some(found) = parse_format(&bytes) else {
+        return Err(OpenError::MalformedFormat { path: format_path });
+    };
+    match READ_VERSIONS
+        .iter()
+        .find(|known| found == known.to_string())
+    {
+        Some(version) => Ok(*version),
+        None => Err(OpenError::UnsupportedFormat {
             path: format_path,
             found: found.to_owned(),
         }),
-        None => Err(OpenError::MalformedFormat { path: format_path }),
     }
 }
 
@@ -658,7 +657,7 @@ impl Repository {
             }
             Err(error) => return Err(OpenError::io("inspect", path)(error)),
         }
-        check_format(path, false)?;
+        let version = check_format(path, false)?;
         if !has_bare_marker(path)? {
             return Err(OpenError::NotBare {
                 path: path.to_path_buf(),
@@ -666,13 +665,10 @@ impl Repository {
         }
         // The reader accepts what the writer writes: no bare repository was made in a version
         // before the marker existed, so such a directory was put together by hand.
-        let format = path.join("format");
-        let bytes = read_format(&format)?;
-        let version = parse_format(&bytes).and_then(|digits| digits.parse::<u32>().ok());
-        if version.is_none_or(|version| version < BARE_SINCE) {
+        if version < BARE_SINCE {
             return Err(OpenError::BareFormat {
-                path: format,
-                found: parse_format(&bytes).unwrap_or_default().to_owned(),
+                path: path.join("format"),
+                found: version.to_string(),
             });
         }
         Ok(Self::bare_at(path))
@@ -892,7 +888,9 @@ impl Repository {
     /// the functions of the crate that take an object store, such as the tree merge
     /// ([`crate::merge`]), the register of a commit
     /// ([`Register::at_commit`](crate::register::Register::at_commit)), and the verification of
-    /// trees and commits ([`crate::verify`]). None of them takes the lock.
+    /// trees and commits ([`crate::verify`]). None of them takes the lock. The accessors
+    /// ([`path`](Self::path), [`metadata_dir`](Self::metadata_dir), and
+    /// [`worktree_name`](Self::worktree_name)) answer as well.
     ///
     /// Every other operation of this type is refused with [`RefError::Bare`], inside the error
     /// of the operation, before it asks the authorizer and before it reads or writes anything.
@@ -902,14 +900,16 @@ impl Repository {
     /// answers `is_locked`; and [`oplog`](Self::oplog) is handed out, so reading through it
     /// fails with an error of the storage and not with the refusal.
     /// A caller finds the refusal by matching the error of the operation that it called; the
-    /// chain of [`Error::source`] does not lead to it. It says that the call was the wrong one
-    /// for this repository, and a later call does not succeed either.
+    /// chain of [`Error::source`] leads to it for some of these errors only. The message of
+    /// such an error is the refusal alone. It says that the call was the wrong one for this
+    /// repository, and a later call does not succeed either.
     /// The error says what the operation needs ([`BareLacks`]): the working copy for the
     /// operations that read or change files, `HEAD`, or the working-copy commit (`snapshot`,
     /// `track`, `status`, `commit`, `diff`, `checkout`, `switch`, `restore`, `merge`, `rebase`,
-    /// the rewrite of the working copy, `follow_main`, the worktrees, and the moves of `HEAD` and the working-copy commit), and
-    /// the operation log for those that write an entry or read the log (the moves of a branch
-    /// and a tag, the leases, the pull requests, the checks, the gate, and the purge). A
+    /// the rewrite of the working copy, `follow_main`, the worktrees, and the moves of `HEAD` and
+    /// the working-copy commit), and the operation log for every other operation that writes an
+    /// entry or reads the log (the moves of a branch and a tag, the leases, the pull requests,
+    /// the checks, the gate, and the purge). A
     /// reference of a bare repository moves through the accepting operation (ADR-025), which
     /// writes the record of the hub in place of the log.
     pub fn is_bare(&self) -> bool {
@@ -933,7 +933,8 @@ impl Repository {
 
     /// Fails if the repository is bare: the last check before an entry of the log is written.
     /// Every operation that writes one is refused at its start
-    /// ([`require_oplog`](Self::require_oplog)), so this holds only for code that came past
+    /// ([`require_working_copy`](Self::require_working_copy) or
+    /// [`require_oplog`](Self::require_oplog)), so this holds only for code that came past
     /// that check, and for a directory that someone gave an `oplog/` by hand. The error is
     /// [`OpLogError::Io`] of the kind [`io::ErrorKind::Unsupported`], with [`RefError::Bare`] as
     /// the inner error.
@@ -2436,6 +2437,11 @@ fn has_bare_marker(dir: &Path) -> Result<bool, OpenError> {
         Err(error) => return Err(OpenError::io("inspect", &path)(error)),
     }
     let file = fs::File::open(&path).map_err(OpenError::io("open", &path))?;
+    // The name may stand for something else since the look above; the handle says what is read.
+    let opened = file.metadata().map_err(OpenError::io("inspect", &path))?;
+    if !opened.is_file() {
+        return Err(OpenError::MalformedBareMarker { path });
+    }
     let mut bytes = Vec::new();
     // One byte more than the marker holds shows a file that is longer.
     file.take(BARE_MARKER_CONTENT.len() as u64 + 1)
@@ -4692,6 +4698,7 @@ mod tests {
         for version in [
             "0",
             "1",
+            "14",
             "16",
             "99",
             "4294967295",

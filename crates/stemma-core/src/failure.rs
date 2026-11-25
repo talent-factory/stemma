@@ -84,7 +84,9 @@ impl Classify for OpenError {
             | Self::Changed { .. }
             | Self::UnsupportedFormat { .. }
             // A bare repository where one with a working copy was asked for, and the other way
-            // round, is a wrong directory or a wrong call.
+            // round, is a wrong directory or a wrong call. That holds also for a marker that
+            // someone put beside a working copy or into the shared directory of a linked
+            // worktree: the code cannot tell that state from a wrong directory.
             | Self::Bare { .. }
             | Self::NotBare { .. }
             | Self::Io { .. } => FailureKind::Other,

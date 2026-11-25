@@ -530,6 +530,7 @@ impl fmt::Display for CommitError {
             Self::Snapshot(error) => error.fmt(f),
             Self::Tip(error) => write!(f, "could not read the tip of the branch: {error}"),
             Self::Store(error) => write!(f, "could not store the new commits: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not read the references: {error}"),
             Self::Update(error) => error.fmt(f),
             Self::ChangeId(error) => write!(f, "could not make a change ID: {error}"),
