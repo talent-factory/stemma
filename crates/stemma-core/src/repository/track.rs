@@ -79,12 +79,18 @@ impl Repository {
     /// turn comes. [`TrackError::Snapshot`] carries every other failure, as
     /// [`snapshot`](Self::snapshot) reports them: a special file or a name that is not UTF-8
     /// stops the call.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn track(
         &self,
         paths: &[String],
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Tracking, TrackError> {
+        self.require_working_copy("track")
+            .map_err(|error| TrackError::Snapshot(SnapshotError::Refs(error)))?;
         let operation =
             OperationName::try_new(OPERATION).expect("`track` is a valid operation name");
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |root| {

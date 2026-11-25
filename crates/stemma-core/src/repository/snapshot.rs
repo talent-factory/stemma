@@ -80,11 +80,17 @@ impl Repository {
     /// is read, and held to the move (ADR-014): a purge cannot start in between, and a lock that
     /// another command holds is `UpdateError::Refs` with [`RefError::Locked`], as is the journal
     /// of a purge that has not finished with [`RefError::PurgePending`]. Both write nothing.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn snapshot(
         &self,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<Entry>, SnapshotError> {
+        self.require_working_copy("snapshot")
+            .map_err(SnapshotError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`snapshot` is a valid operation name");
         let replaced = self.replace_working_copy(&operation, actor, authorizer, |_| {
@@ -726,11 +732,15 @@ impl SnapshotError {
 
     /// Whether the message names the cause in full, so that an error that carries this one shows
     /// it without a prefix of its own: a refusal of the owner rule or a failed take-over
-    /// (ADR-010) is not a failure to save or to read, which such a prefix would say.
+    /// (ADR-010) is not a failure to save or to read, which such a prefix would say. Nor is the
+    /// refusal of a bare repository (ADR-009), which comes before anything is read.
     pub fn stands_alone(&self) -> bool {
         matches!(
             self,
-            Self::NotOwner { .. } | Self::AgentTakeOver | Self::TakeOver(_)
+            Self::NotOwner { .. }
+                | Self::AgentTakeOver
+                | Self::TakeOver(_)
+                | Self::Refs(RefError::Bare { .. })
         )
     }
 }
@@ -794,6 +804,7 @@ impl fmt::Display for SnapshotError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not record the snapshot: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not read the working-copy commit: {error}"),
             Self::NotOwner {
                 owner,

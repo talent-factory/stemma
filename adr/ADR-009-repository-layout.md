@@ -7,8 +7,8 @@ the bundle of the stores were confirmed by the author on 2026-10-19, the other d
 repositories to Phase 5; the other open items stay open, among them `worktree repair`,
 `--json` for `worktree list`, and the undo of `worktree remove`. The additions of Phase 5 to the
 layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"). Of them, the
-configuration of the remotes and the remote references are implemented (STEMMA-285, format 14);
-the others are not yet.
+configuration of the remotes and the remote references (STEMMA-285, format 14) and the bare
+repository (STEMMA-284, format 15) are implemented; the others are not yet.
 
 ## Context
 
@@ -120,18 +120,20 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` writes version 14, the version of the remotes (the configuration of the
-  remotes and the remote references, STEMMA-285), and `open` reads versions 2 to 14: a repository
-  made before the purge existed (2), before the chain
+  supports: `init` and `init_bare` write version 15, the version of the bare repository
+  (STEMMA-284, see "A bare repository"), and `open` reads the versions 2 to 15.
+  A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
   `lease-override` and the directory `leases/`; ADR-004, ADR-011), before the pull requests (8, the
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
-  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub (11),
-  before the former owner of a worktree (12), or before the remotes (13) rises to 14 with its
-  next entry or purge (ADR-014, ADR-011, ADR-010). Version 14 adds files and changes none: a
-  program that knows only version 13 would not count a remote reference as a root, and its purge
-  could remove what the reference names, so it has to refuse the repository.
+  entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
+  (11), before the former owner of a worktree (12), before the remotes (13), or before the bare
+  repository (14) rises to 15 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  Version 14 adds files and changes none (the configuration of the remotes and the remote
+  references, STEMMA-285): a program that knows only version 13 would not count a remote
+  reference as a root, and its purge could remove what the reference names, so it has to refuse
+  the repository.
   Version 4 is the version of the hash chain of the log (ADR-011). From version 5
   on, the file `working-copy` names the owner on a second line, `owner <actor>`; a purge that
   raises the version records none, and the next entry of a change does (ADR-010). A version
@@ -208,16 +210,99 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     `purge-pending` does for a purge (ADR-023).
   - The namespace policy that the clone last fetched (ADR-027), and the last confirmation of an
     anchor (ADR-026); where they are kept is left to their slices.
-- **A bare repository** *(decided in STEMMA-269 and STEMMA-272; not implemented yet)*. A hub opens
-  a bare `Repository`: the layout above without a working copy. It has no `HEAD`, no index and no
-  operation log (ADR-011); what it contains exactly belongs to the slice that builds it. An
-  operation that needs a working copy refuses with a typed error. The stores stay sealed, so a
-  bare repository is written and read through `stemma-core` (ADR-022). The record of ref updates,
-  the statements and the anchors of a hub lie beside the bare repository, not inside it: the core
-  knows their formats and writes them into a destination that the caller passes, so the layout
-  gets no file that only a hub knows (ADR-025). `tmp/` and `objects/` lie on one file system
-  (ADR-007). The removal of unreachable objects is an operation of the core on a bare repository
-  (ADR-007).
+- **A bare repository** *(decided in STEMMA-269 and STEMMA-272; implemented in STEMMA-284)*. A
+  hub opens a bare `Repository`: the layout above without a working copy.
+  - **Where it lies.** The directory of a bare repository is the metadata directory itself; there
+    is no `.stemma/` inside it and no directory of a working copy around it. `discover` therefore
+    never finds one, and no command of the command line works in one by accident.
+  - **What it contains.** `format`, the marker `bare`, `objects/` (ADR-007), `refs/heads/`, and
+    `tmp/`. `refs/tags/` (made by the first tag, ADR-008) and `refs.lock` with
+    `refs.lock.guard` (while a writer holds the lock, and the guard stays) come with the first
+    writer of a reference, which is the accepting operation of ADR-025; nothing that is built
+    yet makes them. It has no `HEAD`, no `working-copy`
+    (so no index, which is the tree of the working-copy commit, ADR-010), no `oplog/` and
+    `oplog-tip` (ADR-011), no `leases/`, no `worktrees/`, no `purge-pending`, and no `derived/`.
+    `tmp/` and `objects/` lie on one file system (ADR-007).
+  - **The marker.** The file `bare` holds `stemma-bare` and a newline, and nothing else. It says
+    which of the two layouts a metadata directory has, so that a missing `HEAD` is never the
+    sign: `open` and `discover` refuse a `.stemma/` that holds it (`OpenError::Bare`), and
+    `open_bare` refuses a directory with a `format` and without it (`OpenError::NotBare`). A
+    marker that is no regular file or has another content is damage for both
+    (`OpenError::MalformedBareMarker`, exit code 5 by ADR-018), because it must not decide either
+    way. A linked worktree is refused as well if the directory that the worktrees share holds
+    the marker.
+  - **The version.** A bare repository is written in version 15 of the format. A program that
+    knows only version 14 refuses it with the unsupported version and does not report the missing
+    `HEAD` and log as damage. The files of a repository with a working copy do not change; it
+    rises to 15 with its next entry or purge, as for every version. `open_bare` reads what
+    `init_bare` writes: the marker beside a version before 15 is damage
+    (`OpenError::BareFormat`).
+  - **How it is created and opened.** `Repository::init_bare(path, actor, authorizer)` asks the
+    authorizer for `init` with the directory as the target, as `init` does. `path` must not
+    exist, not even as an empty directory; missing directories above it are created. The
+    directory is built under a temporary name next to its place, flushed, and moved into place
+    with one rename, and the directory above is flushed (`NotDurable` if only that fails). The
+    temporary name is `.stemma-bare-<pid>-<n>-<random>` and not the one of `init`: a writer of a
+    repository removes the `.stemma-init-…` directories next to its `.stemma` as stale, and a
+    bare repository may be made in such a directory. As for `init`, an empty directory that
+    appears at `path` between the check and the rename is replaced on Unix. Nothing records the
+    actor: there is no log, and the one who holds the bare repository records who made it (on a
+    hub the record beside it, ADR-025).
+    `Repository::open_bare(path)` checks `format` and the marker and nothing else, checks no
+    owner, and follows links, as `open` does. No command of the command line creates or opens a
+    bare repository; both are calls of the library for a hub (ADR-022).
+  - **What is refused.** An operation that needs what a bare repository lacks is refused with
+    the typed error `RefError::Bare`, which names the directory, the operation, and what is
+    lacking (`BareLacks`): the working copy or the operation log. It arrives inside the error of
+    the operation (`SnapshotError::Refs`, `UpdateError::Refs`, and so on), is classified as an
+    ordinary failure and not as a lock or damage (ADR-018), and comes first: before the
+    authorizer is asked and before anything is read or written.
+    The working copy is lacking for `snapshot`, `track`, `status`, `commit`, `diff`, the plan and
+    the apply of a checkout, `switch`, `op restore`, `merge`, `rebase`, the rewrite of the
+    working copy, `follow_main`, the three worktree operations, and the moves of `HEAD` and of
+    the working-copy commit.
+    The operation log is lacking for every other operation that writes an entry or reads the
+    log: the
+    moves of a branch and a tag (`update_branch`, `create_branch`, `delete_branch`,
+    `rename_branch`, `create_tag`, `delete_tag`), the leases, the pull requests with their
+    approvals, the checks and the bounds of the gate that read them, the merge gate, and the
+    purge. A reference of a bare repository moves through the accepting operation of ADR-025,
+    which writes the record of the hub in place of the log; until that slice no call of the core
+    moves one.
+    The reference store of a bare repository refuses every read and write of `HEAD` and of the
+    working-copy commit itself with the same error, so code that is not behind a check of
+    `Repository` neither takes the missing file for damage nor makes it.
+  - **What works.** The object store, for objects from an upload as well as from a computation;
+    reading the branches and the tags, and the remotes and the remote references, of which a
+    bare repository has none; the verification of the references (`verify_refs`, which
+    checks the branches and the tags, as there is no `HEAD` and no working-copy commit) and of
+    trees and commits; the register of a commit (`Register::at_commit`) and the authorizer built
+    from it; the policy of a base commit (`Repository::policy_of`, the public form of
+    `policy_at`, which takes the mode and not a flag) and the level of a change
+    (`level_of_change`); the escalation when tests are weakened; the tree merge
+    (`merge_commits`, `merge_trees`); and the functions of the gate that judge given evidence
+    (the modules `check`, `bounds`, and `pull`). All of them read the object store, the
+    branches and the tags, or their arguments, take no lock, create no commit by themselves, and
+    move no reference (ADR-025). `verify_refs` refuses while the journal of a purge exists, as
+    in every repository; nothing makes one in a bare repository.
+    The refusal is found by matching the error of the operation that was called: the chain of
+    sources leads to it for some errors only. The message of such an error is the refusal
+    alone, without a prefix that says a read or a write failed, and the field `operation` is
+    wording for the message. `init_bare`
+    reports a final flush that failed with the directory above the repository
+    (`NotDurable`), and an entry of the log that code past the checks tries to write is
+    refused once more (`OpLogError::Io` of the kind `Unsupported`).
+    The mode of a repository (`Mode::of`) is read from the commit of `HEAD` and is refused; a
+    hub reads the register of the tip of `main` (ADR-024). The step to the enforcing
+    mode (`enter_enforcing`) writes the register file into the working copy and is refused too.
+    `Repository::oplog()` is still handed out: reading through it fails with `OpLogError::Io`
+    or `OpLogError::Missing`, as the directory does not exist, so a caller asks `is_bare` first.
+  - **What lies beside it.** The record of ref updates, the statements and the anchors of a hub
+    lie beside the bare repository, not inside it: the core knows their formats and writes them
+    into a destination that the caller passes, so the layout gets no file that only a hub knows
+    (ADR-025). The stores stay sealed, so a bare repository is written and read through
+    `stemma-core` (ADR-022). The removal of unreachable objects is an operation of the core on a
+    bare repository (ADR-007); it is not built yet.
 
 ## Consequences
 
@@ -377,6 +462,28 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
       `renameat2(RENAME_NOREPLACE)` or a platform call with the same effect.
 - [ ] The authorizer cannot give a reason for a denial (ADR-002); `init` reports only that it is
       not allowed. Phase 4, with the policy model (ADR-004).
-- [ ] Bare repositories (no working copy) for a hub (phase 5). Decided in the section above; the
-      exact content and the typed error of an operation that needs a working copy belong to the
-      slice.
+- [x] Bare repositories (no working copy) for a hub (phase 5): `init_bare`, `open_bare`, the
+      marker `bare`, version 15 of the format, and the typed refusal `RefError::Bare`
+      (STEMMA-284), see "A bare repository".
+- [ ] A writer that takes the lock of the references removes every file in `tmp/` that is not a
+      directory (ADR-011), and a caller that stores objects without the lock is not protected.
+      On a hub the upload runs without the lock (ADR-007, ADR-025), so the slice that builds
+      the upload or the accepting operation has to keep the two apart, for example with a
+      directory of its own for the temporary files of an upload.
+- [ ] A process that is killed during `init_bare` leaves its `.stemma-bare-…` directory next to
+      the place of the repository. No writer removes it, as one does for `init`, because the
+      directory above a bare repository belongs to the one who holds it; a hub removes it.
+- [ ] `open_bare` checks `format` and the marker only. A directory with the marker that also
+      holds `HEAD`, `working-copy`, or `oplog/`, put together by hand, opens as bare and the
+      files are ignored; refusing it costs three looks at the directory and a variant.
+- [ ] Whether a bare repository stays the type `Repository` with a check at the start of each
+      operation, or becomes a type of its own: to decide with the accepting operation
+      (ADR-025). Until then a test reads the source and fails for a public operation without
+      the check.
+- [ ] `Repository::oplog()` and `Mode::of` do not give the typed refusal on a bare repository:
+      the first is handed out and fails on reading with an error of the storage, the second
+      carries the refusal as text (`ModeError::Head`). Both change with the slice that gives a
+      hub its record and its mode (ADR-024, ADR-025).
+- [ ] The mode of a bare repository: the marker of the enforcing mode lies in the
+      metadata directory and `Mode::of` reads `HEAD`. How a hub states the mode, from the
+      register at the tip of `main`, belongs to ADR-024 and its slice.

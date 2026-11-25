@@ -2,7 +2,8 @@
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-269) and, for the
 properties that must stay, on 2026-11-24 (STEMMA-277), and carried into the ADRs by STEMMA-280.
-Nothing of it is implemented yet; the slices are children of STEMMA-15.
+The bare repository is implemented (STEMMA-284, ADR-009); the other slices are children of
+STEMMA-15.
 
 ## Context
 
@@ -68,9 +69,12 @@ dependency.
   and applies the result; it composes no checks itself. The operation is described in ADR-025.
 - Callable without a working copy, `HEAD` and index: the authorizer against the register of a
   commit (on a hub the register at the tip of `main`, ADR-024 and ADR-025); the policy of the base
-  commit and the level of a change (`policy_at` becomes reachable); the escalation when tests are
-  weakened; write ownership and lease; the rule table and the bounds of the gate with the count of
-  approvals; the verification of received objects, references and signatures.
+  commit and the level of a change (`Repository::policy_of`, the public form of `policy_at`,
+  which takes the mode); the escalation when tests are weakened; the rule table and the bounds of
+  the gate with the count of approvals, as functions that judge given evidence; the verification
+  of received objects, references and signatures. Write ownership and the lease are judged by the
+  accepting operation from the record of the hub (ADR-025); the lease operations of a clone
+  write the operation log and are refused on a bare repository (ADR-009).
 - Not needed on the hub: `snapshot`, `track`, `status`, `checkout`, `switch`, `restore`,
   `worktree`, `rebase`, `follow_main`.
 - `ObjectStore` and `RefStore` stay sealed. The store of the hub is therefore a Stemma layout per
@@ -124,7 +128,7 @@ without internet. No phase schedules it.
 
 ## Open items
 
-- [ ] The design of the bare repository: what it contains exactly (no `HEAD`, no index, no
-      operation log by ADR-011) belongs to the slice that builds it (ADR-009).
+- [x] The design of the bare repository: what it contains exactly, how it is created and opened,
+      and the typed refusal are in ADR-009, "A bare repository" (STEMMA-284).
 - [ ] How much of the hub is passed on to third parties. The answer "a hub of one's own" to
       working without the central hub (ADR-003) depends on it; it is not decided.

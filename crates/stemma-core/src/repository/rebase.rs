@@ -144,12 +144,18 @@ impl Repository {
     /// [`RebaseError::AfterSnapshot`]. Then [`RebaseError::CheckoutFailed`],
     /// [`RebaseError::MoveFailed`], [`RebaseError::PartlyMoved`], and
     /// [`RebaseError::NotDurable`] say how far the rebase came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn rebase(
         &self,
         target: &Revision,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Rebased, RebaseError> {
+        self.require_working_copy("rebase")
+            .map_err(RebaseError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`rebase` is a valid operation name");
         self.refs_store()
@@ -748,6 +754,7 @@ impl fmt::Display for RebaseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not rebase: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not rebase, nothing of it was written: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
             Self::Store(error) => write!(f, "could not look up a commit: {error}"),

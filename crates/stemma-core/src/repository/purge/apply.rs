@@ -442,12 +442,18 @@ impl Repository {
     /// the snapshot fails (with [`RefError::Locked`] while another command holds the lock; nothing
     /// is written then), [`ApplyPurgeError::Start`] if the purge cannot start under the lock, and
     /// [`ApplyPurgeError::Stopped`] if a step after the journal fails; then the journal stays.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn apply_purge(
         &self,
         blob: ObjectId,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Purged, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         self.apply_purge_with(blob, actor, authorizer, TagPolicy::Refuse)
     }
 
@@ -460,6 +466,10 @@ impl Repository {
     ///
     /// The errors of [`apply_purge`](Self::apply_purge); [`PurgeError::TaggedCommit`] (inside
     /// [`ApplyPurgeError::Plan`]) only with [`TagPolicy::Refuse`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn apply_purge_with(
         &self,
         blob: ObjectId,
@@ -467,6 +477,8 @@ impl Repository {
         authorizer: &dyn Authorizer,
         tags: TagPolicy,
     ) -> Result<Purged, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         self.apply_purge_policy_until(blob, actor, authorizer, tags, None)
             .map(|purged| purged.expect("only a test stops a purge"))
     }
@@ -487,11 +499,17 @@ impl Repository {
     /// the actor is an agent or the authorizer refuses, [`ApplyPurgeError::NotPending`] if there is
     /// no journal, and [`ApplyPurgeError::Stopped`] if a step fails again, among them a pointer
     /// that is at neither of its values ([`RefError::PurgeStale`]).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn resume_purge(
         &self,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Purged, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         self.resume_purge_until(actor, authorizer, None)
             .map(|purged| purged.expect("only a test stops a purge"))
     }
@@ -505,11 +523,17 @@ impl Repository {
     ///
     /// Returns the errors of [`resume_purge`](Self::resume_purge) before a step, and
     /// [`ApplyPurgeError::PastNoReturn`] if the `purge` entry is written.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn abort_purge(
         &self,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Aborted, ApplyPurgeError> {
+        self.require_oplog("purge")
+            .map_err(|error| ApplyPurgeError::Snapshot(SnapshotError::Refs(error)))?;
         let (journal, lock) = self.take_over(actor, authorizer)?;
         let written = self.written_purge(&journal).map_err(stopped(
             PurgeStep::Abort,
@@ -1225,7 +1249,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 14\n");
+        assert_eq!(format(dir), "stemma-repository 15\n");
     }
 
     #[test]
@@ -1724,7 +1748,7 @@ mod tests {
             repository.verify_refs().unwrap().is_empty(),
             "verify is clean"
         );
-        assert_eq!(format(&dir), "stemma-repository 14\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
     }
 
     #[test]
@@ -2268,7 +2292,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 14\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -2390,7 +2414,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 14\n",
+            "stemma-repository 15\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -3019,7 +3043,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 14\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);

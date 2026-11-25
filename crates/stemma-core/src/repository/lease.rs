@@ -49,7 +49,12 @@ impl Repository {
     ///
     /// Returns [`LeaseError::Corrupt`] for a file that is not a lease of this branch and
     /// [`LeaseError::Io`] if it cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn lease(&self, branch: &BranchName) -> Result<Option<Lease>, LeaseError> {
+        self.require_oplog("read a lease")?;
         read_lease(&self.leases_dir(), branch)
     }
 
@@ -70,6 +75,10 @@ impl Repository {
     /// the log, and the file is the old one or, if only the flush of the directory failed, the new
     /// one. After [`OpLogError::NotFlushed`] the entry may be in the log and no file is written.
     /// In every case the next claim reads the file and decides again.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn claim_lease(
         &self,
         branch: &BranchName,
@@ -77,6 +86,7 @@ impl Repository {
         minutes: u32,
         authorizer: &dyn Authorizer,
     ) -> Result<Claimed, LeaseError> {
+        self.require_oplog("claim a lease")?;
         let lock = self.lock_for_lease(branch, actor, CLAIM, authorizer)?;
         self.claim_lease_locked(&lock, branch, actor, minutes, now())
     }
@@ -127,12 +137,17 @@ impl Repository {
     /// errors of [`claim_lease`](Self::claim_lease). After [`LeaseError::Io`] the entry
     /// `lease-release` is in the log, and the file may still stand (or come back after a crash)
     /// until its expiry; a second release writes a second entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn release_lease(
         &self,
         branch: &BranchName,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, LeaseError> {
+        self.require_oplog("release a lease")?;
         let lock = self.lock_for_lease(branch, actor, LEASE_RELEASE, authorizer)?;
         let current = read_lease(&self.leases_dir(), branch)?
             .filter(|current| !current.is_expired(now()))
@@ -173,6 +188,10 @@ impl Repository {
     /// over, no override is needed), [`LeaseError::Entry`] for a reason that is empty, longer than
     /// 1 KiB, or on several lines, or if the owner holds the lease already, and the errors of
     /// [`claim_lease`](Self::claim_lease).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn override_lease(
         &self,
         branch: &BranchName,
@@ -182,6 +201,7 @@ impl Repository {
         reason: &str,
         authorizer: &dyn Authorizer,
     ) -> Result<Claimed, LeaseError> {
+        self.require_oplog("override a lease")?;
         if Identity::of(owner).kind() != IdentityKind::Human || !register.is_owner(owner) {
             return Err(LeaseError::NotOwner {
                 actor: Box::new(owner.clone()),
@@ -1093,7 +1113,7 @@ mod tests {
         let format = repository.metadata_dir().join("format");
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 14\n"
+            "stemma-repository 15\n"
         );
         // A repository of version 7 moves to the current version with its next entry, a lease
         // entry among them.
@@ -1103,14 +1123,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 14\n"
+            "stemma-repository 15\n"
         );
-        // A program that reads up to version 14 refuses version 15: the number is not one of
+        // A program that reads up to version 15 refuses version 16: the number is not one of
         // its own.
-        fs::write(&format, "stemma-repository 15\n").unwrap();
+        fs::write(&format, "stemma-repository 16\n").unwrap();
         let error = Repository::open(dir.path()).map(|_| ()).unwrap_err();
         assert!(
-            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "15"),
+            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "16"),
             "{error:?}"
         );
     }

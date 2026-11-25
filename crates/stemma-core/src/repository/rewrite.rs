@@ -131,12 +131,18 @@ impl Repository {
     /// [`RewriteError::AfterSnapshot`]. Then [`RewriteError::CheckoutFailed`],
     /// [`RewriteError::MoveFailed`], and [`RewriteError::NotDurable`] say how far the rewrite
     /// came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn rewrite_working_copy(
         &self,
         onto: CommitId,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Rewritten, RewriteError> {
+        self.require_working_copy("rewrite the working copy")
+            .map_err(RewriteError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`rewrite` is a valid operation name");
         self.refs_store()
@@ -656,6 +662,7 @@ impl fmt::Display for RewriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not rewrite the working-copy commit: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(
                 f,
                 "could not rewrite the working-copy commit, nothing of it was written: {error}"

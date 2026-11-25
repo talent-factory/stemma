@@ -36,7 +36,12 @@ impl Repository {
     /// # Errors
     ///
     /// Returns [`PullError::Log`] if the log cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn pull_requests(&self) -> Result<Vec<PullRequest>, PullError> {
+        self.require_oplog("read the pull requests")?;
         let entries = self.oplog().entries().map_err(PullError::Log)?;
         Ok(pull::pull_requests(&entries))
     }
@@ -62,6 +67,10 @@ impl Repository {
     /// [`PullError::UnknownReviewer`], [`PullError::NoSuchCommit`] for a broken rule (nothing is
     /// written), and [`PullError::Refs`], [`PullError::Log`], and [`PullError::Entry`] for a
     /// failure of the lock, the log, or the entry.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn open_pull(
         &self,
         branch: &BranchName,
@@ -71,6 +80,7 @@ impl Repository {
         register: Option<&Register>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("open a pull request")?;
         let lock = self.lock_for_pull(PR_OPEN, branch.as_str(), actor, authorizer)?;
         if branch.as_str() == TARGET {
             return Err(PullError::TargetBranch);
@@ -125,6 +135,10 @@ impl Repository {
     /// log has, [`PullError::NotOpen`] for a pull request that is closed or merged already,
     /// [`PullError::NotAllowedToClose`] for an actor who may not, and the errors of the log and the
     /// lock (see [`open_pull`](Self::open_pull)).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn close_pull(
         &self,
         number: u64,
@@ -132,6 +146,7 @@ impl Repository {
         register: Option<&Register>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("close a pull request")?;
         let lock = self.lock_for_pull(PR_CLOSE, &format!("pull {number}"), actor, authorizer)?;
         let pulls = self.pull_requests()?;
         let pull = open_pull_of(&pulls, number)?;
@@ -152,6 +167,10 @@ impl Repository {
     /// Returns [`PullError::Denied`], [`PullError::NoSuchPull`], [`PullError::NotOpen`],
     /// [`PullError::NoSuchCommit`] if the store lacks `commit`, and the errors of the log and the
     /// lock (see [`open_pull`](Self::open_pull)).
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn record_pull_merge(
         &self,
         number: u64,
@@ -159,6 +178,7 @@ impl Repository {
         commit: CommitId,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("record the merge of a pull request")?;
         let lock = self.lock_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
         self.record_pull_merge_locked(&lock, number, actor, commit)
     }
@@ -212,6 +232,10 @@ impl Repository {
     /// retired key, [`PullError::ProofNotWritten`] if the
     /// entry is in the log and its proof is not, and the errors of the log and the lock (see
     /// [`open_pull`](Self::open_pull)). Nothing is written for any error but the last two.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn approve_pull(
         &self,
         number: u64,
@@ -220,6 +244,7 @@ impl Repository {
         signer: Option<&dyn Signer>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
+        self.require_oplog("approve a pull request")?;
         let signed = match register {
             None => None,
             Some(_) => {
@@ -286,11 +311,16 @@ impl Repository {
     /// the errors of reading
     /// the log, the references, and the history. A damaged proof file is no error: the approval
     /// does not count, and the reason says why.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn recount_approvals(
         &self,
         number: u64,
         register: Option<&Register>,
     ) -> Result<Recount, PullError> {
+        self.require_oplog("read the pull requests")?;
         let entries = self.oplog().entries().map_err(PullError::Log)?;
         let pulls = pull::pull_requests(&entries);
         let pull = pulls
@@ -768,7 +798,7 @@ mod tests {
         let pull = entry.pull().unwrap();
         assert_eq!(pull.kind(), PullKind::Open);
         assert_eq!(pull.commit(), Some(&start));
-        assert_eq!(format(&dir), "stemma-repository 14\n");
+        assert_eq!(format(&dir), "stemma-repository 15\n");
         let pulls = repository.pull_requests().unwrap();
         assert_eq!(pulls.len(), 1);
         assert_eq!(pulls[0].number(), entry.number());

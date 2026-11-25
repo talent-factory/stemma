@@ -98,12 +98,18 @@ impl Repository {
     /// commit at the tip of the branch, [`CommitError::Store`] storing the new commits,
     /// [`CommitError::ChangeId`] the random source, and [`CommitError::Log`] reading the log to
     /// tell a stopped commit from a restored working copy.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn commit(
         &self,
         message: &str,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Committed, CommitError> {
+        self.require_working_copy("commit")
+            .map_err(CommitError::Refs)?;
         if message.trim().is_empty() {
             return Err(CommitError::EmptyMessage);
         }
@@ -524,6 +530,7 @@ impl fmt::Display for CommitError {
             Self::Snapshot(error) => error.fmt(f),
             Self::Tip(error) => write!(f, "could not read the tip of the branch: {error}"),
             Self::Store(error) => write!(f, "could not store the new commits: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not read the references: {error}"),
             Self::Update(error) => error.fmt(f),
             Self::ChangeId(error) => write!(f, "could not make a change ID: {error}"),

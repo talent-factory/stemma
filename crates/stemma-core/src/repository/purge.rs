@@ -186,12 +186,17 @@ impl Repository {
     /// points to a commit that the purge would rewrite, because a tag never moves (ADR-008), and
     /// [`PurgeError::RemoteReference`] if a remote reference does, because only a fetch or a push
     /// moves one.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_purge(
         &self,
         blob: ObjectId,
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<PurgePlan, PurgeError> {
+        self.require_oplog("purge").map_err(PurgeError::Refs)?;
         self.plan_purge_with(blob, actor, authorizer, TagPolicy::Refuse)
     }
 
@@ -203,6 +208,10 @@ impl Repository {
     ///
     /// The errors of [`plan_purge`](Self::plan_purge); [`PurgeError::TaggedCommit`] only with
     /// [`TagPolicy::Refuse`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_purge_with(
         &self,
         blob: ObjectId,
@@ -210,6 +219,7 @@ impl Repository {
         authorizer: &dyn Authorizer,
         tags: TagPolicy,
     ) -> Result<PurgePlan, PurgeError> {
+        self.require_oplog("purge").map_err(PurgeError::Refs)?;
         let (blob, _) = self.check_purge(blob, actor, authorizer)?;
         self.plan_blob(blob, tags).map(|(plan, _)| plan)
     }
@@ -1060,6 +1070,7 @@ impl PurgeError {
                 f,
                 "the blob {id} cannot be read, so it is not known that it is one: {source}"
             ),
+            Self::Refs(error @ RefError::Bare { .. }) => write!(f, "{error}"),
             Self::Refs(error) => write!(f, "the references cannot be read: {error}"),
             Self::Log(error) => write!(f, "the operation log cannot be read: {error}"),
             Self::Read(error) => write!(f, "the history cannot be read: {error}"),
@@ -1143,7 +1154,8 @@ impl PurgeError {
 impl fmt::Display for PurgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Agent => self.reason(f),
+            // A refusal is no failure to plan: nothing was looked at.
+            Self::Agent | Self::Refs(RefError::Bare { .. }) => self.reason(f),
             _ => {
                 write!(f, "could not plan the purge, nothing was written: ")?;
                 self.reason(f)

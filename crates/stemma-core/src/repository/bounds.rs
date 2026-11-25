@@ -304,7 +304,12 @@ impl Repository {
     /// # Errors
     ///
     /// [`CheckError::Log`], [`CheckError::Io`], [`CheckError::History`], or [`CheckError::Refs`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn red_window(&self, register: Option<&Register>) -> Result<Vec<CommitId>, CheckError> {
+        self.require_oplog("read the checks")?;
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let Some(tip) = self.refs().branch(&main)? else {
             return Ok(Vec::new());

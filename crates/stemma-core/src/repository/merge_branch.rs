@@ -133,8 +133,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Before anything of the merge is written (the message is checked first, even for a
-    /// fast-forward or "up to date"): [`MergeBranchError::EmptyMessage`],
+    /// Before anything of the merge is written (the message is checked first of these, even for
+    /// a fast-forward or "up to date"): [`MergeBranchError::EmptyMessage`],
     /// [`MergeBranchError::DetachedHead`], [`MergeBranchError::NoSuchBranch`],
     /// [`MergeBranchError::NoCommit`], [`MergeBranchError::Update`] for a refusal of the question
     /// `merge`, [`MergeBranchError::Refs`] for a lock that another command holds or a purge that
@@ -148,6 +148,10 @@ impl Repository {
     /// [`MergeBranchError::PartlyMoved`], [`MergeBranchError::NotDurable`], and a
     /// [`MergeBranchError::Rewrite`] that holds a failure of the files say how far the merge
     /// came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn merge(
         &self,
         other: &BranchName,
@@ -155,6 +159,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Merged, MergeBranchError> {
+        self.require_working_copy("merge")
+            .map_err(MergeBranchError::Refs)?;
         if message.is_some_and(|text| text.trim().is_empty()) {
             return Err(MergeBranchError::EmptyMessage);
         }
@@ -673,6 +679,7 @@ impl fmt::Display for MergeBranchError {
                 "the branch `{name}` has no commit yet, so there is nothing to merge into"
             ),
             Self::Update(error) => write!(f, "could not merge: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not merge, nothing of it was written: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
             Self::Store(error) => write!(f, "could not store a commit: {error}"),

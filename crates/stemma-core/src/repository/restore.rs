@@ -139,6 +139,10 @@ impl Repository {
     /// # Errors
     ///
     /// Returns what [`restore`](Self::restore) returns before it takes the snapshot.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_restore(
         &self,
         number: u64,
@@ -146,6 +150,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Option<RestorePlan>, RestoreError> {
+        self.require_working_copy("restore")
+            .map_err(RestoreError::Refs)?;
         Ok(self.prepare(number, force, actor, authorizer)?.plan)
     }
 
@@ -200,6 +206,10 @@ impl Repository {
     /// entry of the restore, or `None` if there was nothing to restore, and the restore is *not*
     /// to be repeated), and in the `late` field of [`RestoreError::AfterSnapshot`] when a later
     /// step failed. [`RestoreError::pointer_moved`] is true in both.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn restore(
         &self,
         number: u64,
@@ -207,6 +217,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Restored, RestoreError> {
+        self.require_working_copy("restore")
+            .map_err(RestoreError::Refs)?;
         // A purge that has not finished is named first, before the entry is judged; the lock
         // below refuses it again.
         self.refs_store()
@@ -831,6 +843,7 @@ impl fmt::Display for RestoreError {
                 "entry {number} created {}, which cannot be absent, so it cannot be restored",
                 pointer
             ),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not restore, nothing of it was written: {error}"),
             Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(

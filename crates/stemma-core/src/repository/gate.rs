@@ -407,6 +407,10 @@ impl Repository {
     /// written but objects. [`GateError::MoveFailed`] and [`GateError::PullNotRecorded`] leave
     /// the entry of the move, as above. The other variants wrap a failure of the store, the
     /// references, or the log.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn merge_gate(
         &self,
         number: u64,
@@ -415,6 +419,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<GateMerge, GateError> {
+        self.require_oplog("merge through the gate")
+            .map_err(GateError::Refs)?;
         self.merge_gate_with(number, Some(level), register, actor, authorizer)
     }
 
@@ -440,6 +446,10 @@ impl Repository {
     ///
     /// The errors of [`merge_gate`](Self::merge_gate), [`GateError::Policy`], and
     /// [`GateError::Level`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn merge_gate_by_policy(
         &self,
         number: u64,
@@ -447,6 +457,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<GateMerge, GateError> {
+        self.require_oplog("merge through the gate")
+            .map_err(GateError::Refs)?;
         let register = match mode {
             Mode::Open => None,
             Mode::Enforcing(register) => Some(register),

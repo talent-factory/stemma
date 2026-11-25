@@ -260,6 +260,7 @@ impl fmt::Display for DiffError {
         match self {
             Self::Snapshot(error) if error.stands_alone() => error.fmt(f),
             Self::Snapshot(error) => write!(f, "the working copy could not be saved: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "the references could not be read: {error}"),
             Self::Store(error) => write!(f, "an object could not be read from the store: {error}"),
             Self::Missing { id } => write!(f, "object {id} is missing from the store"),
@@ -330,12 +331,17 @@ impl Repository {
     /// working-copy reference cannot be read, [`DiffError::UnknownCommit`] for an operand that
     /// names no commit, and [`DiffError::Store`], [`DiffError::Missing`] or
     /// [`DiffError::Damaged`] if a commit, a tree, or a blob that the diff needs cannot be read.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn diff(
         &self,
         actor: &Actor,
         authorizer: &dyn Authorizer,
         comparison: Comparison<'_>,
     ) -> Result<Diff, DiffError> {
+        self.require_working_copy("diff").map_err(DiffError::Refs)?;
         self.diff_paths(actor, authorizer, comparison, &[])
     }
 
@@ -352,6 +358,10 @@ impl Repository {
     /// empty, absolute, or has a part `..`, before the working copy is saved; and
     /// [`DiffError::NoSuchPath`] for a path that selects no file of either side, even if no file
     /// differs below it.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn diff_paths(
         &self,
         actor: &Actor,
@@ -359,6 +369,7 @@ impl Repository {
         comparison: Comparison<'_>,
         paths: &[String],
     ) -> Result<Diff, DiffError> {
+        self.require_working_copy("diff").map_err(DiffError::Refs)?;
         if let Some(path) = paths.iter().find(|path| !is_repository_path(path)) {
             return Err(DiffError::InvalidPath { path: path.clone() });
         }

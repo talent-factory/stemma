@@ -566,6 +566,21 @@ pub enum RefError {
         /// The commit the working copy has.
         found: CommitId,
     },
+    /// The repository is bare, and the operation needs what a bare repository does not have: a
+    /// working copy with its `HEAD`, or the operation log (ADR-009). The operation is refused
+    /// before it reads or writes anything.
+    /// [`Repository::is_bare`](crate::repository::Repository::is_bare) lists what is refused and
+    /// what works.
+    Bare {
+        /// The directory of the bare repository.
+        path: PathBuf,
+        /// The operation that was refused, for example `snapshot`, as words for the message. It
+        /// is no identifier: several calls share one text, and the text may change, so a caller
+        /// does not match on it.
+        operation: &'static str,
+        /// What the operation needs.
+        lacks: BareLacks,
+    },
     /// A purge has not finished: its journal exists (ADR-014). No other change may write until
     /// `stemma purge --resume` has finished it or `stemma purge --abort` has undone it.
     PurgePending {
@@ -578,6 +593,29 @@ pub enum RefError {
         /// The pointer: `HEAD`, `working-copy`, or the name of a branch.
         pointer: String,
     },
+}
+
+/// What a bare repository does not have and an operation needs (ADR-009). See
+/// [`RefError::Bare`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BareLacks {
+    /// The working copy: the files, `HEAD`, and the working-copy commit (ADR-010).
+    WorkingCopy,
+    /// The operation log (ADR-011), and with it what is recorded through its entries: the moves
+    /// of the branches and the tags, the leases with their directory `leases/`, the pull
+    /// requests, and the checks. On a hub the record of ref updates takes its place, and it lies
+    /// beside the bare repository (ADR-025).
+    OperationLog,
+}
+
+impl fmt::Display for BareLacks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::WorkingCopy => "working copy",
+            Self::OperationLog => "operation log",
+        })
+    }
 }
 
 /// What is known about the holder of a lock that is in the way (ADR-008).
@@ -840,6 +878,15 @@ impl fmt::Display for RefError {
                 "the working-copy commit has moved: it was expected to be at {expected}, but it \
                  is at {found}"
             ),
+            Self::Bare {
+                path,
+                operation,
+                lacks,
+            } => write!(
+                f,
+                "`{}` is a bare repository and has no {lacks}, which `{operation}` needs",
+                path.display()
+            ),
             Self::PurgePending { path } => write!(
                 f,
                 "a purge has not finished (its journal is `{}`); run `stemma purge --resume` to \
@@ -898,6 +945,7 @@ impl Error for RefError {
             | Self::NoHead { .. }
             | Self::NoWorkingCopy { .. }
             | Self::StaleWorkingCopy { .. }
+            | Self::Bare { .. }
             | Self::PurgePending { .. }
             | Self::PurgeStale { .. } => None,
         }
@@ -1170,6 +1218,9 @@ pub struct FsRefStore {
     /// The directory of the files `HEAD` and `working-copy`: `root` itself, or the state directory
     /// of a worktree below `root/worktrees/` (ADR-009).
     local: PathBuf,
+    /// Whether the repository is bare (ADR-009): it has no `HEAD` and no working-copy commit, and
+    /// every read or write of one of them is refused with [`RefError::Bare`].
+    bare: bool,
 }
 
 /// The lock file while it exists. The file holds a token that only this lock knows (`token` is the
@@ -1469,7 +1520,33 @@ impl FsRefStore {
         Self {
             local: root.clone(),
             root,
+            bare: false,
         }
+    }
+
+    /// Creates a store for a bare repository, whose directory `root` is the metadata directory
+    /// itself (ADR-009). It keeps the branches, the tags, and the lock as [`new`](Self::new) does.
+    /// It has no `HEAD` and no working-copy commit: reading or writing one of them is
+    /// [`RefError::Bare`], and [`verify`](Self::verify) checks the branches and the tags only.
+    pub(crate) fn bare(root: impl Into<PathBuf>) -> Self {
+        Self {
+            bare: true,
+            ..Self::new(root)
+        }
+    }
+
+    /// Fails with [`RefError::Bare`] if the repository is bare: `operation` needs `HEAD` or the
+    /// working-copy commit. Every read and every write of the two files asks here first, so no
+    /// operation takes a missing file of a bare repository for damage or makes the file.
+    fn require_working_copy(&self, operation: &'static str) -> Result<(), RefError> {
+        if self.bare {
+            return Err(RefError::Bare {
+                path: self.root.clone(),
+                operation,
+                lacks: BareLacks::WorkingCopy,
+            });
+        }
+        Ok(())
     }
 
     /// Creates a store for a linked worktree: the branches, the tags, and the lock are below `root`,
@@ -1478,6 +1555,7 @@ impl FsRefStore {
         Self {
             root: root.into(),
             local: local.into(),
+            bare: false,
         }
     }
 
@@ -2763,6 +2841,7 @@ impl FsRefStore {
     ///
     /// See [`working_copy`](Self::working_copy).
     pub(crate) fn working_copy_and_owner(&self) -> Result<(CommitId, Option<Actor>), RefError> {
+        self.require_working_copy("read the working-copy commit")?;
         self.require_root()?;
         let path = self.working_copy_path();
         let bytes = self
@@ -2844,7 +2923,9 @@ impl FsRefStore {
 
     /// Checks that every reference names a commit that `objects` has: a detached HEAD, the
     /// working-copy commit, every branch, every tag, and every remote reference (its commit; the
-    /// record entry names nothing in the store). A write checks the commit already
+    /// record entry names nothing in the store). The store of a bare repository (ADR-009) has no
+    /// HEAD and no working-copy commit, so it checks the rest, and a missing HEAD is no error
+    /// there. A write checks the commit already
     /// (ADR-008), so a
     /// problem here comes from outside the module: an object that was removed or damaged, or a
     /// reference file that was edited by hand. HEAD that names a branch is not checked itself; the
@@ -2880,10 +2961,14 @@ impl FsRefStore {
         self.require_root()?;
         self.refuse_pending_purge()?;
         let mut pointers = Vec::new();
-        if let Head::Detached(commit) = self.head()? {
-            pointers.push((Pointer::Head, commit));
+        // A bare repository has neither of the two (ADR-009): its references are the branches
+        // and the tags.
+        if !self.bare {
+            if let Head::Detached(commit) = self.head()? {
+                pointers.push((Pointer::Head, commit));
+            }
+            pointers.push((Pointer::WorkingCopy, self.working_copy()?));
         }
-        pointers.push((Pointer::WorkingCopy, self.working_copy()?));
         for (name, commit) in self.branches()? {
             pointers.push((Pointer::Branch(name), commit));
         }
@@ -3349,7 +3434,11 @@ impl FsRefStore {
     /// `worktrees/`. The state directory is not checked here; reading a pointer of it does.
     fn store_of(&self, name: &str) -> FsRefStore {
         if name == MAIN_WORKTREE {
-            Self::new(self.root.clone())
+            // The store of a bare repository stays one: it has no `HEAD` to read here either.
+            Self {
+                bare: self.bare,
+                ..Self::new(self.root.clone())
+            }
         } else {
             Self::for_worktree(self.root.clone(), self.root.join(WORKTREES_DIR).join(name))
         }
@@ -3858,6 +3947,7 @@ fn visible_entries(dir: &Path) -> Result<Vec<(PathBuf, String)>, RefError> {
 
 impl RefStore for FsRefStore {
     fn head(&self) -> Result<Head, RefError> {
+        self.require_working_copy("read HEAD")?;
         self.require_root()?;
         let path = self.head_path();
         let bytes = self
@@ -3872,6 +3962,7 @@ impl RefStore for FsRefStore {
         objects: &dyn ObjectStore,
         allowed: &Allowed,
     ) -> Result<(), RefError> {
+        self.require_working_copy("set HEAD")?;
         self.require_root()?;
         let _lock = self.lock_writer(allowed)?;
         // Under the lock, as in `set_head_after`: a purge that ran before it may have removed the
@@ -3890,6 +3981,7 @@ impl RefStore for FsRefStore {
         objects: &dyn ObjectStore,
         allowed: &Allowed,
     ) -> Result<(), RefError> {
+        self.require_working_copy("set HEAD")?;
         self.require_root()?;
         let _lock = self.lock_writer(allowed)?;
         match head {

@@ -243,6 +243,10 @@ impl Repository {
     /// wrapped in [`SwitchError::AfterSnapshot`] when the snapshot wrote an entry. Then
     /// [`SwitchError::CheckoutFailed`], [`SwitchError::MoveFailed`],
     /// [`SwitchError::PartlyMoved`], and [`SwitchError::NotDurable`] say how far the switch came.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn switch(
         &self,
         target: &SwitchTarget,
@@ -250,6 +254,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Switched, SwitchError> {
+        self.require_working_copy("switch")
+            .map_err(SwitchError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
         if let SwitchTarget::Create { name, .. } = target {
@@ -418,6 +424,10 @@ impl Repository {
     ///
     /// Returns what [`switch`](Self::switch) returns before the snapshot, among them
     /// [`SwitchError::Stopped`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn plan_switch(
         &self,
         target: &SwitchTarget,
@@ -425,6 +435,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<Planned, SwitchError> {
+        self.require_working_copy("switch")
+            .map_err(SwitchError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`switch` is a valid operation name");
         if let SwitchTarget::Create { name, .. } = target {
@@ -1067,6 +1079,7 @@ impl fmt::Display for SwitchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not switch: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => write!(f, "could not switch, nothing of it was written: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
             Self::Store(error) => write!(f, "could not look up a commit: {error}"),

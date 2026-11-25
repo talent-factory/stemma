@@ -165,6 +165,10 @@ impl Repository {
     /// [`WorktreeError::RemoveFailed`],
     /// [`WorktreeError::RemoveMoveFailed`], [`WorktreeError::RemovePartlyMoved`], and
     /// [`WorktreeError::RemoveNotDurable`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn remove_worktree(
         &self,
         worktree: &str,
@@ -173,6 +177,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<RemovedWorktree, WorktreeError> {
+        self.require_working_copy("remove a worktree")
+            .map_err(WorktreeError::Refs)?;
         let operation = OperationName::try_new(REMOVE_OPERATION)
             .expect("`worktree-remove` is a valid operation name");
         self.refs_store()
@@ -494,6 +500,10 @@ impl Repository {
     /// [`WorktreeError::NotCleaned`] names one that cannot be. After the entry:
     /// [`WorktreeError::CheckoutFailed`], [`WorktreeError::MoveFailed`],
     /// [`WorktreeError::PartlyMoved`], and [`WorktreeError::NotDurable`].
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn add_worktree(
         &self,
         path: &Path,
@@ -502,6 +512,8 @@ impl Repository {
         actor: &Actor,
         authorizer: &dyn Authorizer,
     ) -> Result<AddedWorktree, WorktreeError> {
+        self.require_working_copy("add a worktree")
+            .map_err(WorktreeError::Refs)?;
         let operation =
             OperationName::try_new(OPERATION).expect("`worktree-add` is a valid operation name");
         if let WorktreeBranch::Create(name) = branch {
@@ -793,7 +805,13 @@ impl Repository {
     /// when one worktree is damaged, and [`WorktreeError::SeveralDamaged`], which names all of them,
     /// when more than one is. [`WorktreeError::Io`] also stands for a directory of the worktrees
     /// that cannot be listed.
+    ///
+    /// On a bare repository the call is refused before anything else, with the error
+    /// [`Bare`](crate::refs::RefError::Bare) of the references; see
+    /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>, WorktreeError> {
+        self.require_working_copy("list the worktrees")
+            .map_err(WorktreeError::Refs)?;
         let (rows, damaged) = self.scan_worktrees()?;
         if damaged.len() > 1 {
             return Err(WorktreeError::SeveralDamaged {
@@ -1184,6 +1202,13 @@ pub(super) fn open_linked(path: &Path, owned: bool) -> Result<Repository, OpenEr
         });
     }
     super::check_format(shared, owned)?;
+    // A bare repository has no worktrees (ADR-009); a marker in the shared directory says that
+    // the state was made by hand.
+    if super::has_bare_marker(shared)? {
+        return Err(OpenError::Bare {
+            path: shared.to_path_buf(),
+        });
+    }
     Ok(Repository::linked(path, shared, &name))
 }
 
@@ -1497,6 +1522,7 @@ impl fmt::Display for WorktreeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Update(error) => write!(f, "could not add the worktree: {error}"),
+            Self::Refs(error @ RefError::Bare { .. }) => error.fmt(f),
             Self::Refs(error) => {
                 write!(f, "the references refuse the worktree: {error}")
             }
