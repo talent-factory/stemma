@@ -1102,6 +1102,13 @@ pub enum ParseError {
         /// The rule.
         reason: record::RecordProblem,
     },
+    /// A rule of a signed statement is broken ([`statement`]).
+    Statement {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: statement::StatementProblem,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -1128,6 +1135,7 @@ impl fmt::Display for ParseError {
                 write!(f, "line {line}: invalid hash of a record entry: {source}")
             }
             Self::Record { line, reason } => write!(f, "line {line}: {reason}"),
+            Self::Statement { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
 }
@@ -1146,7 +1154,8 @@ impl Error for ParseError {
             Self::NotUtf8 { .. }
             | Self::UnsupportedVersion { .. }
             | Self::Malformed { .. }
-            | Self::Record { .. } => None,
+            | Self::Record { .. }
+            | Self::Statement { .. } => None,
         }
     }
 }
@@ -1649,6 +1658,8 @@ pub mod examples {
         RefUpdate,
         /// A receipt, which is one record entry ([`RecordEntry`](super::record::RecordEntry)).
         Receipt,
+        /// A signed statement ([`Statement`](super::statement::Statement)), of any kind.
+        Statement,
     }
 
     /// One example message.
@@ -1684,10 +1695,19 @@ pub mod examples {
         example!("error-malformed", Error),
         example!("ref-update", RefUpdate),
         example!("receipt", Receipt),
+        example!("statement-pr-opening", Statement),
+        example!("statement-pr-approval", Statement),
+        example!("statement-check-result", Statement),
+        example!("statement-pr-closing", Statement),
+        example!("statement-owner-override", Statement),
+        example!("statement-unsigned", Statement),
     ];
 }
 
 pub mod record;
+
+// The signed statements of ADR-025 (STEMMA-290).
+pub mod statement;
 
 #[cfg(test)]
 mod tests;

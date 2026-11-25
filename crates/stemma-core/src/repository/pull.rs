@@ -1,19 +1,27 @@
-//! The operations on a pull request (ADR-004, STEMMA-238).
+//! The operations on a pull request (ADR-004, ADR-025, STEMMA-238, STEMMA-290).
 //!
-//! Every operation takes the lock of the references, reads the log under it, checks the rule, and
-//! writes the entry. The lock makes the check and the entry one step: two actors never open a
-//! pull request for the same branch, and nobody closes one that another merges (ADR-008). The
-//! operations move no pointer; the merge gate that moves `main` records its merge with
-//! [`Repository::record_pull_merge`] (ADR-019).
+//! An opening, a closing, and an approval are signed statements
+//! ([`crate::protocol::statement`]), and the log records the act: every operation makes its
+//! statement, takes the lock of the references, reads the evidence under it, checks the rule,
+//! puts the statement into the set, and writes the entry that names its hash. The lock makes
+//! the check and the entry one step: two actors never open a pull request for the same branch,
+//! and nobody closes one that another merges (ADR-008). The operations move no pointer; the
+//! merge gate that moves `main` records its merge with [`Repository::record_pull_merge`]
+//! (ADR-019), which makes no statement, as "merged" is none.
+//!
+//! In an enforcing repository the statement is signed with a key of the actor, before the lock
+//! is taken, because a key with a passphrase may ask a person, and the register is asked for
+//! the signature before anything is written. In the open mode there is no key, and the
+//! statement is unsigned. The statement comes before its entry: a stop in between leaves a
+//! statement that no entry names, which counts for nothing, and the same call can be made
+//! again. A statement made here names no repository of a hub and counts locally only.
 
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
-use std::io;
 
 use super::{now, Repository};
 use crate::allowed::{self_approval, SelfApproval};
-use crate::fault;
 use crate::history::{self, HistoryError, Parents};
 use crate::lease;
 use crate::object::{CommitId, Kind};
@@ -21,29 +29,36 @@ use crate::oplog::{
     Entry, EntryError, OpLogError, OperationName, PullEntry, PR_APPROVE, PR_CLOSE, PR_MERGE,
     PR_OPEN,
 };
+use crate::protocol::record::SealError;
+use crate::protocol::statement::{self, Body, Closing, Opening, Statement, StatementProblem};
 use crate::pull::{self, Approval, PullRequest, Recount, TARGET};
 use crate::refs::{BranchName, RefError};
-use crate::register::{self, Identity, ProofError, ProofFile, Register};
+use crate::register::{Identity, ProofError, Register};
+use crate::repository::statements::{proof_of, EvidenceError};
 use crate::repository::LeaseError;
-use crate::signature::{self, PayloadKind, SignError, Signer};
+use crate::signature::Signer;
+use crate::statements::SetError;
 use crate::store::StoreError;
 use crate::{Actor, Authorizer};
 
 impl Repository {
-    /// The pull requests that the log tells of, in the order of their openings (see
-    /// [`pull::pull_requests`]).
+    /// The pull requests that the statements tell of, in the order of their openings (see
+    /// [`evidence::fold`](crate::evidence::fold)).
+    ///
+    /// A pull request that was opened under a repository format before 16 is not among them:
+    /// its entries name no statement, so they are no evidence (ADR-011). Open it again.
     ///
     /// # Errors
     ///
-    /// Returns [`PullError::Log`] if the log cannot be read.
+    /// Returns [`PullError::Log`] if the log cannot be read and [`PullError::Statements`] if a
+    /// statement cannot be read for a failure of the file system.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
     /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn pull_requests(&self) -> Result<Vec<PullRequest>, PullError> {
         self.require_oplog("read the pull requests")?;
-        let entries = self.oplog().entries().map_err(PullError::Log)?;
-        Ok(pull::pull_requests(&entries))
+        Ok(self.evidence()?.pulls)
     }
 
     /// The write owner of `branch` opens a pull request that would merge it into `main`.
@@ -54,23 +69,40 @@ impl Repository {
     /// - only the write owner opens: where the branch has a lease ([`lease::applies`]), `actor`
     ///   holds a valid one; in open mode there is no lease and no other writer;
     /// - at most one pull request is open for a branch;
+    /// - the same opening is not accepted twice (ADR-025): a pull request that ended is final,
+    ///   and the next one of the branch needs a new head, other reviewers, or another repair;
     /// - the opener names the reviewers, who are identities of the register, not the opener, and
-    ///   without a repeat; in open mode there is no register, so there are none;
+    ///   at most [`MAX_REVIEWERS`](crate::oplog::MAX_REVIEWERS); in open mode there is no
+    ///   register, so there are none;
     /// - `repairs`, if given, is a commit of the store (ADR-019).
     ///
-    /// The number of the pull request is the number of the entry that is returned.
+    /// The opening is a signed statement ([`Opening`]). Where the repository has a `register`,
+    /// `signer` signs it with a key that the register holds for `actor` as an active key, and
+    /// the signature is checked before anything is written; in open mode there is no register,
+    /// and the statement is unsigned. The statement is made with the head that the branch has
+    /// when the call begins, before the lock is taken, and the head is read again under the
+    /// lock.
+    ///
+    /// The hash of the opening names the pull request ([`PullRequest::id`]). Its number in this
+    /// clone is the number of the entry that is returned.
     ///
     /// # Errors
     ///
     /// Returns [`PullError::Denied`] if the authorizer refuses, [`PullError::TargetBranch`],
     /// [`PullError::NoSuchBranch`], [`PullError::NotWriteOwner`], [`PullError::AlreadyOpen`],
-    /// [`PullError::UnknownReviewer`], [`PullError::NoSuchCommit`] for a broken rule (nothing is
-    /// written), and [`PullError::Refs`], [`PullError::Log`], and [`PullError::Entry`] for a
-    /// failure of the lock, the log, or the entry.
+    /// [`PullError::SameOpening`], [`PullError::UnknownReviewer`], [`PullError::NoSuchCommit`],
+    /// and [`PullError::Entry`] for a broken rule, [`PullError::SignatureRequired`] for a
+    /// register and no signer, [`PullError::Sign`], [`PullError::Proof`], and
+    /// [`PullError::KeyNotActive`] for a signature that cannot be made or that the register
+    /// does not accept, and [`PullError::BranchMoved`] if the branch moved while the statement
+    /// was signed. Nothing is written for any of them. [`PullError::Refs`], [`PullError::Log`],
+    /// and [`PullError::Statements`] are a failure of the lock, the log, or the set of
+    /// statements; a failure of the log can leave the statement without its entry.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
     /// [`is_bare`](crate::repository::Repository::is_bare).
+    #[allow(clippy::too_many_arguments)]
     pub fn open_pull(
         &self,
         branch: &BranchName,
@@ -78,20 +110,38 @@ impl Repository {
         reviewers: Vec<Actor>,
         repairs: Option<CommitId>,
         register: Option<&Register>,
+        signer: Option<&dyn Signer>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         self.require_oplog("open a pull request")?;
-        let lock = self.lock_for_pull(PR_OPEN, branch.as_str(), actor, authorizer)?;
+        let allowed = self.allowed_for_pull(PR_OPEN, branch.as_str(), actor, authorizer)?;
         if branch.as_str() == TARGET {
             return Err(PullError::TargetBranch);
         }
-        let head = self
-            .refs()
-            .branch(branch)
-            .map_err(PullError::Refs)?
-            .ok_or_else(|| PullError::NoSuchBranch {
-                branch: branch.clone(),
+        let signed_head = self.branch_head(branch)?;
+        let identities = reviewers.iter().map(Identity::of).collect();
+        let opening = Opening::try_new(None, branch.clone(), signed_head, identities, repairs)
+            .map_err(|problem| match problem {
+                StatementProblem::TargetBranch => PullError::TargetBranch,
+                _ => PullError::Entry(EntryError::BadReviewers),
             })?;
+        // The entry holds the rules of the reviewers that need the opener, so it is built
+        // before the statement is signed: a refusal comes before the key is asked.
+        let entry = PullEntry::open(
+            now(),
+            actor.clone(),
+            branch.clone(),
+            signed_head,
+            reviewers.clone(),
+            repairs,
+        )?;
+        let statement = make_statement(Body::Opening(opening), actor, register, signer)?;
+        let lock = self.refs_store().lock_writer(&allowed)?;
+        if self.branch_head(branch)? != signed_head {
+            return Err(PullError::BranchMoved {
+                branch: branch.clone(),
+            });
+        }
         let now = now();
         if lease::applies(register, false) {
             let holds = self
@@ -103,11 +153,17 @@ impl Repository {
                 });
             }
         }
-        let pulls = self.pull_requests()?;
+        let pulls = self.evidence()?.pulls;
         if let Some(open) = pull::open_for(&pulls, branch) {
             return Err(PullError::AlreadyOpen {
                 branch: branch.clone(),
                 number: open.number(),
+            });
+        }
+        let id = statement.hash();
+        if let Some(ended) = pulls.iter().find(|pull| pull.id() == id) {
+            return Err(PullError::SameOpening {
+                number: ended.number(),
             });
         }
         for reviewer in &reviewers {
@@ -122,19 +178,24 @@ impl Repository {
         if let Some(commit) = repairs {
             self.ensure_commit(commit)?;
         }
-        let entry = PullEntry::open(now, actor.clone(), branch.clone(), head, reviewers, repairs)?;
-        Ok(self.append_pull(&lock, &entry)?)
+        let hash = self.statement_set().put(&statement)?;
+        Ok(self.append_pull(&lock, &entry.with_statement(hash)?)?)
     }
 
     /// Ends the open pull request `number` without a merge. Only the opener and, where the
     /// repository has a register, an owner may.
     ///
+    /// The closing is a signed statement ([`Closing`]) that names the pull request by the hash
+    /// of its opening, signed and checked as the opening is (see
+    /// [`open_pull`](Self::open_pull)).
+    ///
     /// # Errors
     ///
-    /// Returns [`PullError::Denied`], [`PullError::NoSuchPull`] for a number that no opening in the
-    /// log has, [`PullError::NotOpen`] for a pull request that is closed or merged already,
-    /// [`PullError::NotAllowedToClose`] for an actor who may not, and the errors of the log and the
-    /// lock (see [`open_pull`](Self::open_pull)).
+    /// Returns [`PullError::Denied`], [`PullError::NoSuchPull`] for a number that no opening
+    /// has, [`PullError::NotOpen`] for a pull request that is closed or merged already,
+    /// [`PullError::NotAllowedToClose`] for an actor who may not, the errors of the signature,
+    /// and the errors of the log, the lock, and the set of statements (see
+    /// [`open_pull`](Self::open_pull)).
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -144,23 +205,40 @@ impl Repository {
         number: u64,
         actor: &Actor,
         register: Option<&Register>,
+        signer: Option<&dyn Signer>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         self.require_oplog("close a pull request")?;
-        let lock = self.lock_for_pull(PR_CLOSE, &format!("pull {number}"), actor, authorizer)?;
-        let pulls = self.pull_requests()?;
+        let allowed =
+            self.allowed_for_pull(PR_CLOSE, &format!("pull {number}"), actor, authorizer)?;
+        let may_close = |pull: &PullRequest| {
+            let is_owner = register.is_some_and(|register| register.is_owner(actor));
+            if pull.opener() == actor || is_owner {
+                Ok(())
+            } else {
+                Err(PullError::NotAllowedToClose { number })
+            }
+        };
+        // The name of the pull request does not change, so the statement can be made before
+        // the lock; whether it is still open is asked again under it.
+        let pulls = self.evidence()?.pulls;
         let pull = open_pull_of(&pulls, number)?;
-        let is_owner = register.is_some_and(|register| register.is_owner(actor));
-        if pull.opener() != actor && !is_owner {
-            return Err(PullError::NotAllowedToClose { number });
-        }
+        may_close(pull)?;
+        let id = pull.id();
+        let closing = Body::Closing(Closing::new(None, id));
+        let statement = make_statement(closing, actor, register, signer)?;
+        let lock = self.refs_store().lock_writer(&allowed)?;
+        let pulls = self.evidence()?.pulls;
+        may_close(open_pull_of(&pulls, number)?)?;
         let entry = PullEntry::close(now(), actor.clone(), number)?;
-        Ok(self.append_pull(&lock, &entry)?)
+        let hash = self.statement_set().put(&statement)?;
+        Ok(self.append_pull(&lock, &entry.with_statement(hash)?)?)
     }
 
     /// Records that the open pull request `number` was merged with the head `commit`. The entry is
     /// the record of the merge, not the merge: it moves no pointer, checks no approval, and runs
-    /// no gate. The merge gate calls it after it moved `main` (ADR-019).
+    /// no gate. The merge gate calls it after it moved `main` (ADR-019). It makes no statement:
+    /// "merged" is a fact of whoever holds the statements (ADR-025), in a clone this entry.
     ///
     /// # Errors
     ///
@@ -179,7 +257,9 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         self.require_oplog("record the merge of a pull request")?;
-        let lock = self.lock_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
+        let allowed =
+            self.allowed_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
+        let lock = self.refs_store().lock_writer(&allowed)?;
         self.record_pull_merge_locked(&lock, number, actor, commit)
     }
 
@@ -193,7 +273,7 @@ impl Repository {
         actor: &Actor,
         commit: CommitId,
     ) -> Result<Entry, PullError> {
-        let pulls = self.pull_requests()?;
+        let pulls = self.evidence()?.pulls;
         open_pull_of(&pulls, number)?;
         self.ensure_commit(commit)?;
         let entry = PullEntry::merge(now(), actor.clone(), number, commit)?;
@@ -201,8 +281,9 @@ impl Repository {
     }
 
     /// `actor` approves the head of the open pull request `number`, which is the tip of its
-    /// branch now. The entry `pr-approve` names the pull request and that head; it binds the
-    /// approval to it, and any later commit voids it (ADR-004 rule 4).
+    /// branch now. The approval is a signed statement ([`statement::Approval`]) that names the
+    /// pull request by the hash of its opening, and that head; it binds the approval to it, and
+    /// any later commit voids it (ADR-004 rule 4). The entry `pr-approve` names the statement.
     ///
     /// The rules, checked under the lock of the references:
     ///
@@ -211,16 +292,17 @@ impl Repository {
     /// - `actor` is neither the opener, nor the author of a commit that the pull request brings,
     ///   nor the actor of the entry of the log that first brought such a commit under a branch, a
     ///   tag, or the working copy ([`self_approval`]);
-    /// - where the repository has a `register`, the approval is signed: `signer` signs
-    ///   [`pull::approval_payload`] with a key that the register holds for `actor`, and the
-    ///   signature is checked before the entry is written. The proof is the file `proofs/<entry>`
-    ///   ([`ProofFile`]). In open mode there is no register and no signature.
+    /// - where the repository has a `register`, the statement is signed: `signer` signs it with a
+    ///   key that the register holds for `actor` as an active key, and the signature is checked
+    ///   before anything is written. A retired key keeps the approvals it made, but signs no new
+    ///   one. In open mode there is no register, and the statement is unsigned.
     ///
     /// The signature is made before the lock is taken, because a key with a passphrase may ask a
     /// person, and nobody should wait for the lock meanwhile.
     ///
-    /// The entry is written before the proof. A crash in between leaves an approval without a
-    /// proof, which the recount does not count: the safe side.
+    /// The signature is part of the statement, so an approval has no proof file. The statement
+    /// is put into the set before the entry is written. A stop in between leaves a statement
+    /// that no entry names, which the recount does not count: the safe side.
     ///
     /// # Errors
     ///
@@ -229,9 +311,8 @@ impl Repository {
     /// if the branch moved while the signature was made, [`PullError::SignatureRequired`] for a
     /// register and no signer, [`PullError::Sign`] and [`PullError::Proof`] for a signature that
     /// cannot be made or that the register does not accept, [`PullError::KeyNotActive`] for a
-    /// retired key, [`PullError::ProofNotWritten`] if the
-    /// entry is in the log and its proof is not, and the errors of the log and the lock (see
-    /// [`open_pull`](Self::open_pull)). Nothing is written for any error but the last two.
+    /// retired key, and the errors of the log, the lock, and the set of statements (see
+    /// [`open_pull`](Self::open_pull)). Nothing is written for any error but those of the log.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -245,72 +326,51 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         self.require_oplog("approve a pull request")?;
-        let signed = match register {
-            None => None,
-            Some(_) => {
-                let signer = signer.ok_or(PullError::SignatureRequired)?;
-                let pulls = self.pull_requests()?;
-                let pull = open_pull_of(&pulls, number)?;
-                let head = self.branch_head(pull.branch())?;
-                let payload = pull::approval_payload(number, &head);
-                let signature = signature::sign(signer, PayloadKind::Approval, &payload)
-                    .map_err(PullError::Sign)?;
-                Some((head, payload, signature))
-            }
+        if register.is_some() && signer.is_none() {
+            return Err(PullError::SignatureRequired);
+        }
+        let (signed_head, statement) = {
+            let pulls = self.evidence()?.pulls;
+            let pull = open_pull_of(&pulls, number)?;
+            let head = self.branch_head(pull.branch())?;
+            let approval = Body::Approval(statement::Approval::new(None, pull.id(), head));
+            (head, make_statement(approval, actor, register, signer)?)
         };
-        let lock = self.lock_for_pull(PR_APPROVE, &format!("pull {number}"), actor, authorizer)?;
-        let pulls = self.pull_requests()?;
+        let allowed =
+            self.allowed_for_pull(PR_APPROVE, &format!("pull {number}"), actor, authorizer)?;
+        let lock = self.refs_store().lock_writer(&allowed)?;
+        let pulls = self.evidence()?.pulls;
         let pull = open_pull_of(&pulls, number)?;
         let head = self.branch_head(pull.branch())?;
-        if let Some((signed_head, ..)) = &signed {
-            if *signed_head != head {
-                return Err(PullError::HeadMoved { number });
-            }
+        if signed_head != head {
+            return Err(PullError::HeadMoved { number });
         }
         let authors = self.pull_authors(&head)?;
         if let Some(reason) = self_approval(actor, pull.opener(), &authors) {
             return Err(PullError::SelfApproval { number, reason });
         }
-        if let (Some(register), Some((_, payload, signature))) = (register, &signed) {
-            let verified = register
-                .verify_approval(actor, payload, signature, None)
-                .map_err(|error| PullError::Proof(Box::new(error)))?;
-            // A retired key keeps the approvals it made, but it signs nothing new.
-            if !register.is_active_key(&Identity::of(actor), verified.key()) {
-                return Err(PullError::KeyNotActive);
-            }
-        }
         let entry = PullEntry::approve(now(), actor.clone(), number, head)?;
-        let written = self.append_pull(&lock, &entry)?;
-        if let Some((_, _, signature)) = signed {
-            let proof = ProofFile {
-                actor: actor.clone(),
-                signature,
-            };
-            register::write_proof(&self.metadata_dir(), written.number(), &proof).map_err(
-                |source| PullError::ProofNotWritten {
-                    entry: written.number(),
-                    source,
-                },
-            )?;
-        }
-        Ok(written)
+        let hash = self.statement_set().put(&statement)?;
+        Ok(self.append_pull(&lock, &entry.with_statement(hash)?)?)
     }
 
     /// Which approvals of the pull request `number` count for its current head, as
-    /// [`pull::recount`] decides, with the log, the history, and the proof files as its input. The
+    /// [`pull::recount`] decides, with the statements and the history as its input. The
     /// head is the tip of the branch, so the pull request must be open. The `register` is the one
-    /// of the base commit; without one there are no proofs to check.
+    /// of the base commit; without one there is no signature to check.
     ///
-    /// The recount trusts no writer: it asks the ban on self-approval again for every entry, and
-    /// it checks every proof against the register.
+    /// The recount trusts no writer: it asks the ban on self-approval again for every approval,
+    /// and it checks the signature of every statement against the register, for the reviewer
+    /// and the number of the entry that names it
+    /// ([`Register::verify_statement`]). An unsigned statement does not count in an enforcing
+    /// repository.
     ///
     /// # Errors
     ///
     /// Returns [`PullError::NoSuchPull`], [`PullError::NotOpen`], [`PullError::NoSuchBranch`], and
     /// the errors of reading
-    /// the log, the references, and the history. A damaged proof file is no error: the approval
-    /// does not count, and the reason says why.
+    /// the log, the references, and the history. A statement that is missing or damaged is no
+    /// error: the approval is not listed, and `op verify` reports it.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -321,9 +381,9 @@ impl Repository {
         register: Option<&Register>,
     ) -> Result<Recount, PullError> {
         self.require_oplog("read the pull requests")?;
-        let entries = self.oplog().entries().map_err(PullError::Log)?;
-        let pulls = pull::pull_requests(&entries);
-        let pull = pulls
+        let evidence = self.evidence()?;
+        let pull = evidence
+            .pulls
             .iter()
             .find(|pull| pull.number() == number)
             .ok_or(PullError::NoSuchPull { number })?;
@@ -334,38 +394,20 @@ impl Repository {
         }
         let head = self.branch_head(pull.branch())?;
         let authors = self.pull_authors(&head)?;
-        let metadata = self.metadata_dir();
-        let payload = pull::approval_payload(number, &head);
         let proof = |approval: &Approval| -> Result<(), String> {
-            let Some(register) = register else {
-                return Ok(());
-            };
-            let path = register::proof_path(&metadata, approval.entry());
-            let bytes = fault::read(&path).map_err(|error| match error.kind() {
-                io::ErrorKind::NotFound => "the approval has no proof".to_owned(),
-                _ => format!("cannot read the proof: {error}"),
-            })?;
-            let text = String::from_utf8(bytes)
-                .map_err(|_| "the proof file is not valid UTF-8".to_owned())?;
-            let file = ProofFile::parse(&text).map_err(|error| error.to_string())?;
-            if &file.actor != approval.reviewer() {
-                return Err("the actor of the proof is not the reviewer".to_owned());
-            }
-            register
-                .verify_approval(
-                    approval.reviewer(),
-                    &payload,
-                    &file.signature,
-                    Some(approval.entry()),
-                )
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            proof_of(
+                register,
+                approval.reviewer(),
+                approval.entry(),
+                approval.statement(),
+            )
+            .map_err(|error| error.to_string())
         };
         Ok(pull::recount(
             pull,
             &head,
             &authors,
-            &pull::approvals(&entries),
+            &evidence.approvals,
             &proof,
         ))
     }
@@ -465,23 +507,46 @@ impl Repository {
         }
     }
 
-    /// Asks the authorizer for `operation` and takes the lock of the references.
-    fn lock_for_pull(
+    /// Asks the authorizer for `operation`. The answer opens the lock of the references.
+    fn allowed_for_pull(
         &self,
         operation: &str,
         target: &str,
         actor: &Actor,
         authorizer: &dyn Authorizer,
-    ) -> Result<crate::refs::WriteLock, PullError> {
+    ) -> Result<crate::Allowed, PullError> {
         let name = OperationName::try_new(operation).expect("a pull request operation is a name");
-        let allowed = self
-            .authorize(actor, authorizer, &name, target)
+        self.authorize(actor, authorizer, &name, target)
             .map_err(|_| PullError::Denied {
                 operation: operation.to_owned(),
                 target: target.to_owned(),
-            })?;
-        Ok(self.refs_store().lock_writer(&allowed)?)
+            })
     }
+}
+
+/// Makes the statement of `actor` for `body`: signed with `signer` where the repository has a
+/// `register`, and unsigned in the open mode. A signed statement is checked against the
+/// register before it is returned, so every refusal comes before the first write: the signature
+/// is one of a key that the register holds for `actor`, and that key is active.
+pub(super) fn make_statement(
+    body: Body,
+    actor: &Actor,
+    register: Option<&Register>,
+    signer: Option<&dyn Signer>,
+) -> Result<Statement, PullError> {
+    let Some(register) = register else {
+        return Ok(Statement::unsigned(body));
+    };
+    let signer = signer.ok_or(PullError::SignatureRequired)?;
+    let statement = Statement::sign(body, signer).map_err(PullError::Sign)?;
+    let verified = register
+        .verify_statement(actor, &statement, None)
+        .map_err(|error| PullError::Proof(Box::new(error)))?;
+    // A retired key keeps the statements it made, but it signs nothing new.
+    if !register.is_active_key(&Identity::of(actor), verified.key()) {
+        return Err(PullError::KeyNotActive);
+    }
+    Ok(statement)
 }
 
 /// The pull request `number` if it is open.
@@ -537,7 +602,19 @@ pub enum PullError {
         /// The commit.
         commit: CommitId,
     },
-    /// The log has no opening with this number.
+    /// The same opening made a pull request before, which has ended. An ended pull request is
+    /// final (ADR-025): the next one needs a new head, other reviewers, or another repair.
+    SameOpening {
+        /// The number of the pull request that the opening made.
+        number: u64,
+    },
+    /// The branch has another head than the one that the opening was made for. Nothing was
+    /// written; open again.
+    BranchMoved {
+        /// The branch.
+        branch: BranchName,
+    },
+    /// The statements have no opening with this number.
     NoSuchPull {
         /// The number.
         number: u64,
@@ -565,23 +642,19 @@ pub enum PullError {
         /// The number of the pull request.
         number: u64,
     },
-    /// The repository has a register, so an approval needs a signature, and the caller gave no
-    /// signer.
+    /// The repository has a register, so the statement of an opening, a closing, an approval,
+    /// or a check needs a signature, and the caller gave no signer.
     SignatureRequired,
-    /// The key of the signature is retired: it keeps its earlier approvals but signs no new one.
+    /// The key of the signature is retired or revoked: it keeps what it signed before, as far
+    /// as the register says, but signs nothing new.
     KeyNotActive,
-    /// The approval could not be signed.
-    Sign(SignError),
-    /// The register does not accept the signature of the approval.
+    /// The statement could not be signed, or the signer signed with another key than the one
+    /// it named.
+    Sign(SealError),
+    /// The register does not accept the signature of the statement for the actor.
     Proof(Box<ProofError>),
-    /// The entry of the approval is in the log, and its proof file is not. The approval does not
-    /// count; approve again.
-    ProofNotWritten {
-        /// The number of the entry.
-        entry: u64,
-        /// What failed.
-        source: io::Error,
-    },
+    /// The set of statements could not be read or written. Nothing was written to the log.
+    Statements(SetError),
     /// The history of the branch cannot be read.
     History(HistoryError),
     /// The lock of the references or the references failed. Nothing was written.
@@ -621,7 +694,17 @@ impl fmt::Display for PullError {
                 "{reviewer} is no identity of the register; the opener names reviewers from it"
             ),
             Self::NoSuchCommit { commit } => write!(f, "the store has no commit {commit}"),
-            Self::NoSuchPull { number } => write!(f, "the log has no pull request {number}"),
+            Self::SameOpening { number } => write!(
+                f,
+                "this opening made the pull request {number}, which has ended; an ended pull \
+                 request is final, so the next one needs a new head"
+            ),
+            Self::BranchMoved { branch } => write!(
+                f,
+                "the branch `{branch}` has a new head since you began; open the pull request \
+                 again"
+            ),
+            Self::NoSuchPull { number } => write!(f, "there is no pull request {number}"),
             Self::NotOpen { number } => {
                 write!(f, "the pull request {number} is closed or merged already")
             }
@@ -639,18 +722,16 @@ impl fmt::Display for PullError {
                  the new head and approve again"
             ),
             Self::SignatureRequired => {
-                f.write_str("the repository has an actor register, so an approval must be signed")
+                f.write_str("the repository has an actor register, so the statement must be signed")
             }
-            Self::KeyNotActive => {
-                f.write_str("the key is retired and signs no new approval; sign with an active key")
-            }
-            Self::Sign(error) => write!(f, "cannot sign the approval: {error}"),
-            Self::Proof(error) => write!(f, "the register does not accept the approval: {error}"),
-            Self::ProofNotWritten { entry, source } => write!(
-                f,
-                "entry {entry} is in the log, but its proof is not written ({source}); the \
-                 approval does not count, so approve again"
+            Self::KeyNotActive => f.write_str(
+                "the key is not active and signs no new statement; sign with an active key",
             ),
+            Self::Sign(error) => write!(f, "cannot sign the statement: {error}"),
+            Self::Proof(error) => {
+                write!(f, "the register does not accept the statement: {error}")
+            }
+            Self::Statements(error) => error.fmt(f),
             Self::History(error) => error.fmt(f),
             Self::Refs(error) => error.fmt(f),
             Self::Log(error) => error.fmt(f),
@@ -666,7 +747,7 @@ impl Error for PullError {
         match self {
             Self::Sign(error) => Some(error),
             Self::Proof(error) => Some(error.as_ref()),
-            Self::ProofNotWritten { source, .. } => Some(source),
+            Self::Statements(error) => Some(error),
             Self::History(error) => Some(error),
             Self::Refs(error) => Some(error),
             Self::Log(error) => Some(error),
@@ -714,18 +795,34 @@ impl From<EntryError> for PullError {
     }
 }
 
+impl From<SetError> for PullError {
+    fn from(error: SetError) -> Self {
+        Self::Statements(error)
+    }
+}
+
+impl From<EvidenceError> for PullError {
+    fn from(error: EvidenceError) -> Self {
+        match error {
+            EvidenceError::Log(error) => Self::Log(error),
+            EvidenceError::Set(error) => Self::Statements(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ssh_key::private::Ed25519Keypair;
     use ssh_key::PrivateKey;
 
     use super::*;
-    use crate::allowed::Allowed;
     use crate::object::Blob;
     use crate::oplog::PullKind;
     use crate::pull::PullState;
-    use crate::repository::InitOptions;
-    use crate::signature::PublicKey;
+    use crate::register;
+    use crate::repository::statements::by_hand;
+    use crate::repository::{InitOptions, StatementCheckError};
+    use crate::signature::{self, PayloadKind, PublicKey, SignError};
     use crate::store::ObjectStore;
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -793,12 +890,12 @@ mod tests {
         let dir = TempDir::new();
         let (repository, start) = repository(&dir);
         let entry = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap();
         let pull = entry.pull().unwrap();
         assert_eq!(pull.kind(), PullKind::Open);
         assert_eq!(pull.commit(), Some(&start));
-        assert_eq!(format(&dir), "stemma-repository 15\n");
+        assert_eq!(format(&dir), "stemma-repository 16\n");
         let pulls = repository.pull_requests().unwrap();
         assert_eq!(pulls.len(), 1);
         assert_eq!(pulls[0].number(), entry.number());
@@ -806,28 +903,40 @@ mod tests {
     }
 
     #[test]
-    fn one_open_pull_request_per_branch_and_a_new_one_after_the_end() {
+    fn one_open_pull_request_per_branch_and_a_new_one_after_the_end_needs_a_new_head() {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
-        let first = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
-            .unwrap();
+        let open =
+            || repository.open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll);
+        let first = open().unwrap();
         let before = repository.oplog().entries().unwrap().len();
-        let error = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
-            .unwrap_err();
+        let error = open().unwrap_err();
         assert!(
             matches!(error, PullError::AlreadyOpen { number, .. } if number == first.number()),
             "{error:?}"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
         repository
-            .close_pull(first.number(), &daniel(), None, &AllowAll)
+            .close_pull(first.number(), &daniel(), None, None, &AllowAll)
             .unwrap();
-        let second = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
-            .unwrap();
+        // An ended pull request is final, and the same opening is not accepted twice (ADR-025).
+        let before = repository.oplog().entries().unwrap().len();
+        let error = open().unwrap_err();
+        assert!(
+            matches!(error, PullError::SameOpening { number } if number == first.number()),
+            "{error:?}"
+        );
+        assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        // A new head makes another opening, and so the next pull request of the branch.
+        push_commit(&repository, &daniel());
+        let second = open().unwrap();
         assert!(second.number() > first.number());
+        let pulls = repository.pull_requests().unwrap();
+        assert_eq!(pulls.len(), 2);
+        assert_ne!(pulls[0].id(), pulls[1].id());
+        assert_eq!(pulls[0].id(), first.statement().unwrap());
+        assert_eq!(pulls[1].id(), second.statement().unwrap());
+        assert!(!pulls[0].is_open() && pulls[1].is_open());
     }
 
     #[test]
@@ -839,7 +948,15 @@ mod tests {
         let missing = BranchName::try_new("nowhere").unwrap();
         let other_commit = CommitId::new(Blob::new("not stored").id().object_id());
         let open = |branch: &BranchName, reviewers, repairs, authorizer: &dyn Authorizer| {
-            repository.open_pull(branch, &daniel(), reviewers, repairs, None, authorizer)
+            repository.open_pull(
+                branch,
+                &daniel(),
+                reviewers,
+                repairs,
+                None,
+                None,
+                authorizer,
+            )
         };
         assert!(matches!(
             open(&main, vec![], None, &AllowAll),
@@ -881,6 +998,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap_err();
@@ -895,6 +1013,7 @@ mod tests {
                 vec![daniel()],
                 None,
                 Some(&register),
+                Some(&Seeded::new(2)),
                 &AllowAll,
             )
             .unwrap();
@@ -913,6 +1032,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register()),
+                Some(&Seeded::new(2)),
                 &AllowAll,
             )
             .unwrap_err();
@@ -937,6 +1057,7 @@ mod tests {
                 reviewers,
                 None,
                 Some(&register),
+                Some(&Seeded::new(2)),
                 &AllowAll,
             )
         };
@@ -965,30 +1086,44 @@ mod tests {
             .claim_lease(&feature(), &mia(), 60, &AllowAll)
             .unwrap();
         let number = repository
-            .open_pull(&feature(), &mia(), vec![], None, Some(&register), &AllowAll)
+            .open_pull(
+                &feature(),
+                &mia(),
+                vec![],
+                None,
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
+            )
             .unwrap()
             .number();
         let stranger = Actor::human("zoe").unwrap();
         let error = repository
-            .close_pull(number, &stranger, Some(&register), &AllowAll)
+            .close_pull(number, &stranger, Some(&register), None, &AllowAll)
             .unwrap_err();
         assert!(
             matches!(error, PullError::NotAllowedToClose { .. }),
             "{error:?}"
         );
         let closed = repository
-            .close_pull(number, &daniel(), Some(&register), &AllowAll)
+            .close_pull(
+                number,
+                &daniel(),
+                Some(&register),
+                Some(&Seeded::new(1)),
+                &AllowAll,
+            )
             .unwrap();
         assert_eq!(closed.pull().unwrap().pull(), Some(number));
         let pulls = repository.pull_requests().unwrap();
         assert!(matches!(pulls[0].state(), PullState::Closed { by, .. } if by == &daniel()));
         // A closed pull request cannot be closed, merged, or found under another number.
         assert!(matches!(
-            repository.close_pull(number, &mia(), None, &AllowAll),
+            repository.close_pull(number, &mia(), None, None, &AllowAll),
             Err(PullError::NotOpen { .. })
         ));
         assert!(matches!(
-            repository.close_pull(number + 50, &mia(), None, &AllowAll),
+            repository.close_pull(number + 50, &mia(), None, None, &AllowAll),
             Err(PullError::NoSuchPull { .. })
         ));
     }
@@ -998,7 +1133,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, start) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let absent = CommitId::new(Blob::new("not stored").id().object_id());
@@ -1020,7 +1155,7 @@ mod tests {
                 .record_pull_merge(number, &daniel(), start, &AllowAll)
                 .unwrap_err(),
             repository
-                .close_pull(number, &daniel(), None, &AllowAll)
+                .close_pull(number, &daniel(), None, None, &AllowAll)
                 .unwrap_err(),
         ] {
             assert!(matches!(error, PullError::NotOpen { .. }), "{error:?}");
@@ -1039,8 +1174,17 @@ mod tests {
         let expired = lease::Lease::new(feature(), mia(), 100, 200).unwrap();
         std::fs::write(&path, expired.encode()).unwrap();
         let before = repository.oplog().entries().unwrap().len();
-        let open =
-            || repository.open_pull(&feature(), &mia(), vec![], None, Some(&register), &AllowAll);
+        let open = || {
+            repository.open_pull(
+                &feature(),
+                &mia(),
+                vec![],
+                None,
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
+            )
+        };
         assert!(matches!(open(), Err(PullError::NotWriteOwner { .. })));
         std::fs::write(&path, b"not a lease").unwrap();
         let error = open().unwrap_err();
@@ -1058,11 +1202,19 @@ mod tests {
             .unwrap();
         let id = CommitId::new(blob.object_id());
         let error = repository
-            .open_pull(&feature(), &daniel(), vec![], Some(id), None, &AllowAll)
+            .open_pull(
+                &feature(),
+                &daniel(),
+                vec![],
+                Some(id),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap_err();
         assert!(matches!(error, PullError::NoSuchCommit { .. }), "{error:?}");
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let error = repository
@@ -1076,12 +1228,12 @@ mod tests {
         let dir = TempDir::new();
         let (repository, start) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let before = repository.oplog().entries().unwrap().len();
         assert!(matches!(
-            repository.close_pull(number, &daniel(), None, &DenyAll),
+            repository.close_pull(number, &daniel(), None, None, &DenyAll),
             Err(PullError::Denied { .. })
         ));
         assert!(matches!(
@@ -1089,7 +1241,7 @@ mod tests {
             Err(PullError::Denied { .. })
         ));
         assert!(matches!(
-            repository.close_pull(number, &mia(), None, &AllowAll),
+            repository.close_pull(number, &mia(), None, None, &AllowAll),
             Err(PullError::NotAllowedToClose { .. })
         ));
         assert!(matches!(
@@ -1104,7 +1256,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let entry = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap();
         let error = repository
             .restore(entry.number(), false, &daniel(), &AllowAll)
@@ -1191,7 +1343,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, start) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let entry = repository
@@ -1225,7 +1377,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         // Daniel opened it, and wrote the commit that the branch starts from.
@@ -1264,13 +1416,7 @@ mod tests {
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
         // An approval that was written by hand does not count either: the recount asks again.
         let head = repository.refs().branch(&feature()).unwrap().unwrap();
-        let forged = PullEntry::approve(5, zoe.clone(), number, head).unwrap();
-        let lock = repository
-            .refs_store()
-            .lock_writer(&Allowed::granted())
-            .unwrap();
-        repository.append_pull(&lock, &forged).unwrap();
-        drop(lock);
+        by_hand::approve(&repository, &zoe, number, head, None);
         let recount = repository.recount_approvals(number, None).unwrap();
         assert_eq!(recount.count(), 0);
         assert_eq!(
@@ -1288,7 +1434,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         // Mia moves the branch to a commit that names Ana as its author.
@@ -1330,13 +1476,7 @@ mod tests {
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
         // An approval of hers that was written by hand does not count: the recount asks again.
-        let forged = PullEntry::approve(5, mia(), number, new).unwrap();
-        let lock = repository
-            .refs_store()
-            .lock_writer(&Allowed::granted())
-            .unwrap();
-        repository.append_pull(&lock, &forged).unwrap();
-        drop(lock);
+        by_hand::approve(&repository, &mia(), number, new, None);
         let recount = repository.recount_approvals(number, None).unwrap();
         assert_eq!(recount.count(), 0);
         assert_eq!(
@@ -1352,7 +1492,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let tip = repository.refs().branch(&feature()).unwrap().unwrap();
@@ -1403,7 +1543,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let tip = repository.refs().branch(&feature()).unwrap().unwrap();
@@ -1464,7 +1604,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let zoe = Actor::human("zoe").unwrap();
@@ -1491,7 +1631,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let zoe = Actor::human("zoe").unwrap();
@@ -1537,7 +1677,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let tip = repository.refs().branch(&feature()).unwrap().unwrap();
@@ -1578,7 +1718,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let zoe = Actor::human("zoe").unwrap();
@@ -1599,7 +1739,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         repository
@@ -1629,7 +1769,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, start) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         repository
@@ -1650,7 +1790,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         assert!(matches!(
@@ -1662,7 +1802,7 @@ mod tests {
             Err(PullError::Denied { .. })
         ));
         repository
-            .close_pull(number, &daniel(), None, &AllowAll)
+            .close_pull(number, &daniel(), None, None, &AllowAll)
             .unwrap();
         assert!(matches!(
             repository.approve_pull(number, &mia(), None, None, &AllowAll),
@@ -1671,7 +1811,7 @@ mod tests {
     }
 
     #[test]
-    fn a_register_needs_a_signature_that_it_accepts_and_the_proof_is_a_file() {
+    fn a_register_needs_a_signature_that_it_accepts_and_the_statement_carries_it() {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let register = approvers();
@@ -1685,6 +1825,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap()
@@ -1709,23 +1850,43 @@ mod tests {
             Err(PullError::Proof(_))
         ));
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
+        assert_eq!(
+            repository.statement_set().hashes().unwrap().len(),
+            1,
+            "a refused approval leaves no statement"
+        );
         let entry = approve(&mia(), Some(&Seeded::new(2))).unwrap();
-        assert_eq!(proof_files(&dir), 1);
+        // The signature is part of the statement that the entry names: there is no proof file.
+        assert_eq!(proof_files(&dir), 0);
+        let hash = entry.statement().expect("the entry names its statement");
+        let statement = repository.statement_set().get(&hash).unwrap().unwrap();
+        assert_eq!(statement.key(), Some(&key(2)));
         let recount = repository
             .recount_approvals(number, Some(&register))
             .unwrap();
         assert_eq!(recount.count(), 1);
-        // The log and its proofs hold together against the register.
+        assert_eq!(recount.counted()[0].statement(), &statement);
+        // The approval names the pull request by the hash of its opening, not by its number.
+        let pulls = repository.pull_requests().unwrap();
+        assert_eq!(recount.counted()[0].pull(), pulls[0].id());
+        // The log, the statements, and the register hold together.
         let entries = repository.oplog().verify().unwrap();
         assert_eq!(
             register::check_proofs(&repository.metadata_dir(), &register, &entries).unwrap(),
-            1
+            0
+        );
+        let verified = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap();
+        assert_eq!(
+            (verified.statements, verified.unnamed, verified.unsigned),
+            (2, 0, 0)
         );
         assert_eq!(entry.pull().unwrap().kind(), PullKind::Approve);
     }
 
     #[test]
-    fn an_approval_without_its_proof_or_with_a_proof_for_another_head_does_not_count() {
+    fn an_approval_without_its_statement_or_with_one_for_another_head_does_not_count() {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let register = approvers();
@@ -1739,6 +1900,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap()
@@ -1752,45 +1914,126 @@ mod tests {
                 &AllowAll,
             )
             .unwrap();
-        let path = register::proof_path(&repository.metadata_dir(), entry.number());
-        let proof = std::fs::read_to_string(&path).unwrap();
-        // A crash between the entry and the proof leaves the entry alone.
+        let count = || {
+            repository
+                .recount_approvals(number, Some(&register))
+                .unwrap()
+        };
+        assert_eq!(count().count(), 1);
+        let path = repository
+            .statement_set()
+            .path_of(&entry.statement().unwrap());
+        let statement = std::fs::read(&path).unwrap();
+        // An entry whose statement is gone names nothing: the approval is not even listed, and
+        // `op verify` reports the entry.
         std::fs::remove_file(&path).unwrap();
+        let recount = count();
+        assert_eq!((recount.count(), recount.void().len()), (0, 0));
+        let entries = repository.oplog().verify().unwrap();
+        let error = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap_err();
+        assert!(
+            matches!(error, StatementCheckError::Missing { number, .. } if number == entry.number()),
+            "{error:?}"
+        );
+        std::fs::write(&path, &statement).unwrap();
+        assert_eq!(count().count(), 1);
+        // A statement of Mia for another head does not carry over. Under an entry that claims
+        // the current head it places nothing, and `op verify` reports the difference.
+        let head = repository.refs().branch(&feature()).unwrap().unwrap();
+        let other_head = CommitId::new(Blob::new("x").id().object_id());
+        let pull = repository.pull_requests().unwrap()[0].id();
+        let other = by_hand::statement(
+            Body::Approval(statement::Approval::new(None, pull, other_head)),
+            Some(&Seeded::new(2)),
+        );
+        let claimed = PullEntry::approve(now(), ana(), number, head).unwrap();
+        let claimed = by_hand::pull_naming(&repository, &ana(), claimed, &other);
+        let recount = count();
+        assert_eq!((recount.count(), recount.void().len()), (1, 0));
+        let entries = repository.oplog().verify().unwrap();
+        let error = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap_err();
+        assert!(
+            matches!(error, StatementCheckError::Disagrees { number, .. } if number == claimed.number()),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_recount_asks_the_register_for_every_statement_that_an_entry_names() {
+        let dir = TempDir::new();
+        let (repository, _) = repository(&dir);
+        let register = approvers();
+        repository
+            .claim_lease(&feature(), &daniel(), 60, &AllowAll)
+            .unwrap();
+        let number = repository
+            .open_pull(
+                &feature(),
+                &daniel(),
+                vec![],
+                None,
+                Some(&register),
+                Some(&Seeded::new(1)),
+                &AllowAll,
+            )
+            .unwrap()
+            .number();
+        let head = repository.refs().branch(&feature()).unwrap().unwrap();
+        let other_head = CommitId::new(Blob::new("x").id().object_id());
+        // Written past the writer: an approval for another head, one without a signature, and
+        // one of Ana that the key of Mia signed. The last one is the only approval of Mia's
+        // key, and it does not count for Ana.
+        let stale = by_hand::approve(
+            &repository,
+            &mia(),
+            number,
+            other_head,
+            Some(&Seeded::new(2)),
+        );
+        let unsigned = by_hand::approve(&repository, &mia(), number, head, None);
+        let foreign = by_hand::approve(&repository, &ana(), number, head, Some(&Seeded::new(2)));
         let recount = repository
             .recount_approvals(number, Some(&register))
             .unwrap();
         assert_eq!(recount.count(), 0);
+        let void: Vec<(u64, &pull::NotCounted)> = recount
+            .void()
+            .iter()
+            .map(|(approval, why)| (approval.entry(), why))
+            .collect();
+        assert_eq!(void.len(), 3);
+        assert_eq!(void[0], (stale.number(), &pull::NotCounted::OtherHead));
         assert!(
-            matches!(&recount.void()[0].1, pull::NotCounted::Proof(why) if why.contains("no proof"))
+            matches!(void[1], (entry, pull::NotCounted::Proof(why))
+                if entry == unsigned.number() && why.contains("not signed")),
+            "{void:?}"
         );
-        // The proof of an approval of another head does not carry over: Mia signs another head,
-        // and the file is put under the entry of her approval.
-        std::fs::write(&path, &proof).unwrap();
-        assert_eq!(
-            repository
-                .recount_approvals(number, Some(&register))
-                .unwrap()
-                .count(),
-            1
+        assert!(
+            matches!(void[2], (entry, pull::NotCounted::Proof(_)) if entry == foreign.number()),
+            "{void:?}"
         );
-        let other = Seeded::new(2)
-            .sign(&signature::signed_bytes(
-                PayloadKind::Approval,
-                signature::FORMAT_VERSION,
-                &pull::approval_payload(number, &CommitId::new(Blob::new("x").id().object_id())),
-            ))
-            .unwrap();
-        let swapped = ProofFile {
-            actor: mia(),
-            signature: other,
-        };
-        std::fs::write(&path, swapped.encode()).unwrap();
+        // The open mode asks no register: the two approvals of the head count, one per identity.
         assert_eq!(
-            repository
-                .recount_approvals(number, Some(&register))
-                .unwrap()
-                .count(),
-            0
+            repository.recount_approvals(number, None).unwrap().count(),
+            2
+        );
+        // `op verify` calls the foreign key damage; a statement without a signature only does
+        // not count.
+        let entries = repository.oplog().verify().unwrap();
+        let error = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                StatementCheckError::Proof { number, error: ProofError::KeyNotOfActor }
+                    if number == foreign.number()
+            ),
+            "{error:?}"
         );
     }
 
@@ -1809,6 +2052,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap()
@@ -1840,6 +2084,9 @@ mod tests {
         // `op verify` does not call a void approval damage.
         let entries = repository.oplog().verify().unwrap();
         register::check_proofs(&repository.metadata_dir(), &register, &entries).unwrap();
+        repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap();
     }
 
     /// Stores a commit with the tree of its first parent and moves `branch` from `old` to it.
@@ -1903,7 +2150,7 @@ mod tests {
         // Zoe writes the commit that only the branch has.
         push_commit(&repository, &zoe);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         repository
@@ -1943,7 +2190,7 @@ mod tests {
         let side = put_commit(&repository, &side_branch, start, vec![start], &zoe);
         put_commit(&repository, &feature(), start, vec![start, side], &daniel());
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         let error = repository
@@ -1969,7 +2216,7 @@ mod tests {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let number = repository
-            .open_pull(&feature(), &daniel(), vec![], None, None, &AllowAll)
+            .open_pull(&feature(), &daniel(), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         for session in ["s1", "s2"] {
@@ -1992,6 +2239,10 @@ mod tests {
                 push_commit(self.0, &Actor::human("zoe").unwrap());
                 Seeded::new(2).sign(message)
             }
+
+            fn public_key(&self) -> Result<PublicKey, SignError> {
+                Ok(key(2))
+            }
         }
 
         let dir = TempDir::new();
@@ -2007,6 +2258,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap()
@@ -2024,7 +2276,7 @@ mod tests {
         assert!(matches!(error, PullError::HeadMoved { .. }), "{error:?}");
         // The only new entry is the commit that moved the head.
         assert_eq!(repository.oplog().entries().unwrap().len(), before + 1);
-        assert!(pull::approvals(&repository.oplog().entries().unwrap()).is_empty());
+        assert!(repository.evidence().unwrap().approvals.is_empty());
         assert_eq!(proof_files(&dir), 0);
         // A new try on the new head counts.
         repository
@@ -2060,6 +2312,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap()
@@ -2097,7 +2350,7 @@ mod tests {
     }
 
     #[test]
-    fn a_forged_proof_of_a_revoked_key_is_damage_of_the_log() {
+    fn a_forged_signature_of_a_revoked_key_is_damage_and_not_a_void_approval() {
         let dir = TempDir::new();
         let (repository, _) = repository(&dir);
         let mut register = approvers();
@@ -2111,6 +2364,7 @@ mod tests {
                 vec![],
                 None,
                 Some(&register),
+                Some(&Seeded::new(1)),
                 &AllowAll,
             )
             .unwrap()
@@ -2124,28 +2378,34 @@ mod tests {
                 &AllowAll,
             )
             .unwrap();
-        // The proof now holds a signature of the key of Mia over something else.
-        let forged = signature::sign(&Seeded::new(2), PayloadKind::Approval, b"other").unwrap();
-        let path = register::proof_path(&repository.metadata_dir(), entry.number());
-        let proof = ProofFile {
-            actor: mia(),
-            signature: forged,
-        };
-        std::fs::write(path, proof.encode()).unwrap();
+        // The statement now holds a signature of the key of Mia over something else.
+        let forged = signature::sign(&Seeded::new(2), PayloadKind::PullApproval, b"other").unwrap();
+        let path = repository
+            .statement_set()
+            .path_of(&entry.statement().unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let signature_line = text.lines().last().unwrap();
+        let changed = text.replace(
+            signature_line,
+            &format!("signature {}", register::signature_to_line(&forged)),
+        );
+        std::fs::write(&path, changed).unwrap();
         register
             .revoke(&Identity::of(&mia()), &key(2), 100)
             .unwrap();
+        // The signature is checked before the state of the key, so a key that no longer counts
+        // cannot hide a forged statement: the approval is not listed, and `op verify` reports
+        // the file.
+        let recount = repository
+            .recount_approvals(number, Some(&register))
+            .unwrap();
+        assert_eq!((recount.count(), recount.void().len()), (0, 0));
         let entries = repository.oplog().verify().unwrap();
-        let error =
-            register::check_proofs(&repository.metadata_dir(), &register, &entries).unwrap_err();
+        let error = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap_err();
         assert!(
-            matches!(
-                error,
-                register::CheckError::Proof {
-                    error: ProofError::Signature(_),
-                    ..
-                }
-            ),
+            matches!(error, StatementCheckError::Set(SetError::Malformed { .. })),
             "{error:?}"
         );
     }

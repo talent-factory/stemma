@@ -30,9 +30,10 @@ use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::object::{BlobId, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
 use crate::oplog::PullKind;
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
-use crate::pull::{self, PullRequest};
+use crate::pull::PullRequest;
 use crate::refs::{BranchName, Head, RefError};
 use crate::remote::{RemoteRef, RemoteRefName};
+use crate::statements::SetError;
 use crate::store::{Batch, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, ActorRef, Allowed, Authorizer};
 
@@ -405,8 +406,12 @@ impl Repository {
         trees.extend(views.trees);
         trees.sort();
         trees.dedup();
-        // The entry `pr-open` of an open pull request stays: its state is the log (ADR-004).
-        let open: HashSet<u64> = pull::pull_requests(&log)
+        // The entry `pr-open` of an open pull request stays: it gives the opening its place and
+        // its opener, so the pull request would vanish with it (ADR-004, ADR-011).
+        let open: HashSet<u64> = self
+            .evidence_of(&log)
+            .map_err(statements_unreadable)?
+            .pulls
             .iter()
             .filter(|pull| pull.is_open())
             .map(PullRequest::number)
@@ -1188,6 +1193,23 @@ impl Error for PurgeError {
     }
 }
 
+/// The failure to read a statement as a failure of the store: the fold fails for the file system
+/// only, as a statement that is missing or damaged does not count and is no error.
+fn statements_unreadable(error: SetError) -> PurgeError {
+    match error {
+        SetError::Io {
+            operation,
+            path,
+            source,
+        } => PurgeError::Store(Box::new(StoreError::Io {
+            operation,
+            path,
+            source,
+        })),
+        other => unreachable!("the fold skips a statement that is not readable: {other}"),
+    }
+}
+
 /// Refuses a purge that would rewrite the commit of a tag (ADR-008, ADR-014): lists every such
 /// tag, so that one refusal names them all. A tag in `moving` is one that the purge moves by the
 /// decision of the person, so it is not refused.
@@ -1524,20 +1546,31 @@ mod tests {
         }
     }
 
-    /// Writes the entry of a pull request for `branch`, which names `commit`, and returns its
-    /// number.
-    fn open_pull(repository: &Repository, commit: CommitId) -> u64 {
+    /// Writes the opening of a pull request for the branch `feature`, which names `commit` and,
+    /// if given, the commit that it repairs: the statement of the open mode and the entry that
+    /// names it. Returns the number of the entry.
+    fn open_pull_repairing(
+        repository: &Repository,
+        commit: CommitId,
+        repairs: Option<CommitId>,
+    ) -> u64 {
         use crate::oplog::PullEntry;
-        let entry = PullEntry::open(
-            1,
-            actor(),
-            BranchName::try_new("feature").unwrap(),
-            commit,
-            vec![],
-            None,
-        )
-        .unwrap();
+        use crate::protocol::statement::{Body, Opening, Statement};
+        let branch = BranchName::try_new("feature").unwrap();
+        let opening = Opening::try_new(None, branch.clone(), commit, Vec::new(), repairs).unwrap();
+        let hash = repository
+            .statement_set()
+            .put(&Statement::unsigned(Body::Opening(opening)))
+            .unwrap();
+        let entry = PullEntry::open(1, actor(), branch, commit, vec![], repairs)
+            .unwrap()
+            .with_statement(hash)
+            .unwrap();
         repository.oplog().append_pull(&entry).unwrap().number()
+    }
+
+    fn open_pull(repository: &Repository, commit: CommitId) -> u64 {
+        open_pull_repairing(repository, commit, None)
     }
 
     #[test]
@@ -1576,7 +1609,15 @@ mod tests {
             let end = if merged {
                 PullEntry::merge(2, actor(), number, second).unwrap()
             } else {
-                PullEntry::close(2, actor(), number).unwrap()
+                // A closing is a statement that names the pull request by its hash.
+                use crate::protocol::statement::{Body, Closing, Statement};
+                let id = repository.pull_requests().unwrap()[0].id();
+                let closing = Statement::unsigned(Body::Closing(Closing::new(None, id)));
+                let hash = repository.statement_set().put(&closing).unwrap();
+                PullEntry::close(2, actor(), number)
+                    .unwrap()
+                    .with_statement(hash)
+                    .unwrap()
             };
             repository.oplog().append_pull(&end).unwrap();
             let plan = repository
@@ -1656,20 +1697,10 @@ mod tests {
 
     #[test]
     fn the_repaired_commit_of_an_open_pull_request_counts_as_a_commit_it_names() {
-        use crate::oplog::PullEntry;
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [first, second, _] = history(&dir, &repository);
-        let entry = PullEntry::open(
-            1,
-            actor(),
-            BranchName::try_new("feature").unwrap(),
-            first,
-            vec![],
-            Some(second),
-        )
-        .unwrap();
-        let number = repository.oplog().append_pull(&entry).unwrap().number();
+        let number = open_pull_repairing(&repository, first, Some(second));
         let error = repository
             .plan_purge(secret(), &actor(), &AllowAll)
             .unwrap_err();

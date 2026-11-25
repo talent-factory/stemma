@@ -2,7 +2,7 @@
 //! a tree, a commit, an actor line, the index, an entry of the log, the journal of a purge, and the
 //! policy file (whose check is a fixed point, see [`policy`]),
 //! one for the readers of the protocol messages together ([`protocol`]), which include the ref
-//! update and the record entry,
+//! update, the record entry, and every signed statement,
 //! and one for the merge of the lines of a file ([`merge_lines`]), which is no reader.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
 //! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
@@ -151,8 +151,10 @@ pub fn policy(input: &[u8]) {
 const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 
 /// The messages of the protocol (ADR-023): the list of references, the fetch request, the error,
-/// the object stream (`stemma_core::protocol`), and the ref update and the record entry
-/// (`stemma_core::protocol::record`, see [`protocol_record`]). The input is given to each of the
+/// the object stream (`stemma_core::protocol`), the ref update and the record entry
+/// (`stemma_core::protocol::record`, see [`protocol_record`]), and the signed statements of
+/// every kind (`stemma_core::protocol::statement`, see [`protocol_statement`]). The input is
+/// given to each of the
 /// readers, because a message does not name its type and each reader must refuse the messages of
 /// the others. A reader that accepts the input writes it back unchanged, and for a small message
 /// the value it read is one that the constructors build. A refusal is answered with an error
@@ -235,6 +237,7 @@ pub fn protocol(input: &[u8]) {
         Err(error) => check_refusal(&error),
     }
     protocol_record(input, &check_refusal);
+    protocol_statement(input, &check_refusal);
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
         loop {
@@ -371,6 +374,86 @@ fn protocol_record(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseE
     }
 }
 
+/// The part of [`protocol`] for the signed statements (ADR-025): the opening of a pull request,
+/// an approval, the result of a check, a closing, and an owner override, which one reader reads
+/// by the line that names the kind. A fuzzer makes no signature, so the form is read without
+/// the check of the signature: what that reader accepts is written back unchanged and is a
+/// value that the constructor of its kind builds, and it has a hash. The reader that checks the
+/// signature accepts the same value or refuses for the signature alone, which it never does for
+/// an unsigned statement, and it refuses everything else for the reason of the form.
+fn protocol_statement(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseError)) {
+    use crate::protocol::statement::{
+        Approval, Body, Checked, Closing, Opening, OwnerOverride, Statement, StatementProblem,
+    };
+    use crate::protocol::ParseError;
+    let statement = match Statement::parse_unverified(input) {
+        Ok(statement) => statement,
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(Statement::parse(input).as_ref(), Err(&error));
+            return;
+        }
+    };
+    assert_eq!(statement.encode(), input, "a second spelling was accepted");
+    let repository = statement.body().repository();
+    let rebuilt = match statement.body() {
+        Body::Opening(body) => Opening::try_new(
+            repository,
+            body.branch().clone(),
+            body.head(),
+            body.reviewers().to_vec(),
+            body.repairs(),
+        )
+        .map(Body::Opening),
+        Body::Approval(body) => Ok(Body::Approval(Approval::new(
+            repository,
+            body.pull(),
+            body.head(),
+        ))),
+        Body::Check(body) => {
+            Checked::try_new(repository, body.commit(), body.base(), body.result()).map(Body::Check)
+        }
+        Body::Closing(body) => Ok(Body::Closing(Closing::new(repository, body.pull()))),
+        Body::Override(body) => OwnerOverride::try_new(
+            repository,
+            body.branch().clone(),
+            body.holder().clone(),
+            body.commit(),
+            body.reason(),
+        )
+        .map(Body::Override),
+    };
+    assert_eq!(
+        rebuilt.as_ref(),
+        Ok(statement.body()),
+        "the reader and the writer disagree"
+    );
+    assert_eq!(statement.is_signed(), statement.key().is_some());
+    assert_eq!(statement.is_signed(), statement.signature().is_some());
+    // The hash is a function of the message.
+    assert_eq!(statement.hash(), statement.clone().hash());
+    match Statement::parse(input) {
+        Ok(verified) => assert_eq!(verified, statement),
+        Err(error) => {
+            assert!(
+                statement.is_signed(),
+                "an unsigned statement was refused for a signature"
+            );
+            assert!(
+                matches!(
+                    error,
+                    ParseError::Statement {
+                        reason: StatementProblem::Key | StatementProblem::Signature,
+                        ..
+                    }
+                ),
+                "a message whose form is right was refused for its form: {error}"
+            );
+            check_refusal(&error);
+        }
+    }
+}
+
 /// The byte that separates the three texts of an input of [`merge_lines`].
 pub const MERGE_SEPARATOR: u8 = 0x1e;
 
@@ -503,8 +586,10 @@ pub(crate) mod tests {
             }),
             ("protocol", super::protocol, |b| {
                 use crate::protocol::record::{RecordEntry, RefUpdate};
+                use crate::protocol::statement::Statement;
                 use crate::protocol::{ErrorMessage, FetchRequest, ObjectStreamReader, RefList};
                 RefList::parse(b).is_ok()
+                    || Statement::parse(b).is_ok()
                     || RefUpdate::parse(b).is_ok()
                     || RecordEntry::parse(b).is_ok()
                     || FetchRequest::parse(b).is_ok()

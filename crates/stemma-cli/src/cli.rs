@@ -99,9 +99,9 @@ use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
     OpenError, Planned, PurgeError, PurgePlan, Purged, RebaseError, Rebased, Repository,
-    ReservedPrefix, RestoreError, RestorePlan, Revision, SnapshotError, Status, StatusError,
-    SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking, UpdateError,
-    WorktreeBranch, WorktreeError, BRANCH_PREFIX, REMOTE_PREFIX, TAG_PREFIX,
+    ReservedPrefix, RestoreError, RestorePlan, Revision, SnapshotError, StatementsVerified, Status,
+    StatusError, SwitchError, SwitchPlan, SwitchTarget, Switched, TagPolicy, TrackError, Tracking,
+    UpdateError, WorktreeBranch, WorktreeError, BRANCH_PREFIX, REMOTE_PREFIX, TAG_PREFIX,
 };
 use stemma_core::signature::{self, PayloadKind, PublicKey, Signature, SshKeygen};
 use stemma_core::{Actor, ActorParseError, AllowAll};
@@ -1285,7 +1285,8 @@ enum CliError {
     /// The arguments or files of a register command are wrong, or the register refuses the
     /// change. Nothing is changed.
     Register(String),
-    /// The register or a proof is not valid or not accepted: damage (code 5).
+    /// The register, a proof, or a signed statement is not valid or not accepted: damage
+    /// (code 5).
     RegisterDamaged(String),
     /// The repository or the register file was made or changed, but the register could not be
     /// written completely or the result could not be written (code 3): a script must not run
@@ -3213,7 +3214,9 @@ fn log_json(id: CommitId, commit: &AnyCommit, current: bool) -> String {
 }
 
 /// Checks the hash chain of the whole log and the tip file (see `FsOpLog::verify`), and the
-/// anchor if one is given, and prints the anchor of the last entry (ADR-011). The chain shows that
+/// anchor if one is given, the proofs of an enforcing repository, and the signed statements with
+/// the entries that name them (ADR-025, `Repository::verify_statements`), and prints the anchor
+/// of the last entry (ADR-011). The chain shows that
 /// the entries agree with one another; whoever can write `.stemma` can compute it again, so only
 /// an anchor kept outside the repository shows that the log was not rewritten. It only reads, and
 /// a closed pipe is not a failure.
@@ -3255,8 +3258,8 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
             anchor.number
         ));
     }
-    match Mode::of(&repository) {
-        Ok(Mode::Open) => {}
+    let register = match Mode::of(&repository) {
+        Ok(Mode::Open) => None,
         Ok(Mode::Enforcing(register)) => {
             let proofs = register::check_proofs(&repository.metadata_dir(), &register, &entries)
                 .map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
@@ -3264,8 +3267,15 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
                 "The actor register is valid, and {proofs} proofs of log entries hold against \
                  it.\n"
             ));
+            Some(register)
         }
         Err(error) => return Err(CliError::RegisterDamaged(error.to_string())),
+    };
+    let verified = repository
+        .verify_statements(&entries, register.as_ref())
+        .map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
+    if verified.statements > 0 {
+        text.push_str(&statements_text(verified, register.is_some()));
     }
     if let Some(hash) = last.hash() {
         let anchor = Anchor {
@@ -3279,6 +3289,34 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
         Err(source) => Err(CliError::VerifyOutput(source)),
         Ok(()) => Ok(()),
     }
+}
+
+/// What `op verify` says about the signed statements of a repository that holds some.
+fn statements_text(verified: StatementsVerified, enforcing: bool) -> String {
+    let mut text = format!(
+        "Checked {} signed statements: each is valid, and every entry that names one agrees \
+         with it",
+        verified.statements
+    );
+    text.push_str(if enforcing {
+        ", and the signatures hold against the actor register.\n"
+    } else {
+        ".\n"
+    });
+    if verified.unnamed > 0 {
+        text.push_str(&format!(
+            "{} of them are named by no entry and count for nothing.\n",
+            verified.unnamed
+        ));
+    }
+    if verified.unsigned > 0 {
+        text.push_str(&format!(
+            "{} entries name a statement without a signature, which does not count in an \
+             enforcing repository.\n",
+            verified.unsigned
+        ));
+    }
+    text
 }
 
 /// Opens the repository that the directory of `-C` lies in (ADR-009): the directory itself, or

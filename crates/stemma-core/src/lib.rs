@@ -42,6 +42,7 @@ pub mod change;
 pub mod check;
 pub mod conflict;
 pub mod diff;
+pub mod evidence;
 pub mod failure;
 // Public only with the feature `fault-injection`, so that the tests of other crates can arm a
 // guard; hidden from the documentation.
@@ -73,6 +74,7 @@ pub mod register;
 pub mod remote;
 pub mod repository;
 pub mod signature;
+pub mod statements;
 pub mod store;
 #[cfg(test)]
 mod testutil;

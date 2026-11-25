@@ -169,7 +169,7 @@ fn init_bare_makes_the_layout_without_head_working_copy_and_log() {
     );
     assert_eq!(
         fs::read(root.join("format")).unwrap(),
-        b"stemma-repository 15\n"
+        b"stemma-repository 16\n"
     );
     assert_eq!(fs::read(root.join("bare")).unwrap(), b"stemma-bare\n");
     // The temporary directory of `init_bare` is gone: nothing else lies beside the repository.
@@ -569,12 +569,12 @@ fn every_operation_that_needs_the_operation_log_is_refused_before_it_asks_or_wri
     assert_refused!(lacks, repository.pull_requests(), error in PullError::Refs(error));
     assert_refused!(
         lacks,
-        repository.open_pull(&feature, &actor, vec![], None, None, &deny),
+        repository.open_pull(&feature, &actor, vec![], None, None, None, &deny),
         error in PullError::Refs(error)
     );
     assert_refused!(
         lacks,
-        repository.close_pull(1, &actor, None, &deny),
+        repository.close_pull(1, &actor, None, None, &deny),
         error in PullError::Refs(error)
     );
     assert_refused!(
@@ -595,7 +595,7 @@ fn every_operation_that_needs_the_operation_log_is_refused_before_it_asks_or_wri
     // The checks and the bounds of the gate that read them.
     assert_refused!(
         lacks,
-        repository.record_check(commit, None, CheckResult::Pass, &actor, &deny),
+        repository.record_check(commit, None, CheckResult::Pass, &actor, None, None, &deny),
         error in CheckError::Refs(error)
     );
     assert_refused!(lacks, repository.checks(), error in CheckError::Refs(error));

@@ -1,57 +1,74 @@
-//! The operations on the evidence of a check (ADR-019, STEMMA-240).
+//! The operations on the evidence of a check (ADR-019, ADR-025, STEMMA-240, STEMMA-290).
 //!
-//! [`record_check`](Repository::record_check) writes the entry `check` under the lock of the
-//! references, as every entry that moves no pointer. The entry says who ran the check, which commit
-//! it tested, the tip of `main` it was merged onto, and the result. It asks the authorizer for the
-//! operation `check` and nothing more about the writer: whether a result counts for a change is
-//! decided when it is read, by [`counted_checks`](Repository::counted_checks), because it depends
-//! on the pull request, its authors, and its risk level, none of which the entry holds. The last
-//! green tip is read by [`last_green_tip`](Repository::last_green_tip).
+//! The result of a check is a signed statement ([`Checked`]), and the log records the act:
+//! [`record_check`](Repository::record_check) makes the statement, puts it into the set under
+//! the lock of the references, and writes the entry `check` that names its hash, as every entry
+//! that moves no pointer. The statement says which commit was tested, the tip of `main` it was
+//! merged onto, and the result; the entry says who ran the check and when. The writer asks the
+//! authorizer for the operation `check`, and in an enforcing repository for a signature of an
+//! active key of the actor, and nothing more about the writer: whether a result counts for a
+//! change is decided when it is read, by [`counted_checks`](Repository::counted_checks), because
+//! it depends on the pull request, its authors, and its risk level, none of which the statement
+//! holds. The last green tip is read by [`last_green_tip`](Repository::last_green_tip).
 
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
-use std::fs;
-use std::io;
 
-use super::{now, Repository};
+use super::pull::make_statement;
+use super::statements::{proof_of, EvidenceError};
+use super::{now, PullError, Repository};
 use crate::check::{self, Check};
 use crate::conflict::AnyCommit;
 use crate::history::{self, HistoryError, Parents};
 use crate::object::{CommitId, Kind};
 use crate::oplog::{CheckEntry, CheckResult, Entry, OpLogError, OperationName, CHECK};
 use crate::policy::RiskLevel;
+use crate::protocol::record::SealError;
+use crate::protocol::statement::{Body, Checked};
 use crate::refs::RefError;
-use crate::register::{proof_path, ProofFile, Register};
+use crate::register::{ProofError, Register};
+use crate::signature::Signer;
+use crate::statements::SetError;
 use crate::store::StoreError;
 use crate::{Actor, Authorizer};
 
 impl Repository {
-    /// Writes the entry of a check run by `actor`: `commit` was tested, merged onto `base` (the
+    /// Records the result of a check run by `actor`: `commit` was tested, merged onto `base` (the
     /// tip of `main` of that test), or run as it is for `None`, and the run has `result`.
     ///
-    /// One entry holds one base, so a run against another tip is another call. In an enforcing
-    /// repository the caller signs the hash of the returned entry with the key of the actor and
-    /// writes the proof (`register::write_proof`), as for every entry whose rule depends on who
-    /// acts; a result without a proof does not count ([`counted_checks`](Self::counted_checks)).
+    /// The result is a signed statement ([`Checked`]), and the entry `check` names its hash. One
+    /// statement holds one base, so a run against another tip is another call. Where the
+    /// repository has a `register`, `signer` signs the statement with a key that the register
+    /// holds for `actor` as an active key, and the signature is checked before anything is
+    /// written; a result counts by that signature ([`counted_checks`](Self::counted_checks)). In
+    /// open mode there is no register, and the statement is unsigned. The signature is made
+    /// before the lock is taken, because a key with a passphrase may ask a person.
     ///
     /// # Errors
     ///
     /// Returns [`CheckError::Denied`] if the authorizer refuses, [`CheckError::BaseIsCommit`] if
-    /// `base` is `commit` (a run merged onto itself), [`CheckError::NoSuchCommit`] if the store
-    /// has no commit of that ID (nothing is written), and [`CheckError::Refs`],
-    /// [`CheckError::Store`], and [`CheckError::Log`] for a failure of the lock, the store, or
-    /// the log.
+    /// `base` is `commit` (a run merged onto itself), [`CheckError::SignatureRequired`] for a
+    /// register and no signer, [`CheckError::Sign`], [`CheckError::Proof`], and
+    /// [`CheckError::KeyNotActive`] for a signature that cannot be made or that the register
+    /// does not accept, and [`CheckError::NoSuchCommit`] if the store has no commit of that ID.
+    /// Nothing is written for any of them. [`CheckError::Refs`], [`CheckError::Store`],
+    /// [`CheckError::Statements`], and [`CheckError::Log`] are a failure of the lock, the
+    /// store, the set of statements, or the log; a failure of the log can leave the statement
+    /// without its entry, which counts for nothing.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
     /// [`is_bare`](crate::repository::Repository::is_bare).
+    #[allow(clippy::too_many_arguments)]
     pub fn record_check(
         &self,
         commit: CommitId,
         base: Option<CommitId>,
         result: CheckResult,
         actor: &Actor,
+        register: Option<&Register>,
+        signer: Option<&dyn Signer>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, CheckError> {
         self.require_oplog("record a check")?;
@@ -63,9 +80,18 @@ impl Repository {
                 operation: CHECK.to_owned(),
                 target,
             })?;
-        if base == Some(commit) {
-            return Err(CheckError::BaseIsCommit { commit });
-        }
+        let checked = Checked::try_new(None, commit, base, result)
+            .map_err(|_| CheckError::BaseIsCommit { commit })?;
+        let statement =
+            make_statement(Body::Check(checked), actor, register, signer).map_err(|error| {
+                match error {
+                    PullError::SignatureRequired => CheckError::SignatureRequired,
+                    PullError::KeyNotActive => CheckError::KeyNotActive,
+                    PullError::Sign(error) => CheckError::Sign(error),
+                    PullError::Proof(error) => CheckError::Proof(error),
+                    _ => unreachable!("making a statement fails for its signature only"),
+                }
+            })?;
         let lock = self.refs_store().lock_writer(&allowed)?;
         for named in std::iter::once(commit).chain(base) {
             match self.objects().kind_of(&named.object_id())? {
@@ -75,47 +101,45 @@ impl Repository {
                 }
             }
         }
-        let entry = CheckEntry::new(now(), actor.clone(), commit, base, result);
+        let hash = self.statement_set().put(&statement)?;
+        let entry =
+            CheckEntry::new(now(), actor.clone(), commit, base, result).with_statement(hash);
         Ok(self.append_check(&lock, &entry)?)
     }
 
-    /// The checks that the log tells of, in the order of their entries (see [`check::checks`]).
+    /// The checks that the statements tell of, in the order of the entries that name them (see
+    /// [`evidence::fold`](crate::evidence::fold)). An entry `check` of a repository format
+    /// before 16 names no statement and is not among them (ADR-011).
     ///
     /// # Errors
     ///
-    /// Returns [`CheckError::Log`] if the log cannot be read.
+    /// Returns [`CheckError::Log`] if the log cannot be read and [`CheckError::Statements`] if
+    /// a statement cannot be read for a failure of the file system.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
     /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn checks(&self) -> Result<Vec<Check>, CheckError> {
         self.require_oplog("read the checks")?;
-        let entries = self.oplog().entries().map_err(CheckError::Log)?;
-        Ok(check::checks(&entries))
+        Ok(self.evidence()?.checks)
     }
 
-    /// Every check of the log that an enforcing repository accepts: all of them in the open mode
-    /// (`register` is `None`, the writer is a claim), and in an enforcing one those with a proof
-    /// of the writer, as in [`counted_checks`](Self::counted_checks). A run that fails counts as
-    /// well as one that passes: an unproven failure must not pause `main`.
+    /// Every check that an enforcing repository accepts: all of them in the open mode
+    /// (`register` is `None`, the writer is a claim), and in an enforcing one those whose
+    /// statement carries a signature of the writer that the register accepts, as in
+    /// [`counted_checks`](Self::counted_checks). A run that fails counts as well as one that
+    /// passes: an unproven failure must not pause `main`.
     ///
     /// # Errors
     ///
-    /// Returns [`CheckError::Log`] if the log cannot be read and [`CheckError::Io`] if a proof
-    /// file cannot be read.
+    /// Returns [`CheckError::Log`] if the log cannot be read and [`CheckError::Statements`] if
+    /// a statement cannot be read for a failure of the file system.
     pub(super) fn proven_checks(
         &self,
         register: Option<&Register>,
     ) -> Result<Vec<Check>, CheckError> {
-        let mut found = Vec::new();
-        for check in self.checks()? {
-            if let Some(register) = register {
-                if !self.has_proof(register, &check)? {
-                    continue;
-                }
-            }
-            found.push(check);
-        }
+        let mut found = self.checks()?;
+        found.retain(|check| has_proof(register, check));
         Ok(found)
     }
 
@@ -129,16 +153,16 @@ impl Repository {
     /// - has a writer that counts at the level ([`check::counts`]): registered where a register
     ///   exists, at every level, and at the levels 2 and 3 independent of the opener of the pull
     ///   request, of the authors of the commits `tip..commit`, and of their sponsors, and
-    /// - has, in an enforcing repository (`register` is `Some`), a proof file that the register
-    ///   accepts for the number of the entry: a signature of the hash of the entry by a key of the
-    ///   writer. A missing, malformed, or invalid proof does not count and is not reported here;
-    ///   `stemma op verify` checks the proof files that exist, and a missing proof only means that
-    ///   the result does not count.
+    /// - is, in an enforcing repository (`register` is `Some`), a statement with a signature that
+    ///   the register accepts for the writer and the number of the entry that names it
+    ///   ([`Register::verify_statement`]). An unsigned statement, and a signature of a key that
+    ///   is not the writer's or no longer counts, does not count and is not reported here;
+    ///   `stemma op verify` checks the statements and the entries that name them.
     ///
     /// `register` is the register of the base commit of the pull request, the one that counts for
     /// the signatures (ADR-003); at the levels 0 and 1 the results may have other bases, and the
     /// caller decides which register is the right one for them. `None` is the open mode, where
-    /// the actor is a claim and no proof exists.
+    /// the actor is a claim and the statement is unsigned.
     ///
     /// # Errors
     ///
@@ -146,9 +170,8 @@ impl Repository {
     /// [`CheckError::NotTheHead`] if `commit` is not the head that the opening names,
     /// [`CheckError::TipReachesHead`] at the levels 2 and 3 if `tip` is `commit` or descends from
     /// it (the authors of the change would be none), [`CheckError::History`] at these levels if
-    /// the commits cannot be walked,
-    /// [`CheckError::Io`] if a proof file cannot be read, and [`CheckError::Log`] if the log
-    /// cannot be read.
+    /// the commits cannot be walked, [`CheckError::Statements`] if a statement cannot be read
+    /// for a failure of the file system, and [`CheckError::Log`] if the log cannot be read.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -162,9 +185,9 @@ impl Repository {
         register: Option<&Register>,
     ) -> Result<Vec<Check>, CheckError> {
         self.require_oplog("read the checks")?;
-        let entries = self.oplog().entries().map_err(CheckError::Log)?;
-        let pulls = crate::pull::pull_requests(&entries);
-        let pull = pulls
+        let evidence = self.evidence()?;
+        let pull = evidence
+            .pulls
             .iter()
             .find(|candidate| candidate.number() == pull)
             .ok_or(CheckError::NoSuchPull { number: pull })?;
@@ -180,20 +203,15 @@ impl Repository {
             RiskLevel::Two | RiskLevel::Three => self.change_authors(commit, tip)?,
         };
         let mut counted = Vec::new();
-        for found in check::checks(&entries) {
-            if found.commit() != commit
-                || !found.passed()
-                || !check::applies_at(level, &found, tip)
-                || !check::counts(level, &found, pull.opener(), &authors, register)
+        for found in &evidence.checks {
+            if found.commit() == commit
+                && found.passed()
+                && check::applies_at(level, found, tip)
+                && check::counts(level, found, pull.opener(), &authors, register)
+                && has_proof(register, found)
             {
-                continue;
+                counted.push(found.clone());
             }
-            if let Some(register) = register {
-                if !self.has_proof(register, &found)? {
-                    continue;
-                }
-            }
-            counted.push(found);
         }
         Ok(counted)
     }
@@ -203,15 +221,17 @@ impl Repository {
     /// first-parent history is `main`, and a run on a commit outside it does not count.
     ///
     /// In an enforcing repository (`register` is `Some`, the register of the current tip of
-    /// `main`) only a run counts whose writer has a proof that the register accepts, as in
-    /// [`counted_checks`](Self::counted_checks); otherwise any actor could write the tip. `None`
-    /// is the open mode, where the actor is a claim and no proof exists; it must not be passed for
-    /// an enforcing repository, as the proof would then not be asked for.
+    /// `main`) only a run counts whose statement carries a signature of the writer that the
+    /// register accepts, as in [`counted_checks`](Self::counted_checks); otherwise any actor
+    /// could write the tip. `None` is the open mode, where the actor is a claim and the statement
+    /// is unsigned; it must not be passed for an enforcing repository, as the signature would
+    /// then not be asked for.
     ///
     /// # Errors
     ///
     /// Returns [`CheckError::Log`] if the log cannot be read, [`CheckError::History`] if the
-    /// history of `main` cannot be walked, and [`CheckError::Io`] if a proof file cannot be read.
+    /// history of `main` cannot be walked, and [`CheckError::Statements`] if a statement cannot
+    /// be read for a failure of the file system.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -229,15 +249,13 @@ impl Repository {
                 .collect();
         let mut candidates = Vec::new();
         for found in self.checks()? {
-            if found.base().is_some() || !found.passed() || !main.contains(found.commit()) {
-                continue;
+            if found.base().is_none()
+                && found.passed()
+                && main.contains(found.commit())
+                && has_proof(register, &found)
+            {
+                candidates.push(found);
             }
-            if let Some(register) = register {
-                if !self.has_proof(register, &found)? {
-                    continue;
-                }
-            }
-            candidates.push(found);
         }
         Ok(check::last_green_tip(&candidates, &main).cloned())
     }
@@ -273,34 +291,13 @@ impl Repository {
         }
         Ok(authors)
     }
+}
 
-    /// Whether the proof file of the entry exists and the register accepts it.
-    fn has_proof(&self, register: &Register, check: &Check) -> Result<bool, CheckError> {
-        let text = match fs::read_to_string(proof_path(&self.metadata_dir(), check.number())) {
-            Ok(text) => text,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::InvalidData
-                ) =>
-            {
-                return Ok(false)
-            }
-            Err(error) => return Err(CheckError::Io(error)),
-        };
-        let Ok(proof) = ProofFile::parse(&text) else {
-            return Ok(false);
-        };
-        Ok(proof.actor == *check.writer()
-            && register
-                .verify_log_entry(
-                    &proof.actor,
-                    check.number(),
-                    check.hash().to_string().as_bytes(),
-                    &proof.signature,
-                )
-                .is_ok())
-    }
+/// Whether the statement of a check proves its writer: always in the open mode (`register` is
+/// `None`), and in an enforcing repository if the register accepts the signature for the
+/// writer and the number of the entry that names the statement.
+fn has_proof(register: Option<&Register>, check: &Check) -> bool {
+    proof_of(register, check.writer(), check.number(), check.statement()).is_ok()
 }
 
 /// Why an operation on the evidence of a check fails.
@@ -324,7 +321,17 @@ pub enum CheckError {
         /// The commit.
         commit: CommitId,
     },
-    /// The log has no opening with this number.
+    /// The repository has a register, so the statement of a check needs a signature, and the
+    /// caller gave no signer.
+    SignatureRequired,
+    /// The key of the signature is retired or revoked and signs nothing new.
+    KeyNotActive,
+    /// The statement could not be signed, or the signer signed with another key than the one
+    /// it named.
+    Sign(SealError),
+    /// The register does not accept the signature of the statement for the actor.
+    Proof(Box<ProofError>),
+    /// The statements have no opening with this number.
     NoSuchPull {
         /// The number.
         number: u64,
@@ -348,8 +355,8 @@ pub enum CheckError {
     Store(StoreError),
     /// The history could not be walked.
     History(HistoryError),
-    /// A proof file could not be read.
-    Io(io::Error),
+    /// The set of statements could not be read or written. Nothing was written to the log.
+    Statements(SetError),
 }
 
 impl fmt::Display for CheckError {
@@ -371,12 +378,22 @@ impl fmt::Display for CheckError {
                 write!(f, "the tip of main reaches the head {commit}")
             }
             Self::NoSuchCommit { commit } => write!(f, "the store has no commit {commit}"),
-            Self::NoSuchPull { number } => write!(f, "the log has no pull request {number}"),
+            Self::NoSuchPull { number } => write!(f, "there is no pull request {number}"),
+            Self::SignatureRequired => {
+                f.write_str("the repository has an actor register, so the statement must be signed")
+            }
+            Self::KeyNotActive => f.write_str(
+                "the key is not active and signs no new statement; sign with an active key",
+            ),
+            Self::Sign(error) => write!(f, "cannot sign the statement: {error}"),
+            Self::Proof(error) => {
+                write!(f, "the register does not accept the statement: {error}")
+            }
             Self::Refs(error) => error.fmt(f),
             Self::Log(error) => error.fmt(f),
             Self::Store(error) => error.fmt(f),
             Self::History(error) => error.fmt(f),
-            Self::Io(error) => write!(f, "cannot read a proof: {error}"),
+            Self::Statements(error) => error.fmt(f),
         }
     }
 }
@@ -388,7 +405,9 @@ impl Error for CheckError {
             Self::Log(error) => Some(error),
             Self::Store(error) => Some(error),
             Self::History(error) => Some(error),
-            Self::Io(error) => Some(error),
+            Self::Statements(error) => Some(error),
+            Self::Sign(error) => Some(error),
+            Self::Proof(error) => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -418,6 +437,21 @@ impl From<HistoryError> for CheckError {
     }
 }
 
+impl From<SetError> for CheckError {
+    fn from(error: SetError) -> Self {
+        Self::Statements(error)
+    }
+}
+
+impl From<EvidenceError> for CheckError {
+    fn from(error: EvidenceError) -> Self {
+        match error {
+            EvidenceError::Log(error) => Self::Log(error),
+            EvidenceError::Set(error) => Self::Statements(error),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ssh_key::private::Ed25519Keypair;
@@ -427,9 +461,9 @@ mod tests {
     use crate::change::ChangeId;
     use crate::object::Commit;
     use crate::refs::BranchName;
-    use crate::register::write_proof;
+    use crate::repository::statements::by_hand;
     use crate::repository::InitOptions;
-    use crate::signature::{self, PayloadKind, PublicKey, SignError, Signature, Signer, NAMESPACE};
+    use crate::signature::{self, PayloadKind, PublicKey, SignError, Signature, NAMESPACE};
     use crate::store::ObjectStore;
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
@@ -548,7 +582,7 @@ mod tests {
             )
             .unwrap();
         let number = repository
-            .open_pull(&feature, &human("mia"), vec![], None, None, &AllowAll)
+            .open_pull(&feature, &human("mia"), vec![], None, None, None, &AllowAll)
             .unwrap()
             .number();
         Fixture {
@@ -562,8 +596,27 @@ mod tests {
 
     fn record(f: &Fixture, writer: &str, base: Option<CommitId>, result: CheckResult) -> Entry {
         f.repository
-            .record_check(f.head, base, result, &human(writer), &AllowAll)
+            .record_check(f.head, base, result, &human(writer), None, None, &AllowAll)
             .unwrap()
+    }
+
+    /// The result of a run on the head as an entry of `writer` whose statement the key of `seed`
+    /// signed, written past the rules of the writer.
+    fn signed_run(
+        f: &Fixture,
+        writer: &Actor,
+        seed: u8,
+        base: Option<CommitId>,
+        result: CheckResult,
+    ) -> Entry {
+        by_hand::check(
+            &f.repository,
+            writer,
+            f.head,
+            base,
+            result,
+            Some(&Seeded::new(seed)),
+        )
     }
 
     fn counted(f: &Fixture, level: RiskLevel, register: Option<&Register>) -> Vec<u64> {
@@ -586,11 +639,19 @@ mod tests {
         assert_eq!(check.result(), CheckResult::Pass);
         assert_eq!(
             std::fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 15\n"
+            "stemma-repository 16\n"
         );
         let found = f.repository.checks().unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].number(), entry.number());
+        // The entry names the statement that the set holds, and the statement is the evidence.
+        let hash = check.statement().expect("the entry names its statement");
+        assert_eq!(entry.statement(), Some(hash));
+        let statement = f.repository.statement_set().get(&hash).unwrap().unwrap();
+        assert_eq!(found[0].statement(), &statement);
+        assert!(!statement.is_signed(), "the open mode has no key");
+        assert_eq!(statement.body().repository(), None);
+        assert_eq!(statement.body().commits(), [f.head, f.tip]);
         f.repository.oplog().verify().expect("the chain holds");
     }
 
@@ -601,8 +662,15 @@ mod tests {
         let before = f.repository.oplog().entries().unwrap().len();
         let not_stored = CommitId::new(crate::object::Blob::new("not stored").id().object_id());
         let run = |commit, base, authorizer: &dyn Authorizer| {
-            f.repository
-                .record_check(commit, base, CheckResult::Pass, &human("ana"), authorizer)
+            f.repository.record_check(
+                commit,
+                base,
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                authorizer,
+            )
         };
         assert!(matches!(
             run(not_stored, None, &AllowAll),
@@ -686,41 +754,42 @@ mod tests {
         let agent = Actor::agent("bot", "m", "s", "mia").unwrap();
         let entry = f
             .repository
-            .record_check(f.head, Some(f.tip), CheckResult::Pass, &agent, &AllowAll)
+            .record_check(
+                f.head,
+                Some(f.tip),
+                CheckResult::Pass,
+                &agent,
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         assert!(counted(&f, RiskLevel::Two, None).is_empty());
         assert_eq!(counted(&f, RiskLevel::One, None), [entry.number()]);
     }
 
     #[test]
-    fn in_an_enforcing_repository_a_result_counts_only_with_a_proof_of_its_writer() {
+    fn in_an_enforcing_repository_a_result_counts_only_with_a_signature_of_its_writer() {
         let dir = TempDir::new();
         let f = fixture(&dir);
         let register = register();
-        let metadata = f.repository.metadata_dir();
-        let signed = record(&f, "ana", Some(f.tip), CheckResult::Pass);
-        let unsigned = record(&f, "daniel", Some(f.tip), CheckResult::Pass);
-        let forged = record(&f, "mia", Some(f.tip), CheckResult::Pass);
-        let sign = |entry: &Entry, seed: u8, actor: &str| {
-            let signature = signature::sign(
-                &Seeded::new(seed),
-                PayloadKind::LogEntry,
-                entry.hash().unwrap().to_string().as_bytes(),
+        let pass = CheckResult::Pass;
+        // The writer signs with a key that the register holds for it.
+        let signed = f
+            .repository
+            .record_check(
+                f.head,
+                Some(f.tip),
+                pass,
+                &human("ana"),
+                Some(&register),
+                Some(&Seeded::new(2)),
+                &AllowAll,
             )
             .unwrap();
-            write_proof(
-                &metadata,
-                entry.number(),
-                &ProofFile {
-                    actor: human(actor),
-                    signature,
-                },
-            )
-            .unwrap();
-        };
-        sign(&signed, 2, "ana");
-        // A proof with the key of another actor is none.
-        sign(&forged, 2, "mia");
+        // A statement of the open mode, and one that the key of another actor signed.
+        let unsigned = record(&f, "daniel", Some(f.tip), pass);
+        let forged = signed_run(&f, &human("mia"), 2, Some(f.tip), pass);
         assert_eq!(
             counted(&f, RiskLevel::Zero, Some(&register)),
             [signed.number()]
@@ -729,18 +798,73 @@ mod tests {
             counted(&f, RiskLevel::Two, Some(&register)),
             [signed.number()]
         );
-        // The open mode asks for no proof.
-        assert_eq!(counted(&f, RiskLevel::Two, None).len(), 2);
-        assert!(!counted(&f, RiskLevel::Zero, Some(&register)).contains(&unsigned.number()));
-        // A proof file that is no proof, and a proof of another actor, do not count and do not
-        // fail.
-        let garbage = record(&f, "ana", Some(f.tip), CheckResult::Pass);
-        std::fs::write(proof_path(&metadata, garbage.number()), "not a proof").unwrap();
-        let other = record(&f, "ana", Some(f.tip), CheckResult::Pass);
-        sign(&other, 3, "mia");
+        // The open mode asks for no signature: Ana and Daniel count, Mia opened the change.
+        assert_eq!(
+            counted(&f, RiskLevel::Two, None),
+            [signed.number(), unsigned.number()]
+        );
+        assert_eq!(
+            counted(&f, RiskLevel::Zero, None),
+            [signed.number(), unsigned.number(), forged.number()]
+        );
+        // An entry whose statement is no statement, and one whose statement is gone, do not
+        // count and do not fail.
+        let set = f.repository.statement_set();
+        let garbage = signed_run(&f, &human("ana"), 2, Some(f.old), pass);
+        std::fs::write(
+            set.path_of(&garbage.statement().unwrap()),
+            "not a statement",
+        )
+        .unwrap();
+        let gone = signed_run(&f, &human("ana"), 2, None, pass);
+        std::fs::remove_file(set.path_of(&gone.statement().unwrap())).unwrap();
         assert_eq!(
             counted(&f, RiskLevel::Zero, Some(&register)),
             [signed.number()]
+        );
+        let listed: Vec<u64> = f
+            .repository
+            .checks()
+            .unwrap()
+            .iter()
+            .map(Check::number)
+            .collect();
+        assert_eq!(
+            listed,
+            [signed.number(), unsigned.number(), forged.number()]
+        );
+    }
+
+    #[test]
+    fn an_enforcing_repository_refuses_a_check_that_is_not_signed_by_its_writer() {
+        let dir = TempDir::new();
+        let f = fixture(&dir);
+        let register = register();
+        let before = f.repository.oplog().entries().unwrap().len();
+        let run = |writer: &str, signer: Option<&dyn Signer>| {
+            f.repository.record_check(
+                f.head,
+                Some(f.tip),
+                CheckResult::Pass,
+                &human(writer),
+                Some(&register),
+                signer,
+                &AllowAll,
+            )
+        };
+        assert!(matches!(
+            run("ana", None),
+            Err(CheckError::SignatureRequired)
+        ));
+        // The key of Mia does not sign for Ana, and a stranger has no entry in the register.
+        let error = run("ana", Some(&Seeded::new(3))).unwrap_err();
+        assert!(matches!(error, CheckError::Proof(_)), "{error:?}");
+        let error = run("zoe", Some(&Seeded::new(2))).unwrap_err();
+        assert!(matches!(error, CheckError::Proof(_)), "{error:?}");
+        assert_eq!(f.repository.oplog().entries().unwrap().len(), before);
+        assert!(
+            f.repository.statement_set().hashes().unwrap().len() == 1,
+            "only the opening of the fixture is in the set"
         );
     }
 
@@ -829,6 +953,8 @@ mod tests {
                 Some(f.tip),
                 CheckResult::Pass,
                 &human("ana"),
+                None,
+                None,
                 &AllowAll,
             )
             .unwrap();
@@ -920,7 +1046,15 @@ mod tests {
         let on_second_parent = record(&f, "ana", None, CheckResult::Pass);
         let on_line = f
             .repository
-            .record_check(f.tip, None, CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                f.tip,
+                None,
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         let found = f.repository.last_green_tip(&main, None).unwrap().unwrap();
         assert_eq!(found.number(), on_line.number());
@@ -928,46 +1062,51 @@ mod tests {
     }
 
     #[test]
-    fn a_proof_of_one_entry_does_not_make_another_entry_of_the_same_writer_count() {
+    fn a_statement_counts_for_the_writer_whose_key_signed_it_and_for_nobody_else() {
         let dir = TempDir::new();
         let f = fixture(&dir);
         let register = register();
-        let metadata = f.repository.metadata_dir();
-        let signed = record(&f, "ana", Some(f.tip), CheckResult::Pass);
-        let signature = signature::sign(
-            &Seeded::new(2),
-            PayloadKind::LogEntry,
-            signed.hash().unwrap().to_string().as_bytes(),
-        )
-        .unwrap();
-        write_proof(
-            &metadata,
-            signed.number(),
-            &ProofFile {
-                actor: human("ana"),
-                signature,
-            },
-        )
-        .unwrap();
-        // The same writer, the same key, the same words: only the entry differs, and a copy of
-        // the proof file under its number is a replay.
-        let replay = record(&f, "ana", Some(f.tip), CheckResult::Pass);
-        std::fs::copy(
-            proof_path(&metadata, signed.number()),
-            proof_path(&metadata, replay.number()),
-        )
-        .unwrap();
+        let pass = CheckResult::Pass;
+        let signed = signed_run(&f, &human("ana"), 2, Some(f.tip), pass);
+        let hash = signed.statement().unwrap();
+        let statement = f.repository.statement_set().get(&hash).unwrap().unwrap();
+        // An entry of Daniel that names the statement of Ana is a replay: the statement names
+        // no actor, and the key is not Daniel's.
+        let replay = by_hand::check_naming(
+            &f.repository,
+            &human("daniel"),
+            1,
+            (f.head, Some(f.tip), pass),
+            &statement,
+        );
+        assert_eq!(replay.statement(), Some(hash));
         assert_eq!(
             counted(&f, RiskLevel::Zero, Some(&register)),
             [signed.number()]
         );
+        // An entry that names the statement and says something else places nothing, in either
+        // mode: the statement is the evidence, not the lines of the entry.
+        let other_words = by_hand::check_naming(
+            &f.repository,
+            &human("ana"),
+            1,
+            (f.head, Some(f.old), pass),
+            &statement,
+        );
+        for mode in [None, Some(&register)] {
+            assert!(
+                !counted(&f, RiskLevel::Zero, mode).contains(&other_words.number()),
+                "{}",
+                mode.is_some()
+            );
+        }
         assert_eq!(
             f.repository
                 .last_green_tip(&f.tip, Some(&register))
                 .unwrap()
                 .map(|check| check.number()),
             None,
-            "no run without a base has a proof"
+            "no run without a base is signed"
         );
     }
 
@@ -1008,7 +1147,15 @@ mod tests {
         assert_eq!(authors.len(), 3);
         // A run on a conflicted commit is accepted like one on any commit.
         f.repository
-            .record_check(head, None, CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                head,
+                None,
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
     }
 
@@ -1056,102 +1203,58 @@ mod tests {
     }
 
     #[test]
-    fn a_registered_agent_counts_through_the_register_and_its_own_proof() {
+    fn a_registered_agent_counts_through_the_register_and_its_own_key() {
         let dir = TempDir::new();
         let f = fixture(&dir);
         let register = register_with_bot();
-        let metadata = f.repository.metadata_dir();
         // The register says that Mia, the opener, sponsors the agent.
         let bot = Actor::agent("bot", "m", "s", "mia").unwrap();
-        let sign = |entry: &Entry, seed: u8, actor: &Actor| {
-            let signature = signature::sign(
-                &Seeded::new(seed),
-                PayloadKind::LogEntry,
-                entry.hash().unwrap().to_string().as_bytes(),
-            )
-            .unwrap();
-            write_proof(
-                &metadata,
-                entry.number(),
-                &ProofFile {
-                    actor: actor.clone(),
-                    signature,
-                },
-            )
-            .unwrap();
-        };
-        let write = |actor: &Actor| {
-            f.repository
-                .record_check(f.head, Some(f.tip), CheckResult::Pass, actor, &AllowAll)
-                .unwrap()
-        };
-        let good = write(&bot);
-        sign(&good, 4, &bot);
+        let write =
+            |actor: &Actor, seed: u8| signed_run(&f, actor, seed, Some(f.tip), CheckResult::Pass);
+        let good = write(&bot, 4);
         // The key of the sponsor is not the key of the agent.
-        let sponsor_key = write(&bot);
-        sign(&sponsor_key, 3, &bot);
-        // A proof of the same agent in another session is a proof of another actor.
+        write(&bot, 3);
+        // The same agent in another session is the same identity, and its key signs for it.
         let other_session = Actor::agent("bot", "m", "s2", "mia").unwrap();
-        let session = write(&other_session);
-        sign(&session, 4, &bot);
-        // A line that claims another sponsor than the register has no valid proof.
+        let session = write(&other_session, 4);
+        // A line that claims another sponsor than the register has no valid signature.
         let liar = Actor::agent("bot", "m", "s", "daniel").unwrap();
-        let claim = write(&liar);
-        sign(&claim, 4, &liar);
+        write(&liar, 4);
         assert_eq!(
             counted(&f, RiskLevel::Zero, Some(&register)),
-            [good.number()]
+            [good.number(), session.number()]
         );
         // The agent is sponsored by the opener, so it is not independent at the levels 2 and 3.
         assert!(counted(&f, RiskLevel::Two, Some(&register)).is_empty());
     }
 
     #[test]
-    fn the_last_green_tip_is_a_commit_of_main_and_counts_only_with_a_proof_of_a_writer() {
+    fn the_last_green_tip_is_a_commit_of_main_and_counts_only_with_a_signature_of_a_writer() {
         let dir = TempDir::new();
         let f = fixture(&dir);
         let register = register();
-        let metadata = f.repository.metadata_dir();
         // `main` stands at `old`; its history is `old`, then `tip`. `head` is not on it.
-        let sign = |entry: &Entry, seed: u8, actor: &str| {
-            let signature = signature::sign(
-                &Seeded::new(seed),
-                PayloadKind::LogEntry,
-                entry.hash().unwrap().to_string().as_bytes(),
+        let run = |commit: CommitId, base: Option<CommitId>, writer: &str, seed, result| {
+            let signer = Seeded::new(seed);
+            by_hand::check(
+                &f.repository,
+                &human(writer),
+                commit,
+                base,
+                result,
+                Some(&signer),
             )
-            .unwrap();
-            write_proof(
-                &metadata,
-                entry.number(),
-                &ProofFile {
-                    actor: human(actor),
-                    signature,
-                },
-            )
-            .unwrap();
-        };
-        let run = |commit: CommitId, base: Option<CommitId>, writer: &str, result| {
-            f.repository
-                .record_check(commit, base, result, &human(writer), &AllowAll)
-                .unwrap()
         };
         let pass = CheckResult::Pass;
-        let green = run(f.old, None, "ana", pass);
-        sign(&green, 2, "ana");
+        let green = run(f.old, None, "ana", 2, pass);
         // Newer entries that must all be passed over in the enforcing mode:
-        let unsigned = run(f.old, None, "daniel", pass);
-        let wrong_key = run(f.old, None, "ana", pass);
-        sign(&wrong_key, 3, "ana");
-        let other_actor = run(f.old, None, "ana", pass);
-        sign(&other_actor, 2, "daniel");
-        let red = run(f.old, None, "ana", CheckResult::Fail);
-        sign(&red, 2, "ana");
-        let with_base = run(f.old, Some(f.tip), "ana", pass);
-        sign(&with_base, 2, "ana");
-        let off_main = run(f.head, None, "ana", pass);
-        sign(&off_main, 2, "ana");
-        let rerun_older = run(f.tip, None, "ana", pass);
-        sign(&rerun_older, 2, "ana");
+        let unsigned = by_hand::check(&f.repository, &human("daniel"), f.old, None, pass, None);
+        let wrong_key = run(f.old, None, "ana", 3, pass);
+        let other_actor = run(f.old, None, "daniel", 2, pass);
+        run(f.old, None, "ana", 2, CheckResult::Fail);
+        run(f.old, Some(f.tip), "ana", 2, pass);
+        run(f.head, None, "ana", 2, pass);
+        let rerun_older = run(f.tip, None, "ana", 2, pass);
         let number = |tip: Option<Check>| tip.map(|check| check.number());
         assert_eq!(
             number(
@@ -1161,8 +1264,8 @@ mod tests {
             ),
             Some(green.number())
         );
-        // The open mode asks for no proof: the newest pass on the newest commit of `main` wins,
-        // and neither the run on `head` nor the late rerun on the older tip displaces it.
+        // The open mode asks for no signature: the newest pass on the newest commit of `main`
+        // wins, and neither the run on `head` nor the late rerun on the older tip displaces it.
         assert_eq!(
             number(f.repository.last_green_tip(&f.old, None).unwrap()),
             Some(other_actor.number())

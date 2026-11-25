@@ -147,7 +147,14 @@ fn written(example_name: &str) -> Vec<u8> {
         }
         "ref-update" => record::tests::example_update().encode(),
         "receipt" => record::tests::example_receipt().encode(),
-        other => panic!("no value for the example {other}"),
+        "statement-unsigned" => statement::tests::example_unsigned().encode(),
+        other => {
+            let kind = statement::StatementKind::ALL
+                .into_iter()
+                .find(|kind| other.strip_prefix("statement-") == Some(kind.name()))
+                .unwrap_or_else(|| panic!("no value for the example {other}"));
+            statement::tests::example(kind).encode()
+        }
     }
 }
 
@@ -162,6 +169,7 @@ fn round_trips(message: Message, bytes: &[u8]) -> bool {
         Message::Error => ErrorMessage::parse(bytes).is_ok_and(|m| m.encode() == bytes),
         Message::RefUpdate => record::RefUpdate::parse(bytes).is_ok_and(|m| m.encode() == bytes),
         Message::Receipt => record::RecordEntry::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::Statement => statement::Statement::parse(bytes).is_ok_and(|m| m.encode() == bytes),
     }
 }
 
@@ -198,6 +206,7 @@ fn every_example_is_refused_by_the_readers_of_the_other_messages() {
         Message::Error,
         Message::RefUpdate,
         Message::Receipt,
+        Message::Statement,
     ];
     for example in examples::ALL {
         for other in all {

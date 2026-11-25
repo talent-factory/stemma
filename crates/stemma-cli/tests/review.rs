@@ -167,6 +167,81 @@ fn closing_ends_the_pull_request_and_a_second_close_is_refused() {
     );
     let result = run(dir.path(), &["pr", "close", &number, "--actor", ACTOR]);
     assert_eq!(result.code, 1, "{}", result.stdout);
+    // An ended pull request is final: the same opening is not accepted twice (ADR-025).
+    let again = run(dir.path(), &["pr", "open", "feat", "--actor", ACTOR]);
+    assert_eq!(again.code, 1, "{}", again.stdout);
+    assert!(
+        again.stderr.contains("needs a new head"),
+        "{}",
+        again.stderr
+    );
+    // A new commit on the branch is a new head, and so a new pull request.
+    write(dir.path(), "b.txt", "b, again\n");
+    ok(dir.path(), &["commit", "-m", "more", "--actor", ACTOR]);
+    let next = open_pull(dir.path());
+    assert_ne!(next, number);
+}
+
+#[test]
+fn op_verify_checks_the_statements_and_the_entries_that_name_them() {
+    let dir = with_feature_branch();
+    let number = open_pull(dir.path());
+    ok(
+        dir.path(),
+        &[
+            "check", "record", "feat", "--base", "main", "--result", "pass", "--actor", OTHER,
+        ],
+    );
+    ok(dir.path(), &["pr", "approve", &number, "--actor", OTHER]);
+    let verified = ok(dir.path(), &["op", "verify"]);
+    assert!(
+        verified.stdout.contains(
+            "Checked 3 signed statements: each is valid, and every entry that names one agrees \
+             with it.\n"
+        ),
+        "{}",
+        verified.stdout
+    );
+    // One file per statement, named by its hash; the open mode signs nothing.
+    let statements = dir.path().join(".stemma/statements");
+    let mut files: Vec<_> = fs::read_dir(&statements)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    assert_eq!(files.len(), 3);
+    for file in &files {
+        let text = fs::read_to_string(file).unwrap();
+        assert!(text.starts_with("stemma-protocol 1\nstatement "), "{text}");
+        assert!(text.ends_with("key -\nsignature -\n"), "{text}");
+        assert_eq!(file.file_name().unwrap().len(), 64);
+    }
+    // A statement that an entry names and that is gone is damage; so is a changed one.
+    let kept = fs::read(&files[0]).unwrap();
+    fs::remove_file(&files[0]).unwrap();
+    let missing = run(dir.path(), &["op", "verify"]);
+    assert_eq!(missing.code, 5, "{}", missing.stdout);
+    assert!(
+        missing
+            .stderr
+            .contains("which the repository does not hold"),
+        "{}",
+        missing.stderr
+    );
+    let changed = String::from_utf8(kept.clone()).unwrap().replace(
+        "repository -",
+        "repository 00112233445566778899aabbccddeeff",
+    );
+    fs::write(&files[0], changed).unwrap();
+    let damaged = run(dir.path(), &["op", "verify"]);
+    assert_eq!(damaged.code, 5, "{}", damaged.stdout);
+    assert!(
+        damaged.stderr.contains("holds the statement"),
+        "{}",
+        damaged.stderr
+    );
+    fs::write(&files[0], kept).unwrap();
+    ok(dir.path(), &["op", "verify"]);
 }
 
 #[test]
@@ -364,7 +439,15 @@ fn an_enforcing_repository_signs_checks_and_approvals() {
     write(dir.path(), "b.txt", "b\n");
     track_ok(dir.path(), "b.txt");
     ok(dir.path(), &["commit", "-m", "feature", "--actor", ACTOR]);
-    let number = open_pull_as(dir.path(), ACTOR);
+    // The opening is a signed statement: no key, no entry.
+    let unsigned = run(dir.path(), &["pr", "open", "feat", "--actor", ACTOR]);
+    assert_eq!(unsigned.code, 1, "{}", unsigned.stdout);
+    assert!(
+        unsigned.stderr.contains("--key KEY_FILE"),
+        "{}",
+        unsigned.stderr
+    );
+    let number = open_pull_as(dir.path(), ACTOR, &owner);
 
     // No key, no entry.
     let unsigned = run(dir.path(), &["pr", "approve", &number, "--actor", OTHER]);
@@ -391,7 +474,23 @@ fn an_enforcing_repository_signs_checks_and_approvals() {
         ],
     );
     let verified = ok(dir.path(), &["op", "verify"]);
-    assert!(verified.stdout.contains("proofs"), "{}", verified.stdout);
+    // The signatures are part of the statements, so there is no proof file to count.
+    assert!(
+        verified
+            .stdout
+            .contains("and 0 proofs of log entries hold against it."),
+        "{}",
+        verified.stdout
+    );
+    assert!(
+        verified.stdout.contains(
+            "Checked 3 signed statements: each is valid, and every entry that names one agrees \
+             with it, and the signatures hold against the actor register.\n"
+        ),
+        "{}",
+        verified.stdout
+    );
+    assert!(!dir.path().join(".stemma/proofs").exists());
     let merged = ok(
         dir.path(),
         &["pr", "merge", &number, "--level", "2", "--actor", ACTOR],
@@ -403,8 +502,8 @@ fn an_enforcing_repository_signs_checks_and_approvals() {
     );
 }
 
-fn open_pull_as(dir: &Path, actor: &str) -> String {
-    let result = ok(dir, &["pr", "open", "feat", "--actor", actor]);
+fn open_pull_as(dir: &Path, actor: &str, key: &str) -> String {
+    let result = ok(dir, &["pr", "open", "feat", "--key", key, "--actor", actor]);
     result
         .stdout
         .split_whitespace()
@@ -489,7 +588,7 @@ fn an_approval_signed_with_the_wrong_key_is_refused() {
     write(dir.path(), "b.txt", "b\n");
     track_ok(dir.path(), "b.txt");
     ok(dir.path(), &["commit", "-m", "feature", "--actor", ACTOR]);
-    let number = open_pull_as(dir.path(), ACTOR);
+    let number = open_pull_as(dir.path(), ACTOR, &owner);
     let result = run(
         dir.path(),
         &["pr", "approve", &number, "--key", &owner, "--actor", OTHER],

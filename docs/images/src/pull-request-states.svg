@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 350" font-family="Helvetica, Arial, sans-serif">
-<title>Zustände eines Pull Requests, berechnet aus den Einträgen des Operation Logs</title>
+<title>Zustände eines Pull Requests, berechnet aus den Erklärungen und dem Eintrag des Merges</title>
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
   <marker id="arrow-crash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#B91C1C"/></marker>

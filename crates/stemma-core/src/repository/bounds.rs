@@ -303,7 +303,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`CheckError::Log`], [`CheckError::Io`], [`CheckError::History`], or [`CheckError::Refs`].
+    /// [`CheckError::Log`], [`CheckError::Statements`], [`CheckError::History`], or
+    /// [`CheckError::Refs`].
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see

@@ -2,19 +2,20 @@
 //!
 //! Each command is a thin layer over one operation of the core. The core decides and writes the
 //! entry; this module reads the arguments, loads the register of an enforcing repository, and
-//! prints the result. `check record` and `lease override` also sign the entry and write its proof
-//! (`prove`); `pr approve` hands a signer to the core.
+//! prints the result. `pr open`, `pr close`, `pr approve`, and `check record` hand a signer to
+//! the core, which signs the statement of the command (ADR-025) and checks the signature against
+//! the register before it writes anything. `lease override` signs the entry itself and writes its
+//! proof (`prove`), after it tried the key (`probe_key`).
 //!
 //! Exit codes follow the rest of the program: 1 for a refusal, 5 for damage, 6 for a lock that is
 //! held (try again), and 3 if an entry is written and the rest of the command could not finish: a
-//! proof that is not written, a lease file that is not replaced, or a merge whose move is not
-//! flushed. What to do after 3 depends on the command: `pr merge` repeated finishes the move,
-//! unless the message says that the pull request is merged and a worktree did not follow `main`
-//! (then `switch main` in that worktree brings it along);
-//! a repeated `pr approve` or `check record` writes a second entry (the first does not count
-//! without its proof), and a repeated `lease` command decides again from the lease file. The key
-//! of `check record` and `lease override` is tried against the register before anything is
-//! written, so exit 3 after the proof step is left for a failure that the probe cannot see.
+//! proof of `lease override` that is not written, a lease file that is not replaced, or a merge
+//! whose move is not flushed. What to do after 3 depends on the command: `pr merge` repeated
+//! finishes the move, unless the message says that the pull request is merged and a worktree did
+//! not follow `main` (then `switch main` in that worktree brings it along), and a repeated
+//! `lease` command decides again from the lease file. The key of `lease override` is tried
+//! against the register before anything is written, so exit 3 after the proof step is left for
+//! a failure that the probe cannot see.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -37,6 +38,7 @@ use stemma_core::repository::{
     Behind, CheckError, Followed, GateError, LeaseError, PullError, Repository, Revision,
 };
 use stemma_core::signature::{self, PayloadKind, SshKeygen};
+use stemma_core::statements::SetError;
 use stemma_core::store::{ObjectStore, StoreError};
 use stemma_core::{Actor, AllowAll};
 
@@ -112,6 +114,18 @@ fn pull_kind(error: &PullError) -> FailureKind {
         PullError::History(inner) => inner.kind(),
         PullError::Store(inner) => inner.kind(),
         PullError::Lease(inner) => lease_kind(inner),
+        PullError::Statements(inner) => set_kind(inner),
+        _ => FailureKind::Other,
+    }
+}
+
+/// A file of the set that is no statement under the name of its hash is damage; a failure of
+/// the file system is not.
+fn set_kind(error: &SetError) -> FailureKind {
+    match error {
+        SetError::Malformed { .. } | SetError::WrongName { .. } | SetError::UnexpectedFile(_) => {
+            FailureKind::Damaged
+        }
         _ => FailureKind::Other,
     }
 }
@@ -122,6 +136,7 @@ fn check_kind(error: &CheckError) -> FailureKind {
         CheckError::Log(inner) => inner.kind(),
         CheckError::Store(inner) => inner.kind(),
         CheckError::History(inner) => inner.kind(),
+        CheckError::Statements(inner) => set_kind(inner),
         _ => FailureKind::Other,
     }
 }
@@ -150,10 +165,18 @@ fn gate_kind(error: &GateError) -> FailureKind {
 }
 
 fn pull_error(error: PullError) -> ReviewError {
-    if matches!(error, PullError::ProofNotWritten { .. })
-        || matches!(&error, PullError::Log(inner) if not_flushed(inner))
-    {
+    if matches!(&error, PullError::Log(inner) if not_flushed(inner)) {
         return ReviewError::incomplete(error.to_string());
+    }
+    // The statement is signed and checked against the register before the first write.
+    if matches!(
+        error,
+        PullError::SignatureRequired
+            | PullError::KeyNotActive
+            | PullError::Sign(_)
+            | PullError::Proof(_)
+    ) {
+        return ReviewError::refused(format!("{error}; nothing is written"));
     }
     ReviewError::of_kind(error.to_string(), pull_kind(&error))
 }
@@ -188,6 +211,16 @@ fn check_error(error: CheckError) -> ReviewError {
         return ReviewError::incomplete(format!(
             "{error}; look at `check list`, and repeat the command if the entry is not there"
         ));
+    }
+    // The statement is signed and checked against the register before the first write.
+    if matches!(
+        error,
+        CheckError::SignatureRequired
+            | CheckError::KeyNotActive
+            | CheckError::Sign(_)
+            | CheckError::Proof(_)
+    ) {
+        return ReviewError::refused(format!("{error}; nothing is written"));
     }
     ReviewError::of_kind(error.to_string(), check_kind(&error))
 }
@@ -227,11 +260,12 @@ pub(super) struct Common {
     actor: Option<OsString>,
 }
 
-/// The key that signs, for a command that writes an entry whose rule depends on who acts.
+/// The key that signs, for a command that makes a signed statement or writes an entry whose rule
+/// depends on who acts.
 #[derive(Debug, Args)]
 pub(super) struct Signing {
     /// The key file of the actor, for `ssh-keygen -Y sign`: the private key, or the public key if
-    /// `ssh-agent` holds it. Required in an enforcing repository, where the entry is signed; an
+    /// `ssh-agent` holds it. Required in an enforcing repository, where the command signs; an
     /// open repository has no register and does not read it
     #[arg(long, value_name = "KEY_FILE")]
     key: Option<PathBuf>,
@@ -256,6 +290,9 @@ pub(super) struct PrOpenArgs {
     #[command(flatten)]
     common: Common,
 
+    #[command(flatten)]
+    signing: Signing,
+
     /// The branch to merge; its tip at this moment is the head of the pull request
     #[arg(value_name = "BRANCH")]
     branch: String,
@@ -274,6 +311,9 @@ pub(super) struct PrOpenArgs {
 pub(super) struct PrNumberArgs {
     #[command(flatten)]
     common: Common,
+
+    #[command(flatten)]
+    signing: Signing,
 
     /// The number of the pull request, as `pr list` shows it
     #[arg(value_name = "NUMBER")]
@@ -556,8 +596,28 @@ fn prove(
 
 fn missing_key() -> ReviewError {
     ReviewError::refused(
-        "this repository is enforcing, so the entry is signed: pass `--key KEY_FILE`",
+        "this repository is enforcing, so the command signs: pass `--key KEY_FILE`; nothing is \
+         written",
     )
+}
+
+/// The signer of a command that makes a signed statement: the key of `--key` in an enforcing
+/// repository, where it is required, and none in an open one, which does not read the key.
+fn signer_of(
+    register: Option<&Register>,
+    signing: &Signing,
+) -> Result<Option<SshKeygen>, ReviewError> {
+    match (register, signing.key.as_deref()) {
+        (None, _) => Ok(None),
+        (Some(_), Some(key)) => Ok(Some(SshKeygen::new(key))),
+        (Some(_), None) => Err(missing_key()),
+    }
+}
+
+fn as_signer(signer: &Option<SshKeygen>) -> Option<&dyn signature::Signer> {
+    signer
+        .as_ref()
+        .map(|signer| signer as &dyn signature::Signer)
 }
 
 fn write_out(out: &mut dyn Write, text: &str, made: Option<u64>) -> Result<(), CliError> {
@@ -604,6 +664,7 @@ fn pr_open(args: PrOpenArgs, out: &mut dyn Write) -> Result<(), CliError> {
     }
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
+    let signer = signer_of(register.as_ref(), &args.signing)?;
     let repairs = args
         .repairs
         .as_ref()
@@ -616,6 +677,7 @@ fn pr_open(args: PrOpenArgs, out: &mut dyn Write) -> Result<(), CliError> {
             reviewers,
             repairs,
             register.as_ref(),
+            as_signer(&signer),
             &AllowAll,
         )
         .map_err(pull_error)?;
@@ -630,8 +692,15 @@ fn pr_close(args: PrNumberArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let who = actor(args.common.actor)?;
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
+    let signer = signer_of(register.as_ref(), &args.signing)?;
     let entry = repository
-        .close_pull(args.number, &who, register.as_ref(), &AllowAll)
+        .close_pull(
+            args.number,
+            &who,
+            register.as_ref(),
+            as_signer(&signer),
+            &AllowAll,
+        )
         .map_err(pull_error)?;
     let text = format!("Closed pull request {}.\n", args.number);
     write_out(out, &text, Some(entry.number()))
@@ -641,18 +710,13 @@ fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> 
     let who = actor(args.common.actor)?;
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
-    let signer = args.signing.key.as_deref().map(SshKeygen::new);
-    if register.is_some() && signer.is_none() {
-        return Err(missing_key().into());
-    }
+    let signer = signer_of(register.as_ref(), &args.signing)?;
     let entry = repository
         .approve_pull(
             args.number,
             &who,
             register.as_ref(),
-            signer
-                .as_ref()
-                .map(|signer| signer as &dyn signature::Signer),
+            as_signer(&signer),
             &AllowAll,
         )
         .map_err(pull_error)?;
@@ -856,7 +920,7 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
     let who = actor(args.common.actor)?;
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
-    probe_key(register.as_ref(), &args.signing, &who)?;
+    let signer = signer_of(register.as_ref(), &args.signing)?;
     let commit = commit_of(&repository, &args.commit)?;
     let base = args
         .base
@@ -869,9 +933,16 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
         CheckResult::Fail
     };
     let entry = repository
-        .record_check(commit, base, result, &who, &AllowAll)
+        .record_check(
+            commit,
+            base,
+            result,
+            &who,
+            register.as_ref(),
+            as_signer(&signer),
+            &AllowAll,
+        )
         .map_err(check_error)?;
-    prove(&repository, register.as_ref(), &args.signing, &who, &entry)?;
     let text = format!(
         "Recorded {} for {} in entry {}.\n",
         result.name(),

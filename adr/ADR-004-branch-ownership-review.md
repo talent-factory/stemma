@@ -3,7 +3,8 @@
 **Status:** Accepted for phase 4 (STEMMA-233). The decisions are made in STEMMA-222 to STEMMA-232.
 What concerns the hub goes to the private project stemma-hub (hand-over in ADR-003). The
 decisions of phase 5 that touch the rules below (STEMMA-273, STEMMA-275, STEMMA-276) are marked
-with their ADR; they were carried in by STEMMA-280 and are not implemented yet.
+with their ADR; they were carried in by STEMMA-280. Of them the signed statements of rules 3 and
+4 are implemented (STEMMA-290); what concerns a hub is not yet.
 
 ## Decision
 
@@ -19,20 +20,28 @@ with their ADR; they were carried in by STEMMA-280 and are not implemented yet.
 2. Owner override is available only to a human with the owner role. It is signed, carries a
    reason, and leaves an entry in the operation log. The entry names no commit, so the purge never
    touches it (STEMMA-225). The override changes who writes, never what the merge gate asks.
-3. Protected branches such as `main` change only through pull requests. A pull request is a
+   For a hub the override has a signed statement of its own (rule 9, ADR-025); its format is
+   built (STEMMA-290), and the local entry `lease-override` does not name one yet.
+3. Protected branches such as `main` change only through pull requests. A pull request was a
    sequence of entries in the operation log (STEMMA-226, STEMMA-238). From phase 5 on its
    evidence is signed statements (the opening, an approval, a check result, a closing), which a
    clone and a hub fold with one function; the entries of the log record the act and name the hash
-   of the statement they made (ADR-025).
+   of the statement they made (ADR-025, STEMMA-290). The hash of the signed opening names the
+   pull request, and its number in the log of a clone stays the name that the commands show.
+   An ended pull request is final: the same opening is not accepted twice, so the next pull
+   request of a branch needs a new head. In an enforcing repository the opener signs the
+   opening and whoever closes signs the closing, with an active key of the register; in the
+   open mode a statement carries no key and no signature and counts only there.
 4. Agents may review and approve. No self-approval. Approvals are bound to the head
    commit they name, and signed where the repository has a register (ADR-011); any new commit
-   voids them (STEMMA-227). An approval is the entry
-   `pr-approve` (ADR-011). "No self-approval" means by identity: the reviewer is neither the
+   voids them (STEMMA-227). An approval is a signed statement that names the pull request by
+   the hash of its opening, and the head; the entry `pr-approve` names the statement (ADR-011,
+   ADR-025). "No self-approval" means by identity: the reviewer is neither the
    opener of the pull request nor the author of a commit that it brings, and not the actor of the
    log entry that first brought such a commit under a branch, a tag, or the working copy: the
    author field is a claim of whoever made the commit, and nothing compares it with the actor
-   (STEMMA-255). The approving command and the recount ask the same question, so an entry
-   written by hand does not count.
+   (STEMMA-255). The approving command and the recount ask the same question, so an entry or
+   a statement written by hand does not count.
 5. Risk levels 0 to 3 by impact of the change. The level follows from all touched paths.
    The policy file is itself level 3.
 6. Diff display is level 1, diff computation in the merge path is level 2.

@@ -10,7 +10,8 @@ width of the number) and none of them changes a decision. The flush of directori
 was decided on 2026-10-24 (STEMMA-84). The anchor
 that the actor cannot change, the statement about what a hub sees, and the entries that name a
 signed statement were decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, STEMMA-274,
-STEMMA-56; see "The log and a hub"); they are not implemented yet.
+STEMMA-56; see "The log and a hub"). The entries that name a signed statement are implemented
+(STEMMA-290, see "The entries that name a signed statement"); the rest is not yet.
 
 ## Context
 
@@ -235,7 +236,9 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   migration is to run `init` again. Version 3 came with the purge (ADR-014), version 4 with
   the hash chain (below), version 8 with the lease entries, version 9 with the pull request
   entries, version 10 with the approval entry, version 11 with the check entry, version 12
-  with the kind in the stub (below), and version 13 with the line `former-owner` (below).
+  with the kind in the stub (below), version 13 with the line `former-owner` (below), and
+  version 16 with the entries that name a signed statement (below; the versions 14 and 15
+  changed no entry, ADR-009).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change and a `purge` entry; a new stub has version 4
@@ -496,11 +499,13 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     refuses a lease entry, as it moved no pointer, and `outcomes` passes over it like a purge.
 
 - **The three pull request entries** *(confirmed; STEMMA-226, STEMMA-238)*. A pull request has
-  no object and no reference (ADR-004 rule 3). It is the sequence of the entries `pr-open`,
-  `pr-close`, and `pr-merge`, named by the number of its `pr-open` entry, and they move no
-  pointer, like the lease entries. The state is derived and not stored: `open`, `closed`, or
-  `merged`, folded from the log by `pull::pull_requests`. "Approved" is no state of the log; it
-  follows from the approvals on the current head (below). The prototype of STEMMA-226
+  no object and no reference (ADR-004 rule 3). In the formats 9 to 15 it is the sequence of the
+  entries `pr-open`, `pr-close`, and `pr-merge`, named by the number of its `pr-open` entry, and
+  they move no pointer, like the lease entries. The state is derived and not stored: `open`,
+  `closed`, or `merged`. Since format 16 the evidence is signed statements, and the state is
+  folded from them and from the entries `pr-merge` (see "The entries that name a signed
+  statement"); the entries, their lines, and the rules of this item stay. "Approved" is no
+  state of the log; it follows from the approvals on the current head (below). The prototype of STEMMA-226
   compared an object chain, one mutable reference, and entries of the log. Entries won, since the
   log is already the history, the hash chain, and the signature; the other two would have needed
   a new object kind or a new reference namespace, and a store that a purge rewrites.
@@ -547,8 +552,11 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - **The check entry** *(confirmed; STEMMA-240)*. A check run is evidence about a pair of commits
   (ADR-019): the commit that was tested and the tip of `main` it was merged onto for the test, its
   base. It is an entry of the log, like the pull request entries, and for the same reason: the log
-  is already the history, the hash chain, and the place of the signature. A proof of the writer is
-  the proof of the entry (ADR-003), so a check needs no format of its own for it.
+  is already the history, the hash chain, and the place of the signature. In the formats 11 to
+  15 a proof of the writer is the proof of the entry (ADR-003), so a check needs no format of
+  its own for it. Since format 16 the result is a signed statement that the entry names, and
+  the signature of the statement is the proof (see "The entries that name a signed
+  statement"); what this item says about the proof file holds for the entries of version 1.
   - **The encoding stays `stemma-oplog 3`, the format rises to 11.** The entry is always in the
     chain and has no older encoding. A program that knows only version 10 refuses the repository
     instead of calling the entry damaged (ADR-009).
@@ -592,7 +600,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     calling the entry damaged (ADR-009).
   - **The lines.** `operation pr-approve`, `pull <number>`, and `commit <id>`, the head that the
     reviewer reviewed. Any other line is an error. The reviewer is the actor of the entry.
-  - **The signature is not a line.** Where the repository has a register, the proof is the file
+  - **The signature is not a line.** This is the approval of the formats 10 to 15; since
+    format 16 the signature is part of the statement that the entry names, and an approval has
+    no proof file (see "The entries that name a signed statement"). Where the repository has a
+    register, the proof is the file
     `proofs/<number of the entry>` (ADR-003). It signs, as the type `approval`, the bytes
     `pull <number>\ncommit <id>\n`: the pull request and the head, not the hash of the entry.
     Binding it to the head is what lets a new commit void it (ADR-004 rule 4), and the number
@@ -625,8 +636,77 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     stub keeps, so `op verify` checks it for the stub of any other entry (STEMMA-256; before, a
     stub of any entry passed). The stub says which of the two it is: encoding 4 above.
 
-- **The log and a hub** *(decided for phase 5 in STEMMA-56, STEMMA-273 and STEMMA-274; not
-  implemented yet)*.
+- **The entries that name a signed statement** *(decided in STEMMA-273; implemented in
+  STEMMA-290)*. The evidence about a pull request is signed statements (ADR-025): its opening,
+  an approval, the result of a check, and its closing. The log keeps recording what the clone
+  did, and the entry of such an act names the statement that it made.
+  - **The lines.** `pr-open`, `pr-close`, and `pr-approve` end with the line
+    `statement <hash>`. `check` has the line `version 2` in place of `version 1` and ends with
+    `statement <hash>`. The hash is that of the statement, in the form of an object ID
+    (ADR-025). `pr-merge` names none: "merged" is no statement, and in a clone this entry is
+    the fact. The other lines stay as they were, so the log reads without the set (`op log`),
+    and a purge finds the commits that an entry names (ADR-014). The entry repeats what the
+    statement says, with one difference of form: the reviewers of an entry are actors, and
+    those of an opening are identities.
+  - **The encoding stays `stemma-oplog 3`, the format rises to 16.** The reader accepts both
+    forms: an entry of a pull request without the line, and a `check` of version 1, is an entry
+    of an older format. The writer writes the new form only. A program that knows only version
+    15 refuses the repository instead of calling the line damage (ADR-009).
+  - **An entry of an older format is no evidence.** It stays an entry of the chain, `op log`
+    shows it, and `op verify` checks its proof file as before. The fold reads statements only,
+    so a pull request that was open under an older format is opened again, and a check is
+    recorded again. Nothing is converted: a statement is signed by the key of its actor, and
+    two forms of evidence side by side are what ADR-025 rules out.
+  - **The entry places the statement.** A statement names no number, no time, and no actor. In a
+    clone the entry that names it gives it the three: its own number and time, and its actor.
+    The fold (`evidence::fold`, the function that a hub calls for its set) takes the statements
+    in this order. An entry places its statement if the set holds it (ADR-009), the strict
+    reader accepts it, it is of the kind of the entry, and it says what the lines of the entry
+    say. `pull <number>` of an entry and the hash of the opening in a statement are joined by
+    the entry `pr-open` with that number; where a purge made a stub of that entry, the number
+    cannot be compared and is taken as it is. An entry that places nothing counts for nothing.
+  - **The name of a pull request** is the hash of its signed opening, in every clone and on a
+    hub. The number of its `pr-open` entry stays its name in this log: the lines `pull <number>`
+    use it, and so do the commands, until the command surface decides how people name a pull
+    request (ADR-025).
+  - **The proof is the signature of the statement.** Where the repository has a register, the
+    statement is signed with a key that the register holds for the actor as an active key; in
+    the open mode it carries no key and no signature (ADR-025). These entries have no proof
+    file. Whoever counts the evidence asks the register for the signature, with the actor and
+    the number of the entry (`Register::verify_statement`): the recount of the approvals, the
+    rule table of the checks, and the bounds of the gate (ADR-019). A key counts as for the
+    proofs before: a retired key for what stands before its retirement, a revoked key never
+    for an approval and for every other kind only before its revocation. An opening and a
+    closing are not counted against the register by the fold, as an opening had no proof
+    before either; `op verify` reports one that the register does not accept.
+  - **The order of writing.** The statement is signed before the lock of the references is
+    taken, because a key with a passphrase may ask a person, and the register is asked for the
+    signature before anything is written: every refusal comes before the first write. Under
+    the lock the rules are checked again, the statement is put into the set (a temporary file,
+    a flush, a rename), and then the entry is written. A stop in between leaves a statement
+    that no entry names, which counts for nothing, and the call can be made again. The state
+    "an approval without its proof", which the formats 10 to 15 had, does not exist any more.
+  - **An ended pull request is final** (ADR-025): the writer refuses an opening that the fold
+    knows already, and the fold skips one that is placed a second time. The next pull request
+    of a branch needs a new head, other reviewers, or another repair.
+  - **`op verify` checks the statements and the entries that name them.** Every file of the
+    set is a statement under the name of its hash, with a signature that verifies for the key
+    that it names. Every entry that names a statement names one that the set holds, of its
+    kind, that says what its lines say. In an enforcing repository the signature of that
+    statement is one of a key of the actor of the entry that counts for the number of the
+    entry. Three things are no damage: a statement that no entry names, an unsigned statement
+    in an enforcing repository (it does not count), and an approval of a key that was retired
+    or revoked since (it is void, which the recount shows).
+  - **Purge.** The entries are replaced by stubs as before (above). The purge does not touch
+    the set: the statement of a stub stays as a statement that no entry names. A closing names
+    no commit and stays; that its opening is a stub is no damage. What a purge does with such
+    statements is an open item of ADR-025.
+  - **Not built.** The `fetch` entry that names the statements received, and an entry
+    `lease-override` that names the statement of an owner override, whose format exists
+    (ADR-025). They come with their slices.
+
+- **The log and a hub** *(decided for phase 5 in STEMMA-56, STEMMA-273 and STEMMA-274; the
+  entries that name a statement are implemented, see above, the rest is not yet)*.
   - **A hub never sees an entry of the log.** The log can hold a secret until it is purged
     (ADR-014), and a purge would not reach a copy. What reaches a hub is the anchor of the tip
     alone: the number and the hash of the last entry, signed by the actor, which the hub confirms
@@ -640,7 +720,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     the hash of the statement they made, and the fold of the gate reads from the statements. One
     form holds everywhere, also without a remote. This is a new version of the entries and of
     the repository format (ADR-009). A pull request is named by the hash of its opening, not by
-    the number of its `pr-open` entry, so the name holds in every clone.
+    the number of its `pr-open` entry, so the name holds in every clone. Built in STEMMA-290;
+    `pr-close` names its statement as well, since a closing is one.
   - **`fetch` and `push` are operations with one entry each.** A `fetch` entry names the remote
     references it moves and removes, with their old and new state, and the statements received. A
     `push` entry is written after the receipt and names the remote references it moved and the

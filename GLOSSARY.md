@@ -7,7 +7,7 @@ Each term names the German word that the book uses in parentheses. The book's te
 in `docs/agents/book-style.md` lists the same pairs.
 
 What an entry says about a hub, a remote, a namespace, or "from phase 5 on" is decided
-(ADR-022 to ADR-027) and not implemented yet.
+(ADR-022 to ADR-027) and not implemented yet, unless the entry says that it is built.
 
 ## Content and history
 
@@ -160,9 +160,10 @@ commits, and the reservation. The policy sets the values of the last two; changi
 _Avoid_: Limit
 
 **Approval**:
-The entry `pr-approve`: a reviewer signs the head of a pull request. It binds that head, so a new
-commit on the branch voids it, and a reviewer never approves their own work. From phase 5 on the
-signed part is a statement, and the entry names its hash. (Freigabe)
+A reviewer signs the head of a pull request. It binds that head, so a new commit on the branch
+voids it, and a reviewer never approves their own work. The signed part is a statement that
+names the pull request by the hash of its opening, and the entry `pr-approve` names the hash of
+that statement (ADR-025). (Freigabe)
 _Avoid_: Review (for the entry)
 
 **Head of a pull request**:
@@ -390,10 +391,12 @@ touches it, and it never bypasses the merge gate. On a hub it is a signed statem
 reader of the repository sees (ADR-027). (Owner-Override)
 
 **Pull request**:
-The request of a write owner to merge a branch into `main`. It has no object of its own: it is the
-sequence of its entries in the operation log, and its state (open, merged, closed) is what those
-entries add up to. From phase 5 on its evidence is signed statements, and the hash of the signed
-opening names it in every clone and on a hub (ADR-025). (Pull Request)
+The request of a write owner to merge a branch into `main`. It has no object of its own: its
+evidence is signed statements, and its state (open, merged, closed) is what the statements and
+the entry of its merge add up to. The hash of the signed opening names it in every clone and on
+a hub; the number of its `pr-open` entry is its name in the log of one clone, which the commands
+show. An ended pull request is final, so the next one of a branch needs a new head (ADR-025).
+(Pull Request)
 _Avoid_: Merge request
 
 **Risk level**:
@@ -512,8 +515,16 @@ moves its remote references; it is an anchor of the record. (Quittung)
 A signed proof that stands on its own and binds a repository, not the log of a clone: the opening
 of a pull request, an approval, a check result, a closing, an owner override, a purge of `main`,
 and the statements of a namespace owner. A clone and a hub fold the same statements with one
-function (ADR-025). (signierte Erklärung)
+function (ADR-025). The first five are built; a clone keeps them in its set of statements, and
+the entry of the log that names the hash of one gives it its number, its time, and its actor.
+In the open mode a statement carries no key and no signature and counts only there.
+(signierte Erklärung)
 _Avoid_: Claim, attestation
+
+**Set of statements**:
+The statements that a clone or a hub holds, one file per statement, named by its hash. It has no
+order of its own: the entries of the log order it in a clone, the lines of the hub on a hub
+(ADR-009, ADR-025). (Menge der Erklärungen)
 
 **Lines of the hub**:
 What a hub adds when it accepts something, signed with the key of the hub. For a record entry: a

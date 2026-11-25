@@ -2720,7 +2720,8 @@ stemma op log --json | head -1
 
 \section{op verify}
 
-Prüft die Hash-Kette des ganzen Operation Logs (ADR-011) und gibt einen Anker aus: die Nummer
+Prüft die Hash-Kette des ganzen Operation Logs (ADR-011), die Beweise und die signierten
+Erklärungen (ADR-025) und gibt einen Anker aus: die Nummer
 und den Hash des letzten Eintrags, sofern dieser in der Kette steht.
 
 \starttyping
@@ -2765,6 +2766,38 @@ Zeile ein: \type{The actor register is valid, and 0 proofs of log entries hold a
 Ein offenes Repository hat keine solche Zeile.
 Ein Register, das sich nicht lesen lässt, ein durchsetzendes Repository ohne Register in
 seiner Basis und ein Beweis, den das Register nicht annimmt, enden mit Exit-Code 5.
+
+Zuletzt prüft der Befehl die signierten Erklärungen unter \type{.stemma/statements/} und die
+Einträge, die sie nennen, in beiden Modi.
+Jede Datei muss eine Erklärung unter dem Namen ihres Hashes sein, mit einer Signatur, die für
+ihren Schlüssel hält.
+Jeder Eintrag \type{pr-open}, \type{pr-close}, \type{pr-approve} und \type{check}, der eine
+Erklärung nennt, muss eine nennen, die vorhanden ist, seiner Art entspricht und sagt, was seine
+Zeilen sagen.
+In einem durchsetzenden Repository muss ihr Schlüssel ausserdem dem Akteur des Eintrags gehören
+und für dessen Nummer zählen.
+Hält ein Repository Erklärungen, steht vor der Zeile \type{anchor} eine Zeile über sie;
+in einem durchsetzenden Repository endet sie mit
+\type{, and the signatures hold against the actor register.}
+
+\starttyping
+Checked 14 signed statements: each is valid, and every entry that names
+  one agrees with it.
+\stoptyping
+
+(Der Befehl schreibt die Zeile ohne Umbruch.)
+Je eine weitere Zeile nennt die Zahl der Erklärungen, die kein Eintrag nennt
+(\type{N of them are named by no entry and count for nothing.}), und in einem durchsetzenden
+Repository die Zahl der Einträge, deren Erklärung keine Signatur trägt.
+Beides ist kein Fehler: Die erste hinterlässt ein Abbruch zwischen Erklärung und Eintrag oder
+ein Purge, die zweite ein Repository, das vom offenen in den durchsetzenden Modus wechselte.
+Eine Genehmigung, deren Schlüssel seither ausgemustert oder widerrufen wurde, ist ungültig und
+kein Fehler.
+Mit Exit-Code 5 endet der Befehl bei einer Datei, die keine Erklärung ist oder einen anderen
+Hash hat als ihr Name, bei einem Eintrag, dessen Erklärung fehlt oder ihm widerspricht, und bei
+einer Signatur, die das Register für den Akteur des Eintrags nicht annimmt.
+Einträge aus einer Format-Version bis 15 nennen keine Erklärung; ihre Beweisdateien prüft der
+Befehl wie zuvor.
 
 {\bf Fehler.} Mit Exit-Code 5 endet der Befehl, wenn die Kette bricht: Die Meldung nennt den
 ersten Eintrag, der nicht den Hash seines Vorgängers nennt
@@ -3090,12 +3123,13 @@ stemma register add-agent bot.pub --agent bot --sponsor mia --cosign bot.sig --a
 \section{pr}
 
 Öffnet, schliesst, genehmigt und merged einen Pull Request und listet die Pull Requests
-(ADR-004, ADR-019). Ein Pull Request ist eine Folge von Einträgen im Operation Log; seine Nummer
-ist die Nummer des Eintrags, der ihn öffnet.
+(ADR-004, ADR-019). Die Belege eines Pull Requests sind signierte Erklärungen, die das Operation
+Log nennt (ADR-025); seine Nummer ist die Nummer des Eintrags, der ihn öffnet.
 
 \starttyping
-stemma pr open [-C VERZEICHNIS] [--reviewer AKTEUR]... [--repairs COMMIT] --actor AKTEUR BRANCH
-stemma pr close [-C VERZEICHNIS] --actor AKTEUR NUMMER
+stemma pr open [-C VERZEICHNIS] [--reviewer AKTEUR]... [--repairs COMMIT]
+        [--key SCHLÜSSELDATEI] --actor AKTEUR BRANCH
+stemma pr close [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] --actor AKTEUR NUMMER
 stemma pr approve [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] --actor AKTEUR NUMMER
 stemma pr merge [-C VERZEICHNIS] [--level STUFE] --actor AKTEUR NUMMER
 stemma pr list [-C VERZEICHNIS]
@@ -3115,23 +3149,34 @@ Commit-ID, ein Branch, ein Tag oder eine Remote-Referenz
 Ein anderer Text, der mit \type{remotes/} beginnt, ist ein Aufruffehler (Exit-Code 2).
 \item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Akteurs für
 \type{ssh-keygen -Y sign}: der private Schlüssel, oder der öffentliche, wenn \type{ssh-agent} ihn
-hält. In einem durchsetzenden Repository ist die Option Pflicht, in einem offenen wird sie nicht
-gelesen.
+hält. In einem durchsetzenden Repository ist die Option für \type{open}, \type{close} und
+\type{approve} Pflicht, in einem offenen wird sie nicht gelesen.
+Den öffentlichen Schlüssel, den die Erklärung nennt, liest der Befehl aus der Datei
+\type{SCHLÜSSELDATEI.pub}, wenn sie daneben liegt; sonst signiert er zuvor einen Probetext.
 \item {\bf \type{--level} STUFE:} Die Risikostufe der Änderung, von 0 bis 3. Die Regeltabelle
 des Merge-Gates verlangt Prüfungen je nach Stufe. Die Policy-Datei leitet die Stufe noch nicht ab;
 darum ist der Standard 3, die strengste Stufe.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
-{\bf Verhalten.} \type{open} schreibt den Eintrag \type{pr-open}. Öffnen darf nur, wer den Branch
+{\bf Verhalten.} \type{open}, \type{close} und \type{approve} legen je eine Erklärung unter
+\type{.stemma/statements/} ab und schreiben den Eintrag, der ihren Hash nennt
+(\type{pr-open}, \type{pr-close}, \type{pr-approve}).
+In einem durchsetzenden Repository signiert der Befehl die Erklärung mit dem Schlüssel und prüft
+die Signatur gegen das Register, bevor er etwas schreibt; in einem offenen trägt die Erklärung
+weder Schlüssel noch Signatur.
+Öffnen darf nur, wer den Branch
 schreiben darf: In einem durchsetzenden Repository hält der Akteur dazu eine gültige Lease
 (Abschnitt \type{lease}). Für einen Branch ist höchstens ein Pull Request offen.
+Ein beendeter Pull Request ist endgültig, und dieselbe Öffnung gilt kein zweites Mal: Der
+nächste Pull Request eines Branches braucht einen neuen Head, andere Reviewer oder eine andere
+Angabe bei \type{--repairs}.
 \type{close} beendet einen offenen Pull Request ohne Merge; das darf der Öffner und, wo ein
 Register besteht, ein Owner.
 \type{approve} genehmigt den Head, den der Branch beim Aufruf hat. Die Genehmigung bindet sich an
 diesen Head; jeder spätere Commit macht sie ungültig. Wer den Pull Request öffnete oder einen
-Commit darin schrieb, genehmigt ihn nicht selbst. In einem durchsetzenden Repository signiert
-der Befehl die Genehmigung mit dem Schlüssel und schreibt die Signatur als Beweisdatei.
+Commit darin schrieb, genehmigt ihn nicht selbst. Die Signatur der Genehmigung ist Teil ihrer
+Erklärung; eine Beweisdatei schreibt der Befehl nicht.
 \type{merge} führt den Pull Request durch das Merge-Gate (ADR-019): Das Gate merged den Branch auf
 die Spitze von \type{main}, prüft, ob ein Ergebnis einer Prüfung für diese Stufe und diese Spitze
 zählt, bewegt \type{main} in einem Schritt und schreibt \type{pr-merge}. Hat \type{main} die
@@ -3195,7 +3240,8 @@ denn \type{op restore} setzt den Eintrag nur in diesem Worktree zurück.
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Branch fehlt oder
 \type{main} ist, wenn für den Branch schon ein Pull Request offen ist, wenn der Akteur den
 Branch nicht schreiben darf, wenn die Nummer unbekannt ist oder der Pull Request nicht mehr offen
-ist, wenn ein Reviewer im Register fehlt, wenn die Genehmigung gegen das Verbot der eigenen
+ist, wenn dieselbe Öffnung schon einen Pull Request ergab, der beendet ist,
+wenn ein Reviewer im Register fehlt, wenn die Genehmigung gegen das Verbot der eigenen
 Genehmigung verstösst, wenn in einem durchsetzenden Repository der Schlüssel fehlt oder die
 Signatur das Register nicht überzeugt, wenn der Branch sich während der Signatur bewegte, wenn
 der Branch seit dem Öffnen einen neuen Head hat, wenn das Merge einen Konflikt enthält und wenn
@@ -3209,14 +3255,17 @@ roten Spitze ist von allen drei Schranken ausgenommen.
 \type{pr merge} ruft das Gate mit der Stufe von \type{--level} auf und liest keine Policy:
 Die Reservierung gilt dort nie, und \type{max-unverified} hat seinen Standardwert.
 Ein gehaltenes Lock der Referenzen endet mit Exit-Code 6; der Aufruf lässt sich
-wiederholen. Ein beschädigtes Log endet mit Exit-Code 5. Exit-Code 3 meldet einen Eintrag, der
-geschrieben ist, während der Rest nicht gelang: eine Beweisdatei, die fehlt, eine Bewegung
+wiederholen. Ein beschädigtes Log endet mit Exit-Code 5, ebenso eine Datei unter
+\type{.stemma/statements/}, die keine Erklärung unter dem Namen ihres Hashes ist und dem Befehl
+im Weg steht. Exit-Code 3 meldet einen Eintrag, der
+geschrieben ist, während der Rest nicht gelang: eine Bewegung
 von \type{main}, die scheiterte (der Eintrag trägt dann die Zeile
 \type{! the move did not take effect}), oder eine Bewegung, deren Spülen nicht feststeht.
 Ein erneuter \type{pr merge} mergt nach einer gescheiterten Bewegung neu und schliesst
-sonst die Bewegung von \type{main} ab;
-ein erneuter \type{pr approve} schreibt eine zweite Genehmigung,
-denn die erste zählt ohne Beweis nicht.
+sonst die Bewegung von \type{main} ab.
+Bricht \type{open}, \type{close} oder \type{approve} zwischen der Erklärung und ihrem Eintrag
+ab, bleibt eine Erklärung liegen, die kein Eintrag nennt; sie zählt nicht, und der Aufruf lässt
+sich wiederholen.
 Exit-Code 3 meldet auch einen Merge, der gilt, während der Wechsel im Worktree mit \type{main}
 seinen Eintrag schrieb und danach scheiterte, oder gemacht ist, ohne dass sein Spülen feststeht.
 Die Zeile des Merges steht dann auf der Standardausgabe,
@@ -3228,6 +3277,7 @@ Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen ble
 
 {\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
 (Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
+Nach \type{close} öffnet \type{open} denselben Head nicht noch einmal.
 \type{approve} lässt sich wiederholen; die Genehmigungen derselben Identität zählen einmal.
 \type{merge} lässt sich nach jedem Fehler und nach einem Absturz wiederholen, solange
 \type{pr-merge} nicht im Log steht; danach
@@ -3274,19 +3324,21 @@ durchsetzenden Repository ist die Option Pflicht.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
-{\bf Verhalten.} \type{record} schreibt den Eintrag \type{check}. In einem durchsetzenden
-Repository signiert der Befehl den Hash des Eintrags und schreibt die Beweisdatei; ein Ergebnis
-ohne Beweis zählt nicht. \type{list} liest nur und zeigt je Ergebnis die Nummer des Eintrags, das
+{\bf Verhalten.} \type{record} legt das Ergebnis als Erklärung unter \type{.stemma/statements/}
+ab und schreibt den Eintrag \type{check}, der ihren Hash nennt (ADR-025). In einem
+durchsetzenden Repository signiert der Befehl die Erklärung mit dem Schlüssel; ein Ergebnis
+ohne Signatur zählt dort nicht. \type{list} liest nur und zeigt je Ergebnis die Nummer des
+Eintrags, das
 Ergebnis, die ersten zwölf Stellen des Commits, die Basis (\type{on KURZE-ID} oder
 \type{as it is}) und den Akteur.
 
 {\bf Fehler.} Mit Exit-Code 1 endet der Befehl und schreibt nichts, wenn der Commit oder die
 Basis nicht existiert, wenn die Basis der Commit selbst ist und wenn in einem durchsetzenden
 Repository der Schlüssel fehlt, nicht signieren kann oder im Register nicht als aktiver Schlüssel
-des Akteurs steht; der Befehl probiert den Schlüssel, bevor er etwas schreibt. Exit-Code 3 meldet
-einen Eintrag, dessen Beweis trotzdem fehlt, etwa weil die Beweisdatei sich nicht schreiben liess.
-Das Ergebnis ist im Log und zählt nicht, und der Lauf wird noch einmal eingetragen.
-Steht nicht fest, ob der Eintrag gesichert ist (auch Exit-Code 3), zeigt \type{check list}, ob er
+des Akteurs steht; der Befehl prüft die Signatur gegen das Register, bevor er etwas schreibt.
+Bricht er zwischen der Erklärung und ihrem Eintrag ab, bleibt eine Erklärung liegen, die kein
+Eintrag nennt; sie zählt nicht, und der Aufruf lässt sich wiederholen.
+Steht nicht fest, ob der Eintrag gesichert ist (Exit-Code 3), zeigt \type{check list}, ob er
 im Log steht; fehlt er, wiederholt man den Aufruf.
 Ein Aufruf nach einem Erfolg schreibt einen zweiten, gleichen Eintrag; der Befehl erkennt keine
 Wiederholung. \type{list} liest nur.
