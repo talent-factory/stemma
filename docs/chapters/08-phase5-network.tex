@@ -525,7 +525,8 @@ tragen \type{no}.
 Fehlt der Commit des Registers im Objektspeicher, einer seiner Trees auf dem Weg zum Register
 oder die Registerdatei selbst, meldet der Leser den Eintrag als nicht mehr prüfbar, nicht als
 beschädigt: Ketten und Signaturen gelten weiter.
-Ein Register, das vorhanden ist und sich nicht lesen lässt, ist dagegen ein Fehler.
+Ein Commit, der vorhanden ist und kein Register enthält, ist dagegen ein Fehler, ebenso ein
+Register, das sich nicht lesen lässt.
 Ein Leser, der mit einer Quittung mitten in der Aufzeichnung beginnt, kennt die Namen davor
 nicht und prüft bei jedem Namen erst das zweite Ref-Update gegen das erste.
 Schreiben kann nur, wer die Aufzeichnung vom ersten Eintrag an gelesen hat.

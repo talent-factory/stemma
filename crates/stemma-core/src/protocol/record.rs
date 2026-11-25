@@ -45,7 +45,9 @@
 //! destination of the caller and read back with [`read_record`]. [`Chain`] is the state that a
 //! record leaves behind, the last entry of the repository and of every name, and it holds the one
 //! rule of the chains: [`Chain::append`] writes an entry by it and [`Chain::accept`] reads one by
-//! it, so the writer and the reader ask the same question.
+//! it, so the writer and the reader ask the same question. A reader may begin in the middle of a
+//! record and then skips the rule for the names that it has not seen yet ([`Chain::after`]); the
+//! writer refuses such a chain.
 //!
 //! The readers hold the rule of ADR-005, as the readers of the other messages do, and they check
 //! the signatures as well: a value of [`RefUpdate`] carries a signature that verifies for the key
@@ -612,13 +614,14 @@ fn read_update(lines: &mut Lines<'_>) -> Result<UnverifiedUpdate, ParseError> {
         if moves.last().is_some_and(|before| before.name >= name) {
             return Err(malformed(line, Malformed::Order));
         }
-        let (evidence_line, value) = lines.require("evidence")?;
-        let evidence = parse_optional(value, str::parse::<StatementHash>)
-            .map_err(|_| problem(evidence_line, RecordProblem::Evidence))?;
-        moves.push(
-            Move::try_new(name, previous, old, new, evidence)
-                .map_err(|reason| problem(line, reason))?,
-        );
+        // The rules of the move do not depend on the evidence, so they are judged before its
+        // line is read: the first problem of a message is the one that is reported.
+        let mut moved = Move::try_new(name, previous, old, new, None)
+            .map_err(|reason| problem(line, reason))?;
+        let (line, value) = lines.require("evidence")?;
+        moved.evidence = parse_optional(value, str::parse::<StatementHash>)
+            .map_err(|_| problem(line, RecordProblem::Evidence))?;
+        moves.push(moved);
     }
     if moves.is_empty() {
         return Err(malformed(lines.line, Malformed::Expected("ref")));
@@ -1141,7 +1144,8 @@ impl fmt::Display for Stale {
     }
 }
 
-/// Why an update or an entry does not continue a record.
+/// Why an update or an entry does not continue a record, or why a chain does not take an entry
+/// at all ([`Full`](Self::Full), [`NotWhole`](Self::NotWhole)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ChainError {
@@ -1374,7 +1378,10 @@ impl Chain {
     /// This is the writer of the record: the entry carries the next number and the hash of the
     /// last entry, the signer of the hub signs its hash, and the bytes of
     /// [`RecordEntry::encode`] are written in one call and flushed. The returned entry is the
-    /// receipt.
+    /// receipt. A flush is no promise that the bytes survive a crash: the caller makes the
+    /// destination durable (for a file, a sync) before the receipt leaves the hub and before a
+    /// reference moves, or a clone can hold a receipt for a number that the record gives to
+    /// another entry later.
     ///
     /// The core never knows the key of the hub (ADR-026): `signer` is given the bytes to sign
     /// and returns the signature. Whether the update may be accepted (the register, the role,
@@ -1382,16 +1389,20 @@ impl Chain {
     /// of the references, before the first move (ADR-025).
     ///
     /// Every refusal comes before the first byte is written. If the destination fails, the
-    /// chain does not move, and the destination may hold a part of the entry, which
-    /// [`read_record`] refuses as cut off; the caller removes it before it writes again.
+    /// chain does not move, and the destination may hold a part of the entry or, where only the
+    /// flush failed, all of it. A part is refused by [`read_record`] as cut off; a whole entry
+    /// is read as valid, although no receipt was returned for it. The caller therefore cuts the
+    /// destination back to its length before the call, whatever the failure was, before it
+    /// writes again: a second entry with the same number would read as a rewritten record.
     ///
     /// # Errors
     ///
     /// [`WriteError::Chain`] if the chain began in the middle of the record
     /// ([`after`](Self::after), [`ChainError::NotWhole`]): the reader of the whole record checks
     /// every name, so the writer must know every name too. The same if the update does not
-    /// continue the record ([`check`](Self::check)) or the record is full, [`WriteError::FastForward`] if `acceptance` names a fast-forward
-    /// for a reference that the update does not list or that it creates or deletes,
+    /// continue the record ([`check`](Self::check)) or the record is full.
+    /// [`WriteError::FastForward`] if `acceptance` names a fast-forward for a reference that the
+    /// update does not list or that it creates or deletes,
     /// [`WriteError::Sign`] with the error of the signer, [`WriteError::Signature`] if the
     /// signature that it returns does not verify for the key that it names and the hash of the
     /// entry, and [`WriteError::Io`] if the destination fails.
@@ -1500,14 +1511,19 @@ impl Chain {
     /// names ([`RecordEntry::standing`]). The signatures themselves were checked when the
     /// entries were read.
     ///
-    /// Returns the numbers of the entries whose register commit is no longer in the store.
-    /// They are no longer checkable, not damaged: their chains and signatures hold.
+    /// Returns the numbers of the entries whose actor could not be checked, because the
+    /// register commit, a tree on the way to its register, or the register file is not in the
+    /// store ([`Standing::NoLongerCheckable`]). They are no longer checkable, not damaged: their
+    /// chains and signatures hold. The store cannot tell an object that was removed from one
+    /// that never was there, so the list means that the actor of these entries is a statement
+    /// of the hub alone; a caller that needs the actor checked does not drop it.
     ///
     /// # Errors
     ///
-    /// [`RecordError`] for the first entry that fails, with its number: first for the key of
-    /// the hub, then for the chains, then for the actor. The chain has moved past the entries
-    /// before it and not past the entry that failed.
+    /// [`RecordError`] for the first entry that fails: first for the key of the hub, then for
+    /// the chains, then for the actor. The first and the last carry the number of the entry;
+    /// an error of the chains carries what [`ChainError`] names. The chain has moved past the
+    /// entries before it and not past the entry that failed.
     pub fn verify(
         &mut self,
         entries: &[RecordEntry],
@@ -1536,7 +1552,8 @@ impl Chain {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WriteError {
-    /// The update does not continue the record, or the record is full.
+    /// The chain began in the middle of the record, the update does not continue the record, or
+    /// the record is full.
     Chain(ChainError),
     /// A fast-forward is named for a reference that the update does not list, or that it
     /// creates or deletes.

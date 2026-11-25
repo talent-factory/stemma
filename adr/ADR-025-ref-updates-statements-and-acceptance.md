@@ -108,8 +108,8 @@ between two calls of the core.
 ### The formats as built
 
 Built in STEMMA-291, in `stemma_core::protocol::record`. Both formats are line-oriented text by
-the rules of ADR-023: a line ends with a line feed, a field is separated by one space, and a
-value that is not there is `-`.
+the rules of ADR-023: a line ends with a line feed, and a field is separated by one space. New
+with these formats is that a value that is not there is written `-`.
 
 ```text
 stemma-protocol 1                                   the ref update
@@ -164,8 +164,10 @@ value of either type therefore carries signatures that verify. Whether the keys 
 ones is asked apart: the key of the hub against the key that the clone pinned and the former keys
 with their ranges (ADR-026), and the key of the actor against the register of the register
 commit. That last check answers "no longer checkable" where the commit, its tree, a tree on the
-path of the register or the register file itself is gone. It refuses where the register is there
-and does not hold the key as an active key of the actor, and where it cannot be read.
+path of the register or the register file itself is gone. It refuses where the commit is there
+and holds no register, where the register does not hold the key as an active key of the actor,
+and where it cannot be read. A store cannot tell an object that was removed from one that never
+was there, so "no longer checkable" leaves the actor a statement of the hub alone.
 
 The chains have one rule in one place (`Chain`). It holds the number and the hash of the last
 entry, and for every name the hash of its last entry with the commit that this entry left; a
@@ -174,7 +176,9 @@ of the record and every reference names the last entry of its name as `previous`
 that it left as `old`. The writer (`Chain::append`) and the reader (`Chain::accept`) both ask
 this question, so an entry that was written past the writer is refused when it is read. The
 writer takes the destination as a byte sink and the signer of the hub as a function from bytes
-to a signature (ADR-026); every refusal comes before the first byte is written.
+to a signature (ADR-026); every refusal comes before the first byte is written. The writer
+flushes and does not sync: the caller makes the destination durable before the receipt leaves
+the hub, and cuts it back to its old length after a failed write.
 
 - A reader that begins in the middle of a record, such as a clone with a receipt, does not know
   the names of the entries before. It takes the first update of a name as it is and checks the
@@ -189,7 +193,8 @@ to a signature (ADR-026); every refusal comes before the first byte is written.
   signed both (ADR-026).
 - A record is its entries one after the other, as the writer appends them to one destination.
   An entry ends with its `hub-signature` line, so a reader splits a record there and reads each
-  entry once. The message that carries a range of the record through the protocol comes with its request.
+  entry once.
+  The message that carries a range of the record through the protocol comes with its request.
 - The answer to a stale update is typed in the core (every reference that does not match, with
   the hash of its last entry and its commit); the error message that carries it comes with the
   accepting operation.

@@ -1113,6 +1113,14 @@ fn a_ref_update_refuses_lines_that_its_writer_does_not_write() {
         changed_update(&format!("{main}{a1}"), &format!("{main}-")),
         Err(problem(4, RecordProblem::OldWithoutPrevious))
     );
+    // A move that is refused is reported at its line, whatever stands in the evidence line.
+    assert_eq!(
+        changed_update(
+            &format!("{c11} {c22}\nevidence {}", id_text(0xe1)),
+            &format!("{c22} {c22}\nevidence b3:e1")
+        ),
+        Err(problem(4, RecordProblem::NoMove))
+    );
     // The references stand in the order of their names, each once.
     assert_eq!(
         changed_update("tags/v0.2.0", "heads/main"),

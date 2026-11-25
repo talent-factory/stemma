@@ -1056,8 +1056,10 @@ impl Register {
     ///
     /// # Errors
     ///
-    /// [`ModeError::Store`] if an object cannot be read, and [`ModeError::Parse`] for a register
-    /// that is not valid.
+    /// [`ModeError::Missing`] if the commit, its tree, a tree on the path of the register, or the
+    /// register file is not in the store, [`ModeError::Store`] if an object cannot be read,
+    /// [`ModeError::NotRegisterFile`] if the path of the register is taken by something else, and
+    /// [`ModeError::Parse`] for a register that is not valid.
     pub fn at_commit(
         store: &dyn ObjectStore,
         commit: &crate::object::CommitId,
@@ -1470,7 +1472,7 @@ pub enum ModeError {
     Parse(RegisterParseError),
     /// An object cannot be read.
     Store(ReadError),
-    /// A commit or tree that the history names is not in the store.
+    /// A commit, a tree, or the register file that the history names is not in the store.
     Missing,
     /// The path of the register is taken by something that is not a register file, such as a
     /// directory or a link. It is no register, and no reason to fall back to the open mode.
