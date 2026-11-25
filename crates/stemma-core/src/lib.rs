@@ -65,6 +65,7 @@ pub mod protocol;
 pub mod pull;
 pub mod refs;
 pub mod register;
+pub mod remote;
 pub mod repository;
 pub mod signature;
 pub mod store;

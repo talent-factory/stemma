@@ -5,12 +5,14 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 13" and a newline; 2 to 12 before the former owner of a worktree
+//! ├── format          "stemma-repository 14" and a newline; 2 to 13 before the remotes
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
 //! ├── refs/tags/      tags, made by the first tag (ADR-008)
+//! ├── refs/remotes/   remote references, below `<remote>/heads/` and `<remote>/tags/` (ADR-008)
+//! ├── remotes/        the configuration of the remotes, one file per remote (ADR-009)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
 //! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
 //! ├── leases/         one file per branch with a lease, made by the first one (ADR-004)
@@ -76,7 +78,7 @@ pub use rebase::{RebaseError, Rebased, Replayed};
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use revision::{
     require_unreserved, NameError, ReservedPrefix, Revision, RevisionParseError, BRANCH_PREFIX,
-    TAG_PREFIX,
+    REMOTE_PREFIX, TAG_PREFIX,
 };
 pub use rewrite::{RewriteError, Rewritten};
 pub use rules::{LevelError, PolicyError};
@@ -97,6 +99,7 @@ use crate::refs::{
     encode_working_copy, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError, RefStore,
     WriteLock, WORKTREES_DIR,
 };
+use crate::remote::{self, RemoteConfig, RemoteError, RemoteName, RemoteRef, RemoteRefName};
 use crate::store::{
     create_dirs_synced as create_store_dirs, create_temp, flush_directory,
     sync_directory as flush_store_directory, unique_temp_name, FsObjectStore, ObjectStore,
@@ -108,12 +111,13 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` writes, and that a purge and every new entry
-/// of the log move a repository to: version 13, the line `former-owner` of the entry
-/// `worktree-remove` (STEMMA-217, ADR-011). Version 12 was the kind in the stub (ADR-011,
+/// of the log move a repository to: version 14, the configuration of the remotes and the remote
+/// references (STEMMA-285, ADR-008, ADR-009). Version 13 was the line `former-owner` of the entry
+/// `worktree-remove` (STEMMA-217, ADR-011), version 12 the kind in the stub (ADR-011,
 /// ADR-014), version 11 was the entry `check` (ADR-019, ADR-011),
 /// version 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
 /// `pr-open`, `pr-close`, and `pr-merge`, version 8 the lease of a branch (ADR-009).
-const FORMAT_VERSION: u32 = 13;
+const FORMAT_VERSION: u32 = 14;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -136,8 +140,11 @@ const FORMAT_VERSION: u32 = 13;
 /// 10 the entry `pr-approve` and the proofs of approvals, version 11 the entry `check`, and
 /// version 12 the kind in the stub (`stemma-oplog 4`, STEMMA-256), and version 13 the line
 /// `former-owner` of the entry `worktree-remove` (STEMMA-217), with the same rise and for the
-/// same reason.
-const READ_VERSIONS: [u32; 12] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+/// same reason. Version 14 adds the directory `remotes/` with the configuration of the remotes
+/// and the remote references below `refs/remotes/` (STEMMA-285): a program that knows only
+/// version 13 would not count a remote reference as a root, so a purge of it could remove what
+/// the reference names, and it refuses the repository instead.
+const READ_VERSIONS: [u32; 13] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
 // A purge and every new entry of the log move a repository to `FORMAT_VERSION` (ADR-011,
 // ADR-014). It is the highest that this code reads, so neither lowers a version.
@@ -363,7 +370,7 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`InitError::ReservedName`] if the initial branch starts with `heads/` or `tags/`
+    /// Returns [`InitError::ReservedName`] if the initial branch starts with a reserved prefix
     /// (before the authorizer is asked), [`InitError::Denied`] if the authorizer refuses,
     /// [`InitError::AlreadyExists`] if `.stemma` exists in `path` (nothing is changed),
     /// [`InitError::Io`] if the storage fails (the temporary directory is removed),
@@ -670,14 +677,38 @@ impl Repository {
         RefsView { refs: &self.refs }
     }
 
-    /// Checks that a detached HEAD, the working-copy commit, every branch, and every tag name a
-    /// commit that the object store of this repository has. See [`FsRefStore::verify`].
+    /// Checks that a detached HEAD, the working-copy commit, every branch, every tag, and every
+    /// remote reference name a commit that the object store of this repository has. See
+    /// [`FsRefStore::verify`].
     ///
     /// # Errors
     ///
     /// See [`FsRefStore::verify`].
     pub fn verify_refs(&self) -> Result<Vec<RefVerifyError>, RefError> {
         self.refs.verify(&self.objects)
+    }
+
+    /// The configuration of the remote with exactly this name, or `None` if the repository knows
+    /// no such remote. The configuration lies in the metadata directory that every worktree
+    /// shares, in one file per remote (ADR-009), and reading it needs no working copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RemoteError::Corrupt`] if the file is not in canonical form or if an entry of
+    /// `remotes/` whose name does not start with a dot is no name of a remote, and
+    /// [`RemoteError::Io`] if the storage fails or the entry is not a regular file (a link is not
+    /// followed). A file that another change removes while it is read is `None`.
+    pub fn remote(&self, name: &RemoteName) -> Result<Option<RemoteConfig>, RemoteError> {
+        remote::read_one(&self.shared, name)
+    }
+
+    /// The configuration of every remote that the repository knows, sorted by name.
+    ///
+    /// # Errors
+    ///
+    /// As [`remote`](Self::remote).
+    pub fn remotes(&self) -> Result<Vec<(RemoteName, RemoteConfig)>, RemoteError> {
+        remote::read_all(&self.shared)
     }
 
     /// The store of the references, for the code of this crate that moves several pointers at once.
@@ -806,7 +837,7 @@ impl Repository {
     /// # Errors
     ///
     /// Returns [`UpdateError::ReservedName`] if the branch is made (`expected` is `None`) under a
-    /// name that starts with `heads/` or `tags/` (ADR-008), [`UpdateError::Denied`] if the
+    /// name that starts with a reserved prefix (ADR-008), [`UpdateError::Denied`] if the
     /// authorizer refuses, and [`UpdateError::Refs`] for what
     /// the checks find or for a failure of the references before an entry was written, among them
     /// [`RefError::Locked`] (another change is in progress: try again). If the entry could not be
@@ -855,7 +886,7 @@ impl Repository {
     /// # Errors
     ///
     /// As [`update_branch`](Self::update_branch); a branch that exists is
-    /// [`RefError::Stale`] with `expected` `None`. A name that starts with `heads/` or `tags/` is
+    /// [`RefError::Stale`] with `expected` `None`. A name that starts with a reserved prefix is
     /// [`UpdateError::ReservedName`] (ADR-008), checked before the authorizer is asked. A refusal
     /// writes no entry.
     pub fn create_branch(
@@ -883,7 +914,7 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::ReservedName`] for a name that starts with `heads/` or `tags/`
+    /// Returns [`UpdateError::ReservedName`] for a name that starts with a reserved prefix
     /// (ADR-008), before the authorizer is asked, [`UpdateError::Denied`] if the authorizer
     /// refuses, [`UpdateError::Refs`] for what the checks find
     /// ([`RefError::TagExists`] for a tag that exists, at this commit or at
@@ -1039,7 +1070,7 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// Returns [`UpdateError::ReservedName`] if `new` starts with `heads/` or `tags/` (ADR-008;
+    /// Returns [`UpdateError::ReservedName`] if `new` starts with a reserved prefix (ADR-008;
     /// `old` is not checked, so a branch that has such a name already can be renamed away),
     /// [`UpdateError::Denied`] if the authorizer refuses, [`UpdateError::Refs`] for what
     /// the checks find ([`RefError::Stale`] for an `old` that is not at `expected` or does not
@@ -1379,6 +1410,25 @@ impl RefsView<'_> {
         self.refs.tags()
     }
 
+    /// What a remote reference holds, or `None` if there is none with this name. See
+    /// [`RefStore::remote_ref`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::remote_ref`].
+    pub fn remote_ref(&self, name: &RemoteRefName) -> Result<Option<RemoteRef>, RefError> {
+        self.refs.remote_ref(name)
+    }
+
+    /// All remote references, sorted by name. See [`RefStore::remote_refs`].
+    ///
+    /// # Errors
+    ///
+    /// See [`RefStore::remote_refs`].
+    pub fn remote_refs(&self) -> Result<Vec<(RemoteRefName, RemoteRef)>, RefError> {
+        self.refs.remote_refs()
+    }
+
     /// Whether a writer holds the lock of the references, so that an operation may be between its
     /// entry in the log and the move of a pointer. A lock that a crashed writer left counts as held
     /// until the next writer of this host takes it over or a person removes it (ADR-008).
@@ -1446,7 +1496,7 @@ pub enum UpdateError {
         /// The branch, or `HEAD`.
         target: String,
     },
-    /// The name of a new branch or tag starts with `heads/` or `tags/` (ADR-008). It comes from
+    /// The name of a new branch or tag starts with a reserved prefix (ADR-008). It comes from
     /// `update_branch` for a new branch (and so `create_branch`), `create_tag`, `rename_branch`
     /// (the new name only), and through
     /// [`Repository::switch`] and [`Repository::add_worktree`] for a new branch. No entry was
@@ -2079,7 +2129,7 @@ pub enum InitError {
         /// The error of the file system.
         source: io::Error,
     },
-    /// The initial branch starts with `heads/` or `tags/` (ADR-008). Such a branch could not be
+    /// The initial branch starts with a reserved prefix (ADR-008). Such a branch could not be
     /// reached by its plain name. Nothing was asked and nothing was changed.
     ReservedName(ReservedPrefix),
     /// The first entry of the log could not be written.
@@ -2875,7 +2925,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 13\n"
+            b"stemma-repository 14\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4208,7 +4258,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "14",
+            "15",
             "99",
             "4294967295",
             "4294967296",
@@ -4258,7 +4308,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 14\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4284,7 +4334,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 14\n"
         );
     }
 
@@ -4315,7 +4365,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 14\n"
         );
     }
 
@@ -4348,7 +4398,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 14\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -4592,7 +4642,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 13\n"
+            "stemma-repository 14\n"
         );
     }
 
@@ -4669,7 +4719,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 13\n");
+        assert_eq!(read(), "stemma-repository 14\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -4693,6 +4743,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 12\n");
         raise_format(&meta, 13).unwrap();
         assert_eq!(read(), "stemma-repository 13\n");
+        raise_format(&meta, 14).unwrap();
+        assert_eq!(read(), "stemma-repository 14\n");
     }
 
     #[test]
@@ -4737,7 +4789,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 13\n");
+        assert_eq!(format, "stemma-repository 14\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -4909,14 +4961,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 13",
+                "stemma-repository 14",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "14".to_string(),
+                    found: "15".to_string(),
                 },
-                "version 14, but this code supports versions 2 to 13",
+                "version 15, but this code supports versions 2 to 14",
             ),
         ];
         for (error, text) in cases {
@@ -5462,7 +5514,13 @@ mod tests {
     fn a_new_name_with_a_reserved_prefix_is_refused_without_an_entry() {
         let (_dir, repository, a) = with_main_and_topic();
         let before = numbers(&repository);
-        for name in ["heads/x", "tags/x", "heads/a/b"] {
+        for name in [
+            "heads/x",
+            "tags/x",
+            "heads/a/b",
+            "remotes/x",
+            "remotes/o/heads/x",
+        ] {
             let errors = [
                 create(&repository, name, a).unwrap_err(),
                 rename(&repository, "topic", name, a, &AllowAll).unwrap_err(),
@@ -5548,6 +5606,33 @@ mod tests {
             )
             .unwrap();
         delete(&repository, "tags/old", a, &AllowAll).unwrap();
+    }
+
+    #[test]
+    fn the_configuration_of_the_remotes_is_read_from_the_shared_metadata_directory() {
+        use crate::remote::{RemoteAddress, RemoteConfig, RemoteName, RepositoryId};
+        let (_dir, repository, _) = with_main_and_topic();
+        let origin: RemoteName = "origin".parse().unwrap();
+        assert!(repository.remotes().unwrap().is_empty());
+        assert_eq!(repository.remote(&origin).unwrap(), None);
+
+        let config = RemoteConfig::new(
+            RemoteAddress::try_new("https://hub.example/talent-factory/stemma").unwrap(),
+            RepositoryId::try_new("0123456789abcdef0123456789abcdef").unwrap(),
+        );
+        let remotes = repository.metadata_dir().join("remotes");
+        fs::create_dir(&remotes).unwrap();
+        fs::write(remotes.join("origin"), config.encode()).unwrap();
+        assert_eq!(repository.remote(&origin).unwrap(), Some(config.clone()));
+        assert_eq!(repository.remotes().unwrap(), [(origin.clone(), config)]);
+
+        fs::write(remotes.join("origin"), "stemma-remote 2\n").unwrap();
+        let error = repository.remote(&origin).unwrap_err();
+        assert!(
+            matches!(error, crate::remote::RemoteError::Corrupt { .. }),
+            "{error}"
+        );
+        assert_eq!(error.kind(), FailureKind::Damaged);
     }
 
     #[test]

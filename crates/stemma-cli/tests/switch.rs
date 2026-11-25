@@ -526,6 +526,10 @@ fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
         vec!["branch", "-m", "later", "heads/x"],
         vec!["tag", "heads/x"],
         vec!["tag", "tags/x", &tip],
+        vec!["switch", "-c", "remotes/o/heads/x"],
+        vec!["branch", "remotes/x"],
+        vec!["branch", "-m", "later", "remotes/x"],
+        vec!["tag", "remotes/x"],
     ] {
         let mut args = args;
         args.extend(["--actor", ACTOR]);
@@ -539,7 +543,9 @@ fn a_new_branch_or_tag_cannot_start_with_a_reserved_prefix() {
         // The message names the refused name.
         let name = args
             .iter()
-            .find(|arg| arg.starts_with("heads/") || arg.starts_with("tags/"))
+            .find(|arg| {
+                arg.starts_with("heads/") || arg.starts_with("tags/") || arg.starts_with("remotes/")
+            })
             .unwrap();
         assert!(
             result.stderr.contains(&format!("`{name}`")),
@@ -656,6 +662,66 @@ fn the_message_of_a_detached_switch_keeps_the_prefix_of_a_qualified_form() {
         "{}",
         tag.stdout
     );
+}
+
+/// Plants the remote reference `remotes/origin/heads/main` at `commit`, as a fetch will.
+fn remote_reference(dir: &Path, commit: &str) {
+    let heads = dir.join(".stemma/refs/remotes/origin/heads");
+    fs::create_dir_all(&heads).unwrap();
+    let entry = format!("b3:{}", "e".repeat(64));
+    fs::write(heads.join("main"), format!("{commit}\nentry {entry}\n")).unwrap();
+}
+
+#[test]
+fn a_remote_reference_is_a_revision_by_its_qualified_form_and_no_branch_name() {
+    let dir = branches_and_tags();
+    let tip = tip(dir.path());
+    remote_reference(dir.path(), &tip);
+    const REMOTE: &str = "remotes/origin/heads/main";
+
+    let detached = ok(
+        dir.path(),
+        &["switch", "--detach", REMOTE, "--actor", ACTOR],
+    );
+    assert!(
+        detached
+            .stdout
+            .starts_with("Detached HEAD at remotes/origin/heads/main as entry"),
+        "{}",
+        detached.stdout
+    );
+    // It is the start of a new branch as well.
+    ok(
+        dir.path(),
+        &["switch", "-c", "from-hub", REMOTE, "--actor", ACTOR],
+    );
+    let before = newest(dir.path());
+
+    // One that the clone does not hold is unknown, and never a branch or a tag of that name.
+    let later = "remotes/origin/heads/later";
+    let missing = run(dir.path(), &["switch", "--detach", later, "--actor", ACTOR]);
+    assert_eq!(missing.code, 1, "{}", missing.stderr);
+    assert!(
+        missing.stderr.contains("there is no remote reference"),
+        "{}",
+        missing.stderr
+    );
+    // Without `--detach` it is no branch name, and text of another shape is refused when read.
+    let no_branch = run(dir.path(), &["switch", REMOTE, "--actor", ACTOR]);
+    assert_eq!(no_branch.code, 2, "{}", no_branch.stderr);
+    assert!(
+        no_branch.stderr.contains("--detach"),
+        "{}",
+        no_branch.stderr
+    );
+    let shape = run(dir.path(), &["switch", "-c", "remotes/x", "--actor", ACTOR]);
+    assert_eq!(shape.code, 2, "{}", shape.stderr);
+    assert!(
+        shape.stderr.contains("names no remote reference"),
+        "{}",
+        shape.stderr
+    );
+    assert_eq!(newest(dir.path()), before, "nothing was written");
 }
 
 /// Plants the refs `heads/x` (a branch) and `tags/x` (a tag) that the CLI can no longer create, by

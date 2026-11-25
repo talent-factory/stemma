@@ -264,7 +264,8 @@ pub(super) struct PrOpenArgs {
     #[arg(long = "reviewer", value_name = "ACTOR")]
     reviewers: Vec<String>,
 
-    /// A commit that this pull request repairs (a revision: a commit ID, a branch, or a tag)
+    /// A commit that this pull request repairs (a revision: a commit ID, a branch, a tag, or a
+    /// remote reference `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`)
     #[arg(long, value_name = "COMMIT", value_parser = parse_revision)]
     repairs: Option<Revision>,
 }
@@ -330,7 +331,8 @@ pub(super) struct CheckRecordArgs {
     #[command(flatten)]
     signing: Signing,
 
-    /// The commit that was tested (a revision: a commit ID, a branch, or a tag)
+    /// The commit that was tested (a revision: a commit ID, a branch, a tag, or a remote
+    /// reference `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`)
     #[arg(value_name = "COMMIT", value_parser = parse_revision)]
     commit: Revision,
 
@@ -424,8 +426,9 @@ fn register_of(repository: &Repository) -> Result<Option<Register>, ReviewError>
     }
 }
 
-/// The commit that a revision names: a commit ID that the store holds, or the tip of a branch or
-/// a tag. A bare name that is both a branch and a tag is refused; `heads/` or `tags/` decide.
+/// The commit that a revision names: a commit ID that the store holds, the tip of a branch or
+/// a tag, or the commit of a remote reference. A bare name that is both a branch and a tag is
+/// refused; `heads/` or `tags/` decide.
 fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, ReviewError> {
     let refs = repository.refs();
     let read =
@@ -437,6 +440,10 @@ fn commit_of(repository: &Repository, revision: &Revision) -> Result<CommitId, R
             .map_err(|error: StoreError| ReviewError::of_kind(error.to_string(), error.kind()))?,
         Revision::Branch(name) => refs.branch(name).map_err(read)?,
         Revision::Tag(name) => refs.tag(name).map_err(read)?,
+        Revision::Remote(name) => refs
+            .remote_ref(name)
+            .map_err(read)?
+            .map(|reference| reference.commit),
         Revision::Name(name) => match (
             refs.branch(name).map_err(read)?,
             refs.tag(name).map_err(read)?,

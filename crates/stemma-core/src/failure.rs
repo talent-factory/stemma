@@ -548,6 +548,15 @@ impl Classify for JournalError {
     }
 }
 
+impl Classify for crate::remote::RemoteError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Corrupt { .. } => FailureKind::Damaged,
+            Self::Io { .. } => FailureKind::Other,
+        }
+    }
+}
+
 impl Classify for PurgeError {
     fn kind(&self) -> FailureKind {
         match self {
@@ -564,6 +573,7 @@ impl Classify for PurgeError {
             | Self::TooManyEntries { .. }
             | Self::OpenPullRequest { .. }
             | Self::TaggedCommit { .. }
+            | Self::RemoteReference { .. }
             | Self::Unsound { .. } => FailureKind::Other,
         }
     }

@@ -406,6 +406,34 @@ Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteh
 \type{tag} mit eigenem Eintrag.
 Remote-Referenzen sind Wurzeln der Erreichbarkeit.
 
+Gebaut ist davon, was ein Klon ablegt und liest; \type{fetch} und \type{push} folgen.
+Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
+fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
+dem festgehaltenen Schlüssel des Hubs, einer zusätzlichen CA-Datei und der Angabe, ob der Hub
+eine Anmeldung verlangt.
+Der Name eines Remote ist eine einzelne Komponente nach den Regeln eines Branch-Namens.
+Die zweite Zeile einer Remote-Referenz lautet \type{entry} und der Hash des Eintrags.
+Für beide Dateien gilt die Regel der Objekte: Der Leser nimmt an, was der Schreiber schreibt,
+und alles andere ist ein Schaden mit dem Pfad der Datei.
+Mit den neuen Dateien steigt das Repository-Format auf Version 14 (ADR-009), und ein älteres
+Programm lehnt ein solches Repository ab.
+
+Wo ein Befehl eine Revision annimmt, nennt \type{remotes/<Remote>/heads/<Name>} oder
+\type{remotes/<Remote>/tags/<Name>} eine Remote-Referenz.
+Die Form sucht nie nach einem Branch oder Tag weiter, und das Präfix \type{remotes/} ist für neue
+Branch- und Tag-Namen reserviert, wie \type{heads/} und \type{tags/}.
+Die Prüfung der Referenzen prüft auch den Commit jeder Remote-Referenz.
+
+\startinfobox
+{\bf Purge und Remote-Referenzen.}
+Der Plan eines Purge geht von den Remote-Referenzen aus wie von einem Branch.
+Er bewegt und entfernt aber keine: Zeigt eine auf einen Commit, den der Purge umschreiben würde,
+lehnt er ab und nennt jede solche Referenz.
+Die Prüfung läuft unter der Sperre noch einmal und trifft dann auch einen Commit, den der Plan
+nur löscht: Eine Remote-Referenz, die jünger ist als der Plan, kann auf ihn zeigen.
+Was ein Purge am Ende mit ihnen tut, ist offen (\in{Abschnitt}[sec:phase5-open]).
+\stopinfobox
+
 Ein veraltetes Ref-Update beantwortet der Hub mit dem Stand jeder betroffenen Referenz.
 Der Klon meldet das und wiederholt nicht von selbst: Er müsste neu signieren, und zuerst
 entscheidet der Akteur, ob er seinen Branch neu aufspielt oder einen Merge macht.
@@ -778,7 +806,8 @@ und \type{push}, der Befehle für Erklärungen und Anker und der Befehle eines N
 Jeder Teil entsteht mit seiner Umsetzung (\in{Kapitel}[chap:cli]).
 \item Purge auf dem Hub: Die Regel der Annahme steht.
 Offen ist, wie Klone einem \type{main} folgen, das ein Purge auf dem Hub umgeschrieben hat,
-wie ein Purge Remote-Referenzen behandelt
+wie ein Purge Remote-Referenzen behandelt (bis dahin lehnt er ab, wenn eine auf einen Commit
+zeigt, den er umschreiben würde)
 und was aus den Erklärungen eines Klons über entfernte Commits wird (ADR-014).
 \item Messung: Die Schwellen für ein Pack-Format, die Haltezeit der Sperre der Referenzen auf dem
 Hub und die Zahl der Wiederholungen eines Merges wegen \type{Stale} sind nicht gemessen

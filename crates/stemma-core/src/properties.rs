@@ -1345,7 +1345,7 @@ fn the_actor_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
 fn every_seed_and_every_property_starts_from_another_state() {
     let mut firsts = std::collections::HashSet::new();
     // Every stream that a property of this crate uses, here and in `repository/purge/journal.rs`.
-    let streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23];
+    let streams = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22, 23, 33, 34];
     for seed in 0..64 {
         for stream in streams {
             let mut rng = Rng::new(seed, stream);
@@ -1665,6 +1665,94 @@ fn the_branch_file_reader_accepts_only_what_the_encoder_writes_and_never_panics(
             Err(error) => {
                 tally.rejected += 1;
                 check_rejection(&error, ref_line(&error), 1, &input, &context);
+            }
+        }
+    }
+    assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+}
+
+fn random_remote_ref(rng: &mut Rng) -> crate::remote::RemoteRef {
+    crate::remote::RemoteRef {
+        commit: random_commit_id(rng),
+        entry: random_commit_id(rng)
+            .to_string()
+            .parse()
+            .expect("the text of an object ID"),
+    }
+}
+
+#[test]
+fn the_remote_reference_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+    use crate::remote::RemoteRef;
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 33));
+    let valid: Vec<Vec<u8>> = (0..64)
+        .map(|_| random_remote_ref(&mut rng).encode())
+        .collect();
+    let mut tally = Tally::default();
+    for case in 0..cases() * 5 {
+        let context = format!("seed {seed}, case {case}");
+        let input = arbitrary_input(&mut rng, &valid);
+        match RemoteRef::parse(&input) {
+            Ok(reference) => {
+                tally.accepted += 1;
+                assert_eq!(
+                    reference.encode(),
+                    input,
+                    "{context}: a second spelling was accepted: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+            Err(error) => {
+                tally.rejected += 1;
+                check_rejection(&error, ref_line(&error), 2, &input, &context);
+            }
+        }
+    }
+    assert!(tally.accepted > 0 && tally.rejected > 0, "vacuous run");
+}
+
+#[test]
+fn the_remote_configuration_reader_accepts_only_what_the_encoder_writes_and_never_panics() {
+    use crate::remote::{CaFile, RemoteAddress, RemoteConfig, RepositoryId};
+    const KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMt6BisKCOOMdkWowXYqXUrS1zKF4aE6QenzZ1SSB/Md";
+    let (seed, mut rng) = (seed(), Rng::new(seed(), 34));
+    let valid: Vec<Vec<u8>> = (0..64)
+        .map(|n| {
+            let scheme = if rng.one_in(4) { "http" } else { "https" };
+            let address = format!("{scheme}://hub.example/ns-{n}/repo");
+            let id: String = random_commit_id(&mut rng).to_string()[3..35].to_owned();
+            let mut config = RemoteConfig::new(
+                RemoteAddress::try_new(address).expect("a valid address"),
+                RepositoryId::try_new(id).expect("32 hexadecimal digits"),
+            );
+            if rng.one_in(2) {
+                config.hub_key = Some(KEY.parse().expect("a valid key"));
+            }
+            if rng.one_in(2) {
+                config.ca_file = Some(CaFile::try_new(format!("/etc/ca {n}.pem")).expect("a path"));
+            }
+            config.sign_in = rng.one_in(2);
+            config.encode()
+        })
+        .collect();
+    let mut tally = Tally::default();
+    for case in 0..cases() * 5 {
+        let context = format!("seed {seed}, case {case}");
+        let input = arbitrary_input(&mut rng, &valid);
+        match RemoteConfig::parse(&input) {
+            Ok(config) => {
+                tally.accepted += 1;
+                assert_eq!(
+                    config.encode(),
+                    input,
+                    "{context}: a second spelling was accepted: {:?}",
+                    String::from_utf8_lossy(&input)
+                );
+            }
+            Err(error) => {
+                tally.rejected += 1;
+                check_rejection(&error, None, 6, &input, &context);
             }
         }
     }
