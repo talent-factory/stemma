@@ -59,10 +59,11 @@ pub trait RecordDestination {
     fn append(&mut self, entry: &[u8]) -> io::Result<()>;
 }
 
-/// What a hub passes to the accepting operation with a ref update (ADR-025): who it is, which
-/// repository the update was sent to, where the record lies, its time, and its signer. The
-/// slices of the gate add to it (the namespace policy, the statements), so a caller outside
-/// the crate builds it with [`new`](Self::new).
+/// What a hub passes to the accepting operation with a ref update or a statement (ADR-025): who
+/// it is, which repository the update was sent to, where the record lies, its time, and its
+/// signer. The slices of the gate add to it (the namespace policy), so a caller outside the
+/// crate builds it with [`new`](Self::new). The destination of the statements is a parameter of
+/// [`accept_statement`](Repository::accept_statement) of its own.
 #[non_exhaustive]
 pub struct AcceptContext<'a> {
     /// The public address under which the hub was called. An update that names another address
@@ -459,8 +460,8 @@ struct Owner {
 /// The record of a repository, as it was read.
 struct Record {
     chain: Chain,
-    /// The last entry, whose moves may not be made yet.
-    last: Option<RecordEntry>,
+    /// The entries, in their order. The last one's moves may not be made yet.
+    entries: Vec<RecordEntry>,
     owners: BTreeMap<QualifiedName, Owner>,
 }
 
@@ -493,9 +494,14 @@ impl Record {
         }
         Ok(Self {
             chain,
-            last: entries.into_iter().next_back(),
+            entries,
             owners,
         })
+    }
+
+    /// The last entry, whose moves may not be made yet.
+    fn last(&self) -> Option<&RecordEntry> {
+        self.entries.last()
     }
 }
 
@@ -611,7 +617,7 @@ impl Repository {
         let mut lock = Lock::new(self.refs_store().lock_held()?);
 
         let mut record = Record::read(context.record, context.repository)?;
-        if let Some(last) = &record.last {
+        if let Some(last) = record.last() {
             self.complete(&mut lock, last)?;
         }
         self.require_agreement(&record)?;
@@ -1066,6 +1072,14 @@ impl Repository {
         Ok(())
     }
 }
+
+// The second entry of the accepting operation, for a signed statement (STEMMA-299).
+mod statement;
+
+pub use statement::{
+    held_in, record_in, statements_of_open_pulls, RangeError, ReadAccess, StatementDestination,
+    StatementError,
+};
 
 #[cfg(test)]
 mod tests;

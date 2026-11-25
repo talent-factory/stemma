@@ -13,7 +13,9 @@
 //! fetch request ([`FetchRequest`]), the error ([`ErrorMessage`]), and, in the module [`record`],
 //! the ref update and the record entry that answers it as a receipt (ADR-025), and, in the
 //! module [`sign_in`], the three messages of the sign-in (ADR-024); the module [`refusal`] holds
-//! the reasons for which a ref update is not accepted. The object stream
+//! the reasons for which a ref update is not accepted. The module [`held`] holds a statement as
+//! a hub keeps it, the range by which a reader asks for statements or the record, and the
+//! reasons for which a statement is not accepted (ADR-025). The object stream
 //! is binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
 //! There are no capabilities and no optional fields: from the first release that carries the
 //! protocol on, every change of a message is a new number (see [`VERSION`]).
@@ -866,6 +868,14 @@ pub enum ErrorMessage {
     /// A ref update is refused by the register, the policy, the write ownership, or the gate
     /// (ADR-025). Carries the typed reason.
     Refused(refusal::Refused),
+    // The statements on a hub (ADR-025, STEMMA-299).
+    /// A submitted statement is refused by the rules of the writer (ADR-025). Carries the typed
+    /// reason ([`held::StatementRefusal`]).
+    StatementRefused(held::StatementRefusal),
+    /// A request that reads the statements or the record of a repository is not answered: the
+    /// requester may not read the repository, or it does not exist. The two cases have one
+    /// answer, so the error does not say whether a repository exists.
+    NotReadable,
 }
 
 impl ErrorMessage {
@@ -896,6 +906,13 @@ impl ErrorMessage {
                 first_line(VERSION),
                 refusal::encode_refused(refused)
             ),
+            // The statements on a hub (STEMMA-299).
+            Self::StatementRefused(refusal) => format!(
+                "{}error statement-refused\n{}",
+                first_line(VERSION),
+                held::encode_refusal(refusal)
+            ),
+            Self::NotReadable => format!("{}error not-readable\n", first_line(VERSION)),
         }
         .into_bytes()
     }
@@ -975,6 +992,14 @@ impl ErrorMessage {
             }
             Some((_, "stale")) => refusal::read_stale(&mut lines).map(Self::Stale),
             Some((_, "refused")) => refusal::read_refused(&mut lines).map(Self::Refused),
+            // The statements on a hub (STEMMA-299).
+            Some((_, "statement-refused")) => {
+                held::read_refusal(&mut lines).map(Self::StatementRefused)
+            }
+            Some((_, "not-readable")) => {
+                lines.end()?;
+                Ok(Self::NotReadable)
+            }
             Some((line, _)) => Err(malformed(line, Malformed::UnknownError)),
             None => Err(malformed(lines.line, Malformed::Expected("error"))),
         }
@@ -1001,6 +1026,12 @@ impl fmt::Display for ErrorMessage {
             ),
             Self::Stale(stale) => stale.fmt(f),
             Self::Refused(refused) => refused.fmt(f),
+            // The statements on a hub (STEMMA-299).
+            Self::StatementRefused(refusal) => refusal.fmt(f),
+            Self::NotReadable => f.write_str(
+                "the other side does not answer for this repository: it may not be read, or it \
+                 does not exist",
+            ),
         }
     }
 }
@@ -1170,6 +1201,15 @@ pub enum ParseError {
         /// The rule.
         reason: sign_in::SignInProblem,
     },
+    // The statements on a hub (STEMMA-299).
+    /// A rule of a held statement, of a range, or of a refused statement is broken
+    /// ([`held`]).
+    Held {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: held::HeldProblem,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -1198,6 +1238,8 @@ impl fmt::Display for ParseError {
             Self::Record { line, reason } => write!(f, "line {line}: {reason}"),
             Self::Statement { line, reason } => write!(f, "line {line}: {reason}"),
             Self::SignIn { line, reason } => write!(f, "line {line}: {reason}"),
+            // The statements on a hub (STEMMA-299).
+            Self::Held { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
 }
@@ -1219,6 +1261,8 @@ impl Error for ParseError {
             | Self::Record { .. }
             | Self::Statement { .. }
             | Self::SignIn { .. } => None,
+            // The statements on a hub (STEMMA-299).
+            Self::Held { .. } => None,
         }
     }
 }
@@ -1731,6 +1775,13 @@ pub mod examples {
         /// The answer of a hub with a token ([`TokenAnswer`](super::sign_in::TokenAnswer)). The token of
         /// the example is one that no hub issued.
         TokenAnswer,
+        // The statements on a hub (STEMMA-299).
+        /// A statement as a hub holds it, with the lines of the hub
+        /// ([`HeldStatement`](super::held::HeldStatement)).
+        HeldStatement,
+        /// A range of numbers, the request that reads the statements or the record
+        /// ([`Range`](super::held::Range)).
+        Range,
     }
 
     /// One example message.
@@ -1779,6 +1830,12 @@ pub mod examples {
         example!("error-stale", Error),
         example!("error-refused", Error),
         example!("error-refused-update", Error),
+        // The statements on a hub (STEMMA-299).
+        example!("held-statement", HeldStatement),
+        example!("range", Range),
+        example!("range-to-the-end", Range),
+        example!("error-statement-refused", Error),
+        example!("error-not-readable", Error),
     ];
 }
 
@@ -1789,6 +1846,9 @@ pub mod refusal;
 pub mod statement;
 
 pub mod sign_in;
+
+// The statements on a hub (ADR-025, STEMMA-299).
+pub mod held;
 
 #[cfg(test)]
 mod tests;

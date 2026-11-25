@@ -155,6 +155,12 @@ fn written(example_name: &str) -> Vec<u8> {
         "error-refused" => refusal::tests::example_refused().encode(),
         "error-refused-update" => refusal::tests::example_refused_update().encode(),
         "statement-unsigned" => statement::tests::example_unsigned().encode(),
+        // The statements on a hub (STEMMA-299).
+        "held-statement" => held::tests::example_held().encode(),
+        "range" => held::tests::example_range().encode(),
+        "range-to-the-end" => held::tests::example_range_to_the_end().encode(),
+        "error-statement-refused" => held::tests::example_refused().encode(),
+        "error-not-readable" => ErrorMessage::NotReadable.encode(),
         other => {
             let kind = statement::StatementKind::ALL
                 .into_iter()
@@ -184,6 +190,11 @@ fn round_trips(message: Message, bytes: &[u8]) -> bool {
         Message::TokenAnswer => {
             sign_in::TokenAnswer::parse(bytes).is_ok_and(|m| m.encode() == bytes)
         }
+        // The statements on a hub (STEMMA-299).
+        Message::HeldStatement => {
+            held::HeldStatement::parse(bytes).is_ok_and(|m| m.encode() == bytes)
+        }
+        Message::Range => held::Range::parse(bytes).is_ok_and(|m| m.encode() == bytes),
     }
 }
 
@@ -224,6 +235,8 @@ fn every_example_is_refused_by_the_readers_of_the_other_messages() {
         Message::Challenge,
         Message::SignedChallenge,
         Message::TokenAnswer,
+        Message::HeldStatement,
+        Message::Range,
     ];
     for example in examples::ALL {
         for other in all {
