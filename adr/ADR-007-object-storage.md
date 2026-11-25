@@ -178,7 +178,8 @@ server will later keep objects elsewhere (API-first). The implementation is
       subdirectory of its own, `tmp/receive-<pid>-<n>-<random>/`: the writer that takes the lock
       empties `tmp/` of files and leaves directories. The operation holds a lock of the system
       on the file `guard` in the subdirectory while it runs and removes the subdirectory at its
-      end. A subdirectory whose guard is free was left by a process that ended; the next
+      end. A subdirectory whose guard is free, or that is empty and has none, was left by a
+      process that ended; the next
       receiving operation removes it, and a hub can ask for the same at its start
       (`Repository::remove_receive_leftovers`). This amends the rule for the receiving
       operation, as ADR-019 did for the gate (decided in STEMMA-272, implemented in STEMMA-289;

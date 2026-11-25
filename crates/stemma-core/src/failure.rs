@@ -360,9 +360,11 @@ impl Classify for crate::receive::ConnectivityError {
         match self {
             // What a sender delivered does not hold together. The repository is as it was, and
             // a second transfer can succeed.
-            Self::Missing { .. } | Self::WrongKind { .. } | Self::Unreadable { .. } => {
-                FailureKind::Other
-            }
+            Self::Missing { .. } | Self::WrongKind { .. } => FailureKind::Other,
+            Self::Unreadable { .. } if self.is_incomplete() => FailureKind::Other,
+            // A value with another ID than the one it was read by: a defect of the reader,
+            // which the caller cannot tell from damage (see `HistoryError`).
+            Self::Unreadable { .. } => FailureKind::Damaged,
             Self::Store(error) => error.kind(),
             Self::Refs(error) => error.kind(),
             Self::Own(error) => error.kind(),

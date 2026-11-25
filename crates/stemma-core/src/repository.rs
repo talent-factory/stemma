@@ -42,8 +42,8 @@
 //! ```
 //!
 //! It has no `HEAD`, no `working-copy`, no `oplog/` and `oplog-tip`, no `leases/`, no
-//! `worktrees/`, no `purge-pending`, and no `fetch-pending`. An operation that needs one of them is refused with
-//! [`RefError::Bare`] before it reads or writes anything.
+//! `worktrees/`, no `purge-pending`, and no `fetch-pending`. An operation that needs one of them
+//! is refused with [`RefError::Bare`] before it reads or writes anything.
 
 use std::error::Error;
 use std::fmt;

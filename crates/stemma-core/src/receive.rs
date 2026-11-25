@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 use crate::conflict::AnyCommit;
 use crate::fault;
 use crate::history::{read_commit, HistoryError};
-use crate::object::{CommitId, EntryMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
+use crate::object::{CommitId, EntryMode, Kind, ObjectId, Tree, TreeEntry, TreeId, PREFIX};
 use crate::protocol::{ObjectStreamReader, StreamError};
 use crate::refs::RefError;
 use crate::repository::Repository;
@@ -90,11 +90,11 @@ const MAX_JOURNAL_LEN: u64 = 1 << 30;
 /// How often a receiving operation tries a new name for its directory.
 const DIR_ATTEMPTS: usize = 16;
 
-/// The count of objects in temporary files from which a receiver makes them durable at the next
-/// commit of the stream. The tests take a small count, so that a short stream fills a batch.
+/// The count of objects of a stream since the last batch, with those that the store had already,
+/// from which a receiver makes them durable at the next commit of the stream. The tests take a small count, so that a short stream fills a batch.
 const FLUSH_OBJECTS: u64 = if cfg!(test) { 4 } else { 1024 };
 
-/// The bytes of object bodies in temporary files from which a receiver makes them durable at the
+/// The bytes of the bodies of these objects from which a receiver makes them durable at the
 /// next commit of the stream.
 const FLUSH_BYTES: u64 = 64 << 20;
 
@@ -137,6 +137,7 @@ impl Default for Bounds {
 
 /// What a receiving operation stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct Received {
     /// The number of objects that the stream carried. An object that the store had already, or
     /// that the stream carried twice, counts each time.
@@ -177,7 +178,8 @@ pub enum ConnectivityError {
         needed_by: Option<ObjectId>,
     },
     /// A tree or a commit that the walk reached is intact as an object, and the strict reader
-    /// refuses its body (ADR-005).
+    /// refuses its body (ADR-005). The source is never [`ReadError::Store`]: an error of the
+    /// store is [`Store`](Self::Store), and another kind is [`WrongKind`](Self::WrongKind).
     Unreadable {
         /// The commit or the tree that names it, or `None` if it is a tip that the caller named.
         needed_by: Option<ObjectId>,
@@ -200,8 +202,38 @@ impl ConnectivityError {
     /// (ADR-023). `false` for a failure of the storage or of the own repository.
     pub fn is_incomplete(&self) -> bool {
         match self {
-            Self::Missing { .. } | Self::WrongKind { .. } | Self::Unreadable { .. } => true,
+            Self::Missing { .. } | Self::WrongKind { .. } => true,
+            // A reader that returns a value with another ID has a defect, and no upload
+            // mends that.
+            Self::Unreadable { source, .. } => !matches!(**source, ReadError::IdMismatch { .. }),
             Self::Store(_) | Self::Refs(_) | Self::Own(_) => false,
+        }
+    }
+
+    /// Whether the file of an object that the walk reached is damaged.
+    fn is_damaged_object(&self) -> bool {
+        matches!(self, Self::Store(source) if matches!(**source, StoreError::Corrupt { .. }))
+    }
+
+    /// Returns the error of the store if the store could not answer, also inside the error of
+    /// the references or of the own history. `None` for an object that is missing, has the
+    /// wrong kind, or has a body that is not canonical.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Missing { .. } | Self::WrongKind { .. } => None,
+            Self::Unreadable { source, .. } => source.store_error(),
+            Self::Store(source) => Some(source),
+            Self::Refs(source) => source.store_error(),
+            Self::Own(source) => source.store_error(),
+        }
+    }
+
+    /// Returns the error of the file system if that is what failed, in the store or while the
+    /// references were read (see the crate documentation).
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Refs(source) => source.io_error(),
+            _ => self.store_error().and_then(StoreError::io_error),
         }
     }
 }
@@ -243,9 +275,10 @@ impl fmt::Display for ConnectivityError {
                 expected.name(),
                 NeededBy(*needed_by)
             ),
-            Self::Unreadable { needed_by, source } => {
-                write!(f, "{source}{}", NeededBy(*needed_by))
-            }
+            Self::Unreadable { needed_by, source } => match needed_by {
+                Some(id) => write!(f, "{source} ({id} names the object)"),
+                None => write!(f, "{source}"),
+            },
             Self::Store(source) => write!(f, "{source}"),
             Self::Refs(source) => write!(f, "{source}"),
             Self::Own(source) => write!(
@@ -322,6 +355,17 @@ impl fmt::Display for FetchJournalError {
     }
 }
 
+impl FetchJournalError {
+    /// Returns the error of the file system if this is [`FetchJournalError::Io`] (see the crate
+    /// documentation).
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::Malformed { .. } | Self::Running { .. } => None,
+        }
+    }
+}
+
 impl Error for FetchJournalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -347,8 +391,11 @@ pub enum ReceiveError {
     /// An object could not be stored, or the directory of the receiving operation in `tmp/`
     /// could not be made. Boxed, as in [`ConnectivityError`].
     Store(Box<StoreError>),
-    /// A commit of the stream is not connected: an object below it is missing, has the wrong
-    /// kind, or is refused by a strict reader. Only a fetch checks while it receives.
+    /// The connectivity check of a fetch failed: a commit of the stream is not connected (an
+    /// object below it is missing, has the wrong kind, or is refused by a strict reader;
+    /// [`ConnectivityError::is_incomplete`]), or the check itself could not be made, because
+    /// the storage failed or the history below the own references cannot be read. Only a fetch
+    /// checks while it receives.
     Connectivity(ConnectivityError),
     /// The journal of the fetch failed.
     Journal(FetchJournalError),
@@ -365,6 +412,31 @@ impl ReceiveError {
             self,
             Self::RequestTooLarge { .. } | Self::Stream(StreamError::TooLarge { .. })
         )
+    }
+
+    /// Returns the error of the store if the store could not answer, also inside the error of
+    /// the connectivity check or of the references.
+    pub fn store_error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Store(source) => Some(source),
+            Self::Connectivity(source) => source.store_error(),
+            Self::Refs(source) => source.store_error(),
+            Self::Stream(_) | Self::RequestTooLarge { .. } | Self::Journal(_) => None,
+        }
+    }
+
+    /// Returns the error of the file system of the repository if that is what failed: in the
+    /// store, the references, or the journal (see the crate documentation). An error of the
+    /// carrier of the stream is not one of them, so that a connection that broke is not taken
+    /// for a full disk; [`StreamError::io_error`] returns it.
+    pub fn io_error(&self) -> Option<&io::Error> {
+        match self {
+            Self::Store(source) => source.io_error(),
+            Self::Connectivity(source) => source.io_error(),
+            Self::Journal(source) => source.io_error(),
+            Self::Refs(source) => source.io_error(),
+            Self::Stream(_) | Self::RequestTooLarge { .. } => None,
+        }
     }
 }
 
@@ -453,9 +525,11 @@ impl ReceiveDir {
     ///
     /// A cleanup that looks at the directory before the lock is held takes it for one that was
     /// left, and removes it. The lock therefore counts only if the guard is still in place once
-    /// it is held; else another name is tried. On a file system that cannot lock a file the
-    /// directory is used without the lock: a cleanup on the same file system cannot lock the
-    /// guard either and leaves the directory.
+    /// it is held; else another name is tried. If the lock cannot be taken for another reason
+    /// than a holder, as on a file system without locks of files, the directory is used without
+    /// the lock. A cleanup that cannot lock the guard either leaves the directory; one that can,
+    /// after a failure that passed, removes it, and the operation then fails when it moves its
+    /// objects into place, without losing a stored object.
     fn create(root: &Path) -> Result<Self, StoreError> {
         let tmp = root.join("tmp");
         create_dirs_synced(root, &tmp)?;
@@ -697,21 +771,24 @@ enum Step {
 }
 
 impl<'a> Connectivity<'a> {
-    /// A check for the repository, with its branches, tags, and remote references as the
-    /// references that are taken as complete (ADR-015).
-    fn new(repository: &'a Repository) -> Result<Self, ConnectivityError> {
-        let tips = own_tips(repository)?;
-        Ok(Self {
-            store: repository.objects(),
+    /// A check over the store, with `tips`, the commits that the own references name
+    /// ([`own_tips`]), as the commits that are taken as complete with everything below them
+    /// (ADR-015).
+    fn new(store: &'a FsObjectStore, tips: &BTreeSet<CommitId>) -> Self {
+        Self {
+            store,
             own: tips.iter().copied().collect(),
-            frontier: tips.into_iter().map(|tip| (tip, None)).collect(),
+            frontier: tips.iter().map(|&tip| (tip, None)).collect(),
             verified: HashSet::new(),
             checked: HashSet::new(),
-        })
+        }
     }
 
     /// Whether an own reference reaches the commit. The history below the references is read
-    /// only as far as the answer needs it: a commit that a reference names costs no read.
+    /// only until the commit is found: a commit that a reference names costs no read. The
+    /// answer "no", which every new commit gets, needs all of that history, so the first new
+    /// commit of a check costs one read of every commit below the own references, and the
+    /// later ones none.
     fn is_own(&mut self, id: CommitId) -> Result<bool, ConnectivityError> {
         while !self.own.contains(&id) {
             let Some((next, child)) = self.frontier.pop() else {
@@ -763,12 +840,11 @@ impl<'a> Connectivity<'a> {
                         }
                     }
                 }
-                // A commit that two children name is entered twice and checked once.
+                // Between the two steps of a commit only its ancestors are looked at, so a
+                // commit that two children name is complete when it is entered again.
                 Step::Exit(id, commit) => {
-                    if !self.verified.contains(&id) {
-                        self.check_trees(id, &commit)?;
-                        self.verified.insert(id);
-                    }
+                    self.check_trees(id, &commit)?;
+                    self.verified.insert(id);
                 }
             }
         }
@@ -915,6 +991,28 @@ fn own_tips(repository: &Repository) -> Result<BTreeSet<CommitId>, RefError> {
     Ok(tips)
 }
 
+/// Whether `tail`, the bytes of a journal after its last line feed, is the beginning of a line
+/// that a fetch writes: of the first line if `first`, else of a line `commit <id>`. Empty bytes
+/// are. A process that ended while it wrote leaves such a tail and no other.
+fn is_cut_line(tail: &[u8], first: bool) -> bool {
+    if first {
+        return format!("{JOURNAL_HEADER}\n").as_bytes().starts_with(tail);
+    }
+    let keyword = b"commit ";
+    let Some(id) = tail.strip_prefix(keyword) else {
+        return keyword.starts_with(tail);
+    };
+    let prefix = PREFIX.as_bytes();
+    id.len() <= prefix.len() + 64
+        && id.iter().enumerate().all(|(index, &byte)| {
+            prefix
+                .get(index)
+                .map_or(matches!(byte, b'0'..=b'9' | b'a'..=b'f'), |&expected| {
+                    byte == expected
+                })
+        })
+}
+
 /// The open journal of a running fetch, with the lock of the system on it.
 struct Journal {
     path: PathBuf,
@@ -934,8 +1032,11 @@ impl Journal {
     /// and returns the commits that it records, each once, in the order of the file. A last line
     /// that was cut off is removed from the file.
     ///
-    /// On a file system that cannot lock a file the journal is used without the lock, and two
-    /// fetches at once may then mix their lines; the reader refuses such a journal.
+    /// If the lock cannot be taken for another reason than a fetch that holds it, as on a file
+    /// system without locks of files, the journal is used without the lock. Two fetches at once
+    /// may then lose lines of each other or remove the journal of the other. The reader refuses
+    /// a journal whose lines were torn; a line that is lost costs a second transfer of its
+    /// commit and nothing else, because a recorded commit is checked again before it counts.
     fn open(root: &Path) -> Result<(Self, Vec<CommitId>), FetchJournalError> {
         let path = root.join(FETCH_JOURNAL);
         let mut options = OpenOptions::new();
@@ -954,12 +1055,26 @@ impl Journal {
             .take(MAX_JOURNAL_LEN + 1)
             .read_to_end(&mut bytes)
             .map_err(journal.io("read the journal of the fetch"))?;
-        // What ends with a line feed was written whole; the rest is a line that was cut off.
+        if bytes.len() as u64 > MAX_JOURNAL_LEN {
+            return Err(FetchJournalError::Malformed {
+                path: journal.path,
+                line: 1,
+            });
+        }
+        // What ends with a line feed was written whole; the rest is a line that was cut off, if
+        // it is the beginning of a line that a fetch writes.
         let whole = bytes
             .iter()
             .rposition(|&byte| byte == b'\n')
             .map_or(0, |end| end + 1);
         let commits = journal.parse(&bytes[..whole])?;
+        if !is_cut_line(&bytes[whole..], whole == 0) {
+            let line = bytes[..whole].iter().filter(|&&byte| byte == b'\n').count() + 1;
+            return Err(FetchJournalError::Malformed {
+                path: journal.path,
+                line,
+            });
+        }
         if whole < bytes.len() {
             journal
                 .file
@@ -985,9 +1100,6 @@ impl Journal {
             path: self.path.clone(),
             line,
         };
-        if bytes.len() as u64 > MAX_JOURNAL_LEN {
-            return Err(malformed(1));
-        }
         let mut lines = bytes.split_inclusive(|&byte| byte == b'\n').enumerate();
         match lines.next() {
             None => return Ok(Vec::new()),
@@ -1013,14 +1125,23 @@ impl Journal {
         Ok(commits)
     }
 
-    /// Writes `text` at the end of the journal and flushes the file.
+    /// Writes `text` at the end of the journal and flushes the file. If the write fails, what
+    /// it wrote is cut off again, best effort, so that a later write does not end a torn line
+    /// with its own line feed.
     fn append(&mut self, text: &str) -> Result<(), FetchJournalError> {
         let operation = "write the journal of the fetch";
-        self.file
+        let end = self
+            .file
             .seek(SeekFrom::End(0))
-            .and_then(|_| self.file.write_all(text.as_bytes()))
-            .and_then(|()| self.file.sync_all())
-            .map_err(self.io(operation))
+            .map_err(self.io(operation))?;
+        let written = self
+            .file
+            .write_all(text.as_bytes())
+            .and_then(|()| self.file.sync_all());
+        if written.is_err() {
+            let _ = self.file.set_len(end);
+        }
+        written.map_err(self.io(operation))
     }
 
     /// Records commits that arrived completely.
@@ -1038,8 +1159,6 @@ impl Journal {
     /// Removes the journal and flushes its directory.
     fn remove(self) -> Result<(), FetchJournalError> {
         let Self { path, file } = self;
-        // Windows removes no file that is open.
-        drop(file);
         let io = |operation: &'static str, at: &Path| {
             let at = at.to_path_buf();
             move |source| FetchJournalError::Io {
@@ -1048,7 +1167,15 @@ impl Journal {
                 source,
             }
         };
-        match fault::remove_file(&path) {
+        // The name goes while the lock is held: a fetch that opens the file before sees the
+        // lock, and one that comes after makes a new file. Where a file that is open cannot be
+        // removed, the file is closed first.
+        let mut removed = fault::remove_file(&path);
+        drop(file);
+        if matches!(&removed, Err(error) if error.kind() != io::ErrorKind::NotFound) {
+            removed = fault::remove_file(&path);
+        }
+        match removed {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(io("remove the journal of the fetch", &path)(error)),
@@ -1074,9 +1201,10 @@ impl Journal {
 ///
 /// A fetch that fails at step 2 or 3 is dropped. Its journal stays, and the next fetch sends the
 /// recorded commits as further `have` lines, so the remote sends only what is still missing.
-/// The value holds the lock of the system on the journal: a second fetch in the same repository
+/// The value holds the lock of the system on the journal, where the file system has one: a second fetch in the same repository
 /// is refused while it lives ([`FetchJournalError::Running`]), and on Windows no other handle
 /// reads the file meanwhile.
+#[must_use = "a fetch that is dropped keeps its journal for the next one; `finish` removes it"]
 pub struct Fetch<'a> {
     repository: &'a Repository,
     connectivity: Connectivity<'a>,
@@ -1098,7 +1226,8 @@ impl fmt::Debug for Fetch<'_> {
 impl Fetch<'_> {
     /// The commits to send as `have`: the commits that the branches, the tags, and the remote
     /// references of the repository name, and the commits of the journal that still hold and
-    /// that no other of them has as a parent.
+    /// that no other of them has as a parent. The set is that of the start of the fetch: a
+    /// commit that [`receive`](Self::receive) records afterwards is not added.
     pub fn have(&self) -> &BTreeSet<CommitId> {
         &self.have
     }
@@ -1115,6 +1244,9 @@ impl Fetch<'_> {
     /// before: a commit that a reference reaches or that the journal names gets no line. May be
     /// called for several streams.
     ///
+    /// A commit that this fetch found complete before, as an ancestor of another one, gets no
+    /// line either.
+    ///
     /// When the stream is cut off or fails, the objects that were read whole are stored, and
     /// their commits are checked and recorded, before the error is returned: what arrived is
     /// kept for the next fetch.
@@ -1125,8 +1257,12 @@ impl Fetch<'_> {
     /// an object, or the carrier fails, [`ReceiveError::RequestTooLarge`] if the stream is
     /// longer than its bound, [`ReceiveError::Store`] if an object cannot be stored,
     /// [`ReceiveError::Connectivity`] for a commit of the stream that is not complete, which
-    /// ends the call after the commits before it are recorded, and [`ReceiveError::Journal`] if
-    /// the journal cannot be written.
+    /// ends the call after the commits before it are recorded, and if the check cannot be made
+    /// (the storage fails, or the history below the own references cannot be read), and
+    /// [`ReceiveError::Journal`] if the journal cannot be written. If several fail, the first
+    /// of this order is returned: the store, the connectivity, the journal, the bound of the
+    /// request, the stream. An error of the stream is therefore not returned if the objects that
+    /// arrived before it cannot be stored, checked, or recorded.
     pub fn receive<R: BufRead>(
         &mut self,
         stream: R,
@@ -1161,8 +1297,10 @@ impl Fetch<'_> {
                         }
                     }
                 }
-                journal.record(&complete)?;
-                checked
+                // What the sender delivered goes before a failure to write it down.
+                let recorded = journal.record(&complete);
+                checked?;
+                recorded.map_err(ReceiveError::Journal)
             },
         )
     }
@@ -1171,6 +1309,12 @@ impl Fetch<'_> {
     /// each of them. It reads objects that were in the store before as well, so a wanted commit
     /// that no stream of this fetch carried is checked like one that arrived. The caller moves a
     /// remote reference only to a commit that passed.
+    ///
+    /// A commit that this fetch found complete before is not read again, so the answer is that
+    /// of the time when it was read, without the lock of the references. A purge that removes
+    /// an object of such a commit between that read and the move of the reference is not seen
+    /// here; the caller that moves the references under the lock closes the gap with
+    /// [`Repository::check_connectivity`] under that lock, or accepts it.
     ///
     /// # Errors
     ///
@@ -1196,6 +1340,8 @@ impl Repository {
     /// Stores the objects of a stream without naming them: the upload of a push on a hub
     /// (ADR-023). The ID of every object is computed here. When the call returns, every object
     /// of the stream is durable, also one that the store had already, so the call is idempotent.
+    /// A purge that runs at the same time may remove an object that the store had; the check of
+    /// the ref update then reports it as missing.
     ///
     /// Nothing is checked beyond the frames and the bounds. The objects stay unnamed until a
     /// ref update names them, and [`check_connectivity`](Self::check_connectivity) is the check
@@ -1228,8 +1374,13 @@ impl Repository {
     ///
     /// The walk does not ask where an object came from: an object that was in the store before
     /// is checked like one of an upload, and a commit whose trees lie in the store already
-    /// passes. A commit that an own reference reaches is taken as complete and not read
+    /// passes. A commit that an own reference reaches is taken as complete and not checked
     /// (ADR-015). An object that the walk does not reach is no error.
+    ///
+    /// The cost is the new commits and trees, the header of every new blob, and the trees of
+    /// the parents at the changed paths, and, unless every tip is named by an own reference,
+    /// one read of every commit below the own references: only the whole of that history says
+    /// that a new commit is not part of it.
     ///
     /// A hub calls this for the new tip of a ref update before it accepts it (ADR-025). It
     /// takes no lock; a caller that names the tips afterwards holds the lock of the references
@@ -1243,7 +1394,8 @@ impl Repository {
     /// [`ConnectivityError::Refs`] if the references cannot be read, and
     /// [`ConnectivityError::Own`] if the history below them cannot be read.
     pub fn check_connectivity(&self, tips: &[CommitId]) -> Result<(), ConnectivityError> {
-        let mut connectivity = Connectivity::new(self)?;
+        let own = own_tips(self)?;
+        let mut connectivity = Connectivity::new(self.objects(), &own);
         tips.iter()
             .try_for_each(|&tip| connectivity.ensure_complete(tip))
     }
@@ -1268,11 +1420,13 @@ impl Repository {
     /// [`ReceiveError::Journal`] if the journal cannot be opened, is damaged, or is held by
     /// another fetch, and [`ReceiveError::Connectivity`] if the storage fails or the history
     /// below the own references cannot be read while the recorded commits are checked. A
-    /// recorded commit that is not complete any more is no error.
+    /// recorded commit that is not complete any more, or that reaches an object whose file is
+    /// damaged, is no error: it is not resumed and arrives again.
     pub fn begin_fetch(&self) -> Result<Fetch<'_>, ReceiveError> {
         self.require_oplog("fetch").map_err(ReceiveError::from)?;
         // The references are read before the journal is made: a refusal leaves no file.
-        let mut connectivity = Connectivity::new(self)?;
+        let mut have = own_tips(self)?;
+        let mut connectivity = Connectivity::new(self.objects(), &have);
         let (journal, recorded) = Journal::open(&self.metadata_dir())?;
         let mut resumed = Vec::new();
         for commit in recorded {
@@ -1280,8 +1434,9 @@ impl Repository {
                 Ok(()) if connectivity.verified.contains(&commit) => resumed.push(commit),
                 // An own reference reaches it by now.
                 Ok(()) => {}
-                // Its objects are gone since, as after a purge: it is fetched again.
-                Err(error) if error.is_incomplete() => {}
+                // Its objects are gone since, as after a purge, or the file of one is damaged:
+                // it is fetched again, and the transfer writes a damaged file anew.
+                Err(error) if error.is_incomplete() || error.is_damaged_object() => {}
                 Err(error) => return Err(ReceiveError::Connectivity(error)),
             }
         }
@@ -1292,7 +1447,6 @@ impl Repository {
                 parents.extend(commit.parents().iter().copied());
             }
         }
-        let mut have = own_tips(self)?;
         have.extend(resumed.iter().filter(|commit| !parents.contains(commit)));
         Ok(Fetch {
             repository: self,

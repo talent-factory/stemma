@@ -1109,7 +1109,8 @@ impl Batch<'_> {
     /// cannot be created or flushed. If the directory of an object that the store had already has
     /// vanished since the object was added, the error is the failed flush (`NotFound`); unlike
     /// [`FsObjectStore::put_raw`], the batch does not write the object again. The lock of the
-    /// references rules that out in practice.
+    /// references rules that out in practice; a batch of the receiving side, which holds none
+    /// ([`FsObjectStore::batch_in`]), fails so beside a purge, and its transfer is repeated.
     pub(crate) fn finish(self) -> Result<(), StoreError> {
         self.finish_with(true)
     }
@@ -1251,8 +1252,8 @@ pub(crate) fn create_temp(
 /// Removes the scratch that writers left behind (ADR-011): every name in `<root>/tmp/` that is not
 /// a directory, and, if `root` is named [`METADATA_DIR`], every directory next to it whose name is
 /// exactly one that `init` gives its temporary directory (ADR-009, [`is_init_staging_name`]). The
-/// caller holds the lock of the references, and every writer of `tmp/` in this crate holds that
-/// lock while it writes, so no name there belongs to a write in progress. A caller of the library
+/// caller holds the lock of the references, and every writer of a file in `tmp/` itself holds
+/// that lock while it writes, so no such name belongs to a write in progress. A caller of the library
 /// that stores objects through `Repository::objects()` without the lock is not protected. An
 /// `init` that still builds its directory next to an existing `.stemma` fails, at the latest at
 /// its rename.
@@ -1260,7 +1261,8 @@ pub(crate) fn create_temp(
 /// It is best effort: a name that cannot be removed stays, and the next writer tries again, as a
 /// cleanup must not stop a change; [`scratch_left`] lists what stayed. An entry is never followed:
 /// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory in
-/// `tmp/`, which no writer makes, stays. A directory of the working copy whose name only starts
+/// `tmp/` stays: the receiving side of an object stream, which holds no lock, makes one for its
+/// temporary files and removes it itself (`receive-…`, ADR-023). A directory of the working copy whose name only starts
 /// like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
     if let Ok(entries) = fault::read_dir(&root.join("tmp")) {

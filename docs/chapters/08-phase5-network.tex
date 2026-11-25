@@ -157,7 +157,7 @@ Die Zahlen stammen von einem einzigen Verlauf und sind kein Schwellenwert.
 \startitemize[n]
 \item Der Klon liest die Liste aller Referenzen des Hubs in einer Anfrage.
 \item Er sendet in einer zweiten Anfrage die Commits, die er will (\type{want}), und die Commits,
-die er hat (\type{have}): die Spitzen seiner Branches und seiner Remote-Referenzen.
+die er hat (\type{have}): die Spitzen seiner Branches, seiner Tags und seiner Remote-Referenzen.
 \item Der Hub läuft den Graphen ab und antwortet mit dem Strom aller Objekte, die von den
 \type{want}-Commits aus erreichbar sind und von den bekannten \type{have}-Commits aus nicht.
 \item Der Klon prüft, was er empfangen hat, und bewegt erst danach seine Remote-Referenzen.
@@ -217,11 +217,14 @@ Er liest auch Objekte, die schon vor der Übertragung im Speicher lagen, denn si
 einer abgebrochenen Übertragung übrig sein.
 Umgekehrt besteht ein Commit, dessen Trees und Blobs der Empfänger auf anderem Weg schon hat,
 auch wenn der Strom nur den Commit selbst bringt.
-Die Kosten folgen dem Unterschied zum Stand der Eltern.
+Die Kosten haben zwei Teile.
 Der Lauf liest die neuen Commits und Trees und von jedem neuen Blob nur den Kopf der Datei,
 also $O(n)$ Objekte für $n$ neue, dazu die Trees der Eltern an den geänderten Pfaden.
-Den Verlauf unter den eigenen Referenzen liest er nur so weit, bis er weiss, ob eine Referenz
-einen Commit erreicht; für einen Commit, auf den eine Referenz zeigt, kostet das nichts.
+Den Verlauf unter den eigenen Referenzen liest er, bis er einen Commit darin findet; für einen
+Commit, auf den eine Referenz zeigt, kostet das nichts.
+Dass ein neuer Commit nicht dazugehört, weiss er aber erst, wenn er diesen Verlauf ganz gelesen
+hat: Das kostet je Prüfung einmal $O(m)$ für die $m$ Commits unter den eigenen Referenzen und
+ist ein offener Punkt von ADR-023.
 
 Die Invariante dahinter: Eine Referenz zeigt nur auf einen Commit, dessen ganzer Verlauf im
 Speicher liegt und lesbar ist.
@@ -245,6 +248,7 @@ Datei und lässt Verzeichnisse stehen (\in{Abschnitt}[sec:oplog-tip]).
 \type{guard} in diesem Verzeichnis, und am Ende entfernt er es.
 Ein Verzeichnis, dessen \type{guard} frei ist, stammt von einem Prozess, der endete; der nächste
 Empfang entfernt es, und ein Hub kann das beim Start selbst anstossen.
+Eines ohne \type{guard} entfernt er nur, solange es leer ist.
 Ein laufender Empfang verliert so nie eine Datei.
 \stopitemize
 \stopinfobox
@@ -271,11 +275,15 @@ commit <ID>          null oder mehr, in der Reihenfolge der Ankunft
 \startitemize[n]
 \item Der Fetch öffnet das Journal und hält eine Sperre des Betriebssystems darauf; ein zweiter
 Fetch im selben Repository lehnt ab, solange der erste läuft.
+Auf einem Dateisystem ohne solche Sperren laufen beide, und eine Zeile kann verloren gehen;
+das kostet eine zweite Übertragung ihres Commits.
 \item Er sammelt die Objekte des Stroms in temporären Dateien.
 An einem Commit, sobald 1024 Objekte oder 64 MiB beisammen sind, und am Ende des Stroms sichert er
 sie und verschiebt sie an ihren Platz.
 \item Erst danach prüft er die Commits dieser Gruppe und schreibt für jeden vollständigen eine
 Zeile ins Journal, das er sichert.
+Keine Zeile bekommt ein Commit, den eine Referenz erreicht oder den der Fetch schon als
+vollständig kennt.
 \item Bricht der Strom ab, tut er dasselbe für alles, was ganz ankam, und meldet dann den Fehler.
 \item Hat er die verlangten Commits geprüft und die Remote-Referenzen bewegt, entfernt er das
 Journal.

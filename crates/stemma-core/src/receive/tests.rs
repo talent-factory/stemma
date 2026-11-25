@@ -3,7 +3,8 @@
 //! journal of a running fetch.
 
 use std::collections::{BTreeSet, HashSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -174,7 +175,11 @@ fn an_upload_stores_every_object_under_the_id_it_computes_and_is_idempotent() {
         let received = hub.receive_objects(&stream[..], Bounds::default()).unwrap();
         assert_eq!(received.objects, 8);
         assert_eq!(received.commits, 2);
-        assert!(received.bytes > 0);
+        let bodies: usize = objects
+            .iter()
+            .map(|id| sender.objects().get(id).unwrap().unwrap().body().len())
+            .sum();
+        assert_eq!(received.bytes, bodies as u64);
         for id in &objects {
             let here = hub.objects().get(id).unwrap().unwrap();
             let there = sender.objects().get(id).unwrap().unwrap();
@@ -440,7 +445,7 @@ fn an_object_of_the_wrong_kind_and_a_body_that_a_strict_reader_refuses_are_named
     assert!(
         error
             .to_string()
-            .contains(&format!(", which {above} names")),
+            .contains(&format!(" ({above} names the object)")),
         "{error}"
     );
     let error = hub.check_connectivity(&[bad_commit]).unwrap_err();
@@ -742,8 +747,9 @@ fn a_stream_above_the_bound_of_a_request_is_refused_and_one_that_fills_it_passes
         .unwrap();
     exact.check_connectivity(&[second]).unwrap();
 
-    // One byte less cuts the last frame, and a bound between two frames cuts none: both are
-    // the bound, not a stream that was cut off or one that ended.
+    // With one byte less the reader still sees every frame, a bound between two frames ends the
+    // stream there, and a bound of 0 ends it inside the first line: each time the answer is
+    // the bound, not a stream that ended or was cut off.
     let first_only = stream_of_commits(&sender, &[first]).len() as u64;
     for limit in [length - 1, first_only, 0] {
         let hub_dir = TempDir::new();
@@ -979,6 +985,12 @@ fn a_journal_that_no_fetch_writes_is_refused_with_its_line() {
         (format!("stemma-fetch 1\ncommit {upper}\n"), 2),
         (format!("stemma-fetch 1\ncommit {id}\r\n"), 2),
         (format!("stemma-fetch 1\ncommit {id}\ntree {id}\n"), 3),
+        // A last line without a line feed that is not the beginning of a line of a fetch.
+        ("garbage".to_owned(), 1),
+        ("stemma-fetch 12".to_owned(), 1),
+        (format!("stemma-fetch 1\ncommit {id}\ntree"), 3),
+        (format!("stemma-fetch 1\ncommit {id}0"), 2),
+        ("stemma-fetch 1\ncommit B3".to_owned(), 2),
         ("stemma-fetch 1\ncommit \u{fffd}\n".to_owned(), 2),
     ] {
         fs::write(journal_path(&receiver), &content).unwrap();
@@ -1195,4 +1207,408 @@ fn the_objects_of_a_stream_are_made_durable_in_batches_at_a_commit() {
         format!("stemma-fetch 1\n{lines}")
     );
     assert!(tmp_names(&receiver).is_empty());
+}
+
+/// A stream that calls `hook` once, when the reader has taken the first `at` bytes.
+struct Hooked<'a, F: FnMut()> {
+    bytes: &'a [u8],
+    at: usize,
+    position: usize,
+    hook: Option<F>,
+}
+
+impl<F: FnMut()> Read for Hooked<'_, F> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let count = available.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl<F: FnMut()> BufRead for Hooked<'_, F> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.position >= self.at {
+            if let Some(mut hook) = self.hook.take() {
+                hook();
+            }
+            return Ok(&self.bytes[self.position..]);
+        }
+        Ok(&self.bytes[self.position..self.at])
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.position += count;
+    }
+}
+
+#[test]
+fn an_upload_keeps_its_temporary_files_while_another_writer_takes_the_lock() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    // The first commit fills a batch, so the objects of the second lie in a batch of their own.
+    let first = commit_of(
+        &sender,
+        &[
+            ("a.txt", "1\n"),
+            ("b.txt", "2\n"),
+            ("c.txt", "3\n"),
+            ("d.txt", "4\n"),
+        ],
+        vec![],
+    );
+    let second = commit_of(&sender, &[("a.txt", "5\n")], vec![first]);
+    let mut sent = HashSet::new();
+    let before = stream_of(&sender, &objects_of(&sender, &[first], &mut sent)).len();
+    let stream = stream_of_commits(&sender, &[first, second]);
+
+    // Inside the frame of the first commit, and inside that of the second.
+    for at in [before - 10, stream.len() - 10] {
+        let hub_dir = TempDir::new();
+        let hub = hub(&hub_dir);
+        let mut seen = false;
+        let hooked = Hooked {
+            bytes: &stream,
+            at,
+            position: 0,
+            hook: Some(|| {
+                // A file directly in `tmp/` goes, as every file there does.
+                let stray = hub.metadata_dir().join("tmp/1-0-0123456789abcdef");
+                fs::write(&stray, "left").unwrap();
+                take_the_lock(&hub);
+                assert!(!stray.exists());
+                hub.remove_receive_leftovers();
+                let empty = ObjectStreamWriter::new(Vec::new()).unwrap().finish();
+                hub.receive_objects(&empty[..], Bounds::default()).unwrap();
+                // The directory of the upload is there, with its guard and the temporary
+                // files of the objects that are not yet in place.
+                let names = tmp_names(&hub);
+                assert_eq!(names.len(), 1, "{names:?}");
+                assert!(is_receive_dir_name(&names[0]), "{names:?}");
+                let inside = fs::read_dir(hub.metadata_dir().join("tmp").join(&names[0]))
+                    .unwrap()
+                    .count();
+                assert!(inside > 1, "{inside}");
+                seen = true;
+            }),
+        };
+
+        let received = hub.receive_objects(hooked, Bounds::default()).unwrap();
+        assert!(seen);
+        assert_eq!(received.commits, 2);
+        hub.check_connectivity(&[second]).unwrap();
+        assert!(tmp_names(&hub).is_empty());
+    }
+}
+
+#[test]
+fn an_entry_of_another_sort_under_the_same_name_is_not_taken_from_the_parent() {
+    let dir = TempDir::new();
+    let hub = hub(&dir);
+    let store = hub.objects();
+    let blob = store.put_blob(&Blob::new("one\n")).unwrap();
+    let commit = |tree: TreeId, parents: Vec<CommitId>| {
+        let commit = Commit::try_new(
+            tree,
+            parents,
+            ChangeId::generate().unwrap(),
+            daniel(),
+            1,
+            "next",
+        )
+        .unwrap();
+        store.put_commit(&commit).unwrap()
+    };
+    let tree_of = |entry: TreeEntry| {
+        store
+            .put_tree(&Tree::try_new(vec![entry]).unwrap())
+            .unwrap()
+    };
+
+    // The parent has the blob as the file `src`; the child names the same ID as a directory.
+    let file = tree_of(TreeEntry::file("src", FileMode::File, blob).unwrap());
+    let parent = commit(file, vec![]);
+    set_branch(&hub, "main", &parent);
+    let as_directory = tree_of(TreeEntry::directory("src", TreeId::new(blob.object_id())).unwrap());
+    let error = hub
+        .check_connectivity(&[commit(as_directory, vec![parent])])
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ConnectivityError::WrongKind { id, expected: Kind::Tree, found: Kind::Blob, .. }
+                if *id == blob.object_id()
+        ),
+        "{error}"
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "object {} is a blob, not a tree, which {as_directory} names",
+            blob.object_id()
+        )
+    );
+
+    // The other way round: the parent has a tree as the directory `src`, the child as a file.
+    let directory = tree_of(TreeEntry::directory("src", file).unwrap());
+    let parent = commit(directory, vec![]);
+    set_branch(&hub, "main", &parent);
+    let as_file =
+        tree_of(TreeEntry::file("src", FileMode::File, BlobId::new(file.object_id())).unwrap());
+    let error = hub
+        .check_connectivity(&[commit(as_file, vec![parent])])
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ConnectivityError::WrongKind { id, expected: Kind::Blob, found: Kind::Tree, .. }
+                if *id == file.object_id()
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_changed_directory_is_compared_with_the_directory_of_the_parent() {
+    let dir = TempDir::new();
+    let hub = hub(&dir);
+    let first = commit_of(
+        &hub,
+        &[("src/keep.txt", "keep\n"), ("src/b.txt", "two\n")],
+        vec![],
+    );
+    set_branch(&hub, "main", &first);
+    let second = commit_of(
+        &hub,
+        &[("src/keep.txt", "keep\n"), ("src/b.txt", "three\n")],
+        vec![first],
+    );
+    // The directory changed, the file in it did not: the parent, which is complete, has it at
+    // the same path, so it is not asked for.
+    remove_object(&hub, &blob_id("keep\n"));
+    hub.check_connectivity(&[second]).unwrap();
+}
+
+#[test]
+fn a_damaged_file_of_an_object_is_an_error_of_the_store_and_a_fetch_writes_it_anew() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let stream = stream_of_commits(&sender, &[commit]);
+    let mut fetch = receiver.begin_fetch().unwrap();
+    fetch.receive(&stream[..], Bounds::default()).unwrap();
+    drop(fetch);
+    let journal = format!("stemma-fetch 1\ncommit {commit}\n");
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        journal
+    );
+    let blob = receiver.objects().object_path(&blob_id("one\n"));
+
+    // The storage fails: the check cannot be made, and a recorded commit stops the fetch.
+    {
+        let _denied = fault::deny_reads_of(&blob);
+        let error = receiver.check_connectivity(&[commit]).unwrap_err();
+        assert!(matches!(error, ConnectivityError::Store(_)), "{error}");
+        assert!(!error.is_incomplete());
+        assert_eq!(error.kind(), FailureKind::Other);
+        assert!(error.store_error().is_some());
+        assert_eq!(
+            error.io_error().map(io::Error::kind),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+        let error = receiver.begin_fetch().unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ReceiveError::Connectivity(ConnectivityError::Store(_))
+            ),
+            "{error}"
+        );
+        assert!(error.store_error().is_some());
+        assert!(error.io_error().is_some());
+    }
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        journal
+    );
+
+    // The file of the blob is damaged: the check names the store, and it is damage.
+    crate::testutil::damage(&blob, b"junk");
+    let error = receiver.check_connectivity(&[commit]).unwrap_err();
+    assert!(matches!(error, ConnectivityError::Store(_)), "{error}");
+    assert!(!error.is_incomplete());
+    assert_eq!(error.kind(), FailureKind::Damaged);
+    assert!(error.io_error().is_none());
+    // The fetch does not resume with the commit, and the transfer writes the file anew.
+    let mut fetch = receiver.begin_fetch().unwrap();
+    assert!(fetch.resumed().is_empty());
+    assert!(fetch.have().is_empty());
+    if cfg!(any(unix, windows)) {
+        fetch.receive(&stream[..], Bounds::default()).unwrap();
+        fetch.check(&set(&[commit])).unwrap();
+    }
+}
+
+#[test]
+fn a_recorded_id_that_names_no_commit_is_no_further_have() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&receiver, &[("a.txt", "one\n")], vec![]);
+    let tree = receiver
+        .objects()
+        .get_commit(&commit)
+        .unwrap()
+        .unwrap()
+        .tree();
+    let bad = receiver
+        .objects()
+        .put_raw(Kind::Commit, b"not a commit")
+        .unwrap();
+
+    // A tree, and a commit whose body the strict reader refuses, written by hand.
+    for id in [tree.object_id(), bad] {
+        fs::write(
+            journal_path(&receiver),
+            format!("stemma-fetch 1\ncommit {id}\n"),
+        )
+        .unwrap();
+        let fetch = receiver.begin_fetch().unwrap();
+        assert!(fetch.resumed().is_empty(), "{id}");
+        assert!(fetch.have().is_empty(), "{id}");
+    }
+}
+
+#[test]
+fn a_commit_that_is_not_connected_ends_the_stream_after_the_commits_before_it_are_recorded() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let good = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let bad = commit_of(&sender, &[("a.txt", "two\n")], vec![good]);
+    // Both commits arrive in one batch, and the blob of the second is damaged.
+    let mut stream = stream_of_commits(&sender, &[good, bad]);
+    let at = stream
+        .windows(4)
+        .position(|bytes| bytes == b"two\n")
+        .unwrap();
+    stream[at] = b'T';
+
+    let mut fetch = receiver.begin_fetch().unwrap();
+    let error = fetch.receive(&stream[..], Bounds::default()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ReceiveError::Connectivity(ConnectivityError::Missing { id, .. })
+                if *id == blob_id("two\n")
+        ),
+        "{error}"
+    );
+    assert!(error.store_error().is_none());
+    drop(fetch);
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        format!("stemma-fetch 1\ncommit {good}\n")
+    );
+    assert_eq!(receiver.begin_fetch().unwrap().resumed(), [good]);
+}
+
+#[test]
+fn a_journal_that_cannot_be_written_or_removed_is_reported_and_the_objects_stay() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let stream = stream_of_commits(&sender, &[commit]);
+
+    // The handle of the journal cannot write.
+    let mut fetch = receiver.begin_fetch().unwrap();
+    fetch.journal.file = File::open(journal_path(&receiver)).unwrap();
+    let error = fetch.receive(&stream[..], Bounds::default()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ReceiveError::Journal(FetchJournalError::Io {
+                operation: "write the journal of the fetch",
+                ..
+            })
+        ),
+        "{error}"
+    );
+    assert!(error.io_error().is_some());
+    assert!(error.store_error().is_none());
+    assert_eq!(error.kind(), FailureKind::Other);
+    assert!(
+        error
+            .to_string()
+            .starts_with("could not write the journal of the fetch `"),
+        "{error}"
+    );
+    // The objects are stored, the commit is complete, and only its line is missing.
+    fetch.check(&set(&[commit])).unwrap();
+    drop(fetch);
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        "stemma-fetch 1\n"
+    );
+
+    // The journal cannot be removed: the fetch has happened, and the file stays for the next.
+    let fetch = receiver.begin_fetch().unwrap();
+    let error = {
+        let _denied = fault::deny_writes_in(&receiver.metadata_dir());
+        fetch.finish().unwrap_err()
+    };
+    assert!(
+        matches!(
+            &error,
+            FetchJournalError::Io {
+                operation: "remove the journal of the fetch",
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert!(error.io_error().is_some());
+    assert!(journal_path(&receiver).exists());
+    receiver.begin_fetch().unwrap().finish().unwrap();
+    assert!(!journal_path(&receiver).exists());
+}
+
+#[test]
+fn a_batch_is_durable_before_its_commits_are_reported() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let hub = hub(&dir);
+    // Three objects per commit and four to a batch: a batch closes at every second commit.
+    let mut commits: Vec<CommitId> = Vec::new();
+    for round in 0..5 {
+        let text = format!("{round}\n");
+        let parents = commits.last().copied().into_iter().collect();
+        commits.push(commit_of(&sender, &[("a.txt", &text)], parents));
+    }
+    let stream = stream_of_commits(&sender, &commits);
+
+    let mut batches = Vec::new();
+    receive_stream(
+        hub.objects(),
+        &hub.metadata_dir(),
+        &stream[..],
+        Bounds::default(),
+        |reported| {
+            for commit in reported {
+                assert!(hub.objects().contains(&commit.object_id()).unwrap());
+            }
+            if !reported.is_empty() {
+                batches.push(reported.to_vec());
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        batches,
+        [&commits[..2], &commits[2..4], &commits[4..]].map(<[CommitId]>::to_vec)
+    );
 }

@@ -30,8 +30,10 @@
 //! [`change::GenerateError`] have an `io_error()` for the error of the file system or of the
 //! operating system, and so do [`oplog::OpLogError`] and [`repository::UpdateError`];
 //! [`protocol::StreamError`] has one for the error of the carrier of an object stream, and
-//! [`transport::TransportError`] for the error of the carrier of a request. A program
-//! that only reports an error prints it with `{}` and does not walk the chain.
+//! [`transport::TransportError`] for the error of the carrier of a request. The errors of the
+//! receiving side ([`receive::ReceiveError`], [`receive::ConnectivityError`], and
+//! [`receive::FetchJournalError`]) have an `io_error()`, and the first two a `store_error()`. A
+//! program that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
 mod allowed;
