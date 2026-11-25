@@ -2,7 +2,7 @@
 //! a tree, a commit, an actor line, the index, an entry of the log, the journal of a purge, and the
 //! policy file (whose check is a fixed point, see [`policy`]),
 //! one for the readers of the protocol messages together ([`protocol`]), which include the ref
-//! update, the record entry, and every signed statement,
+//! update, the record entry, every signed statement, and the three messages of the sign-in,
 //! and one for the merge of the lines of a file ([`merge_lines`]), which is no reader.
 //! The readers of HEAD and of a branch file are a single line and have only the property tests.
 //! The module exists only when the crate is built with `--cfg fuzzing`, as `cargo fuzz` does, or
@@ -152,8 +152,9 @@ const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 
 /// The messages of the protocol (ADR-023): the list of references, the fetch request, the error,
 /// the object stream (`stemma_core::protocol`), the ref update and the record entry
-/// (`stemma_core::protocol::record`, see [`protocol_record`]), and the signed statements of
-/// every kind (`stemma_core::protocol::statement`, see [`protocol_statement`]). The input is
+/// (`stemma_core::protocol::record`, see [`protocol_record`]), the signed statements of every
+/// kind (`stemma_core::protocol::statement`, see [`protocol_statement`]), and the three messages
+/// of the sign-in (`stemma_core::protocol::sign_in`, see [`protocol_sign_in`]). The input is
 /// given to each of the
 /// readers, because a message does not name its type and each reader must refuse the messages of
 /// the others. A reader that accepts the input writes it back unchanged, and for a small message
@@ -227,6 +228,7 @@ pub fn protocol(input: &[u8]) {
                 ErrorMessage::Malformed(reason) => {
                     Reason::try_new(reason.as_str()).map(ErrorMessage::Malformed)
                 }
+                ErrorMessage::UnknownWant(commit) => Ok(ErrorMessage::UnknownWant(*commit)),
             };
             assert_eq!(
                 rebuilt.as_ref(),
@@ -238,6 +240,7 @@ pub fn protocol(input: &[u8]) {
     }
     protocol_record(input, &check_refusal);
     protocol_statement(input, &check_refusal);
+    protocol_sign_in(input, &check_refusal);
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
         loop {
@@ -454,6 +457,78 @@ fn protocol_statement(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::Par
     }
 }
 
+/// The part of [`protocol`] for the three messages of the sign-in (ADR-024). The challenge and
+/// the token answer are written back unchanged and are values that the constructors build. A fuzzer
+/// makes no signature, so the signed challenge is read as the ref update is
+/// ([`protocol_record`]): its form without the check of the signature, and with the check the
+/// same value or a refusal for the signature alone.
+fn protocol_sign_in(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseError)) {
+    use crate::protocol::record::HubAddress;
+    use crate::protocol::sign_in::{
+        Challenge, Nonce, SignInProblem, SignedChallenge, Token, TokenAnswer,
+    };
+    use crate::protocol::ParseError;
+    let rebuilt = |hub: &HubAddress, nonce: &Nonce| {
+        let hub = HubAddress::try_new(hub.as_str())
+            .expect("the reader took an address that the writer refuses");
+        let nonce = Nonce::try_new(nonce.as_bytes())
+            .expect("the reader took a nonce that the writer refuses");
+        Challenge::new(hub, nonce)
+    };
+    match Challenge::parse(input) {
+        Ok(challenge) => {
+            assert_eq!(challenge.encode(), input, "a second spelling was accepted");
+            assert_eq!(
+                rebuilt(challenge.hub(), challenge.nonce()),
+                challenge,
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
+    }
+    match SignedChallenge::parse_unverified(input) {
+        Ok(signed) => {
+            assert_eq!(signed.encode(), input, "a second spelling was accepted");
+            rebuilt(signed.hub(), signed.nonce());
+            match SignedChallenge::parse(input) {
+                Ok(verified) => assert_eq!(verified, signed),
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error,
+                            ParseError::SignIn {
+                                reason: SignInProblem::Key | SignInProblem::Signature,
+                                ..
+                            }
+                        ),
+                        "a message whose form is right was refused for its form: {error}"
+                    );
+                    check_refusal(&error);
+                }
+            }
+        }
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(SignedChallenge::parse(input).as_ref(), Err(&error));
+        }
+    }
+    match TokenAnswer::parse(input) {
+        Ok(answer) => {
+            assert_eq!(answer.encode(), input, "a second spelling was accepted");
+            let token = Token::try_new(answer.token().expose())
+                .expect("the reader took a token that the writer refuses");
+            let seconds = std::num::NonZeroU64::new(answer.lifetime().as_secs())
+                .expect("the reader took a lifetime of no second");
+            assert_eq!(
+                TokenAnswer::new(token, seconds),
+                answer,
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
+    }
+}
+
 /// The byte that separates the three texts of an input of [`merge_lines`].
 pub const MERGE_SEPARATOR: u8 = 0x1e;
 
@@ -586,10 +661,14 @@ pub(crate) mod tests {
             }),
             ("protocol", super::protocol, |b| {
                 use crate::protocol::record::{RecordEntry, RefUpdate};
+                use crate::protocol::sign_in::{Challenge, SignedChallenge, TokenAnswer};
                 use crate::protocol::statement::Statement;
                 use crate::protocol::{ErrorMessage, FetchRequest, ObjectStreamReader, RefList};
                 RefList::parse(b).is_ok()
                     || Statement::parse(b).is_ok()
+                    || Challenge::parse(b).is_ok()
+                    || SignedChallenge::parse(b).is_ok()
+                    || TokenAnswer::parse(b).is_ok()
                     || RefUpdate::parse(b).is_ok()
                     || RecordEntry::parse(b).is_ok()
                     || FetchRequest::parse(b).is_ok()

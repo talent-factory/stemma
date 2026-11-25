@@ -11,7 +11,8 @@
 //! The small messages are line-oriented text: the first line, then lines `<keyword> <value>` in
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
 //! fetch request ([`FetchRequest`]), the error ([`ErrorMessage`]), and, in the module [`record`],
-//! the ref update and the record entry that answers it as a receipt (ADR-025). The object stream
+//! the ref update and the record entry that answers it as a receipt (ADR-025), and, in the
+//! module [`sign_in`], the three messages of the sign-in (ADR-024). The object stream
 //! is binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
 //! There are no capabilities and no optional fields: from the first release that carries the
 //! protocol on, every change of a message is a new number (see [`VERSION`]).
@@ -36,8 +37,9 @@
 //! The caller also chooses the reader: an error arrives in place of the message that was asked
 //! for, and the transport says which of the two it is (the status code, ADR-023).
 //!
-//! Not part of a message, because they belong to the transport: TLS, the token, the content
-//! encoding, URL paths, and status codes (ADR-023).
+//! Not part of a message, because they belong to the transport: TLS, the carriage of the token, the
+//! content encoding, URL paths, and status codes (ADR-023). The token itself stands in one message,
+//! the token answer of the sign-in ([`sign_in::TokenAnswer`]), which a transport reads and keeps.
 //!
 //! The messages of [`examples`] are checked in. The tests of this crate read them, and so does a
 //! hub, as conformance tests through its dependency on this crate (ADR-022).
@@ -822,15 +824,20 @@ impl Error for ErrorMessageError {}
 /// first line, then the kind of the error with its facts. The kind decides what the receiver
 /// does; a status code of the transport names the coarse class only.
 ///
-/// This version knows the two kinds that the reading of a message gives. The refusals of a ref
-/// update and of a statement come with the slices that build them, and the refusal of a bound
-/// with the slice that carries an upload over a transport: the bounds themselves are set by
-/// the receiver ([`crate::receive::Bounds`]).
+/// This version knows the two kinds that the reading of a message gives, and the refusal of a
+/// fetch request ([`UnknownWant`](Self::UnknownWant)). The refusals of a ref update and of a
+/// statement come with the slices that build them, and the refusal of a bound with the slice
+/// that carries an upload over a transport: the bounds themselves are set by the receiver
+/// ([`crate::receive::Bounds`]).
 ///
 /// ```text
 /// stemma-protocol <highest version spoken>      stemma-protocol 1
 /// error unsupported-version                     error malformed
 /// spoken <version> <version> ...                reason <one line>
+///
+/// stemma-protocol 1
+/// error unknown-want
+/// want <commit>
 /// ```
 ///
 /// `unsupported-version` is the one message that is read across versions: its form is the same
@@ -845,6 +852,12 @@ pub enum ErrorMessage {
     UnsupportedVersion(Spoken),
     /// The message could not be read. Carries what the reader reported.
     Malformed(Reason),
+    /// A fetch request wants a commit that no branch and no tag of the repository reaches
+    /// (ADR-023).
+    /// Carries the first such commit in the order of the IDs. The answer is the same for a
+    /// commit that the store does not hold and for one that it holds unnamed, so it does not
+    /// say whether an object exists. The ID is a claim, as in the request.
+    UnknownWant(CommitId),
 }
 
 impl ErrorMessage {
@@ -861,6 +874,9 @@ impl ErrorMessage {
             }
             Self::Malformed(reason) => {
                 format!("{}error malformed\nreason {reason}\n", first_line(VERSION))
+            }
+            Self::UnknownWant(commit) => {
+                format!("{}error unknown-want\nwant {commit}\n", first_line(VERSION))
             }
         }
         .into_bytes()
@@ -886,7 +902,7 @@ impl ErrorMessage {
     /// message that is no text is read.
     ///
     /// `malformed` also refuses a reason that is empty or holds a control character or a line or
-    /// paragraph separator.
+    /// paragraph separator, and `unknown-want` an object ID that is not in canonical form.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let (version, rest) = read_version(bytes)?;
         // Under another number only the second line of an `unsupported-version` is known, so
@@ -927,6 +943,12 @@ impl ErrorMessage {
                 lines.end()?;
                 Ok(Self::Malformed(Reason(value.to_owned())))
             }
+            Some((_, "unknown-want")) => {
+                let (line, value) = lines.require("want")?;
+                let commit = parse_commit(line, value)?;
+                lines.end()?;
+                Ok(Self::UnknownWant(commit))
+            }
             Some((line, _)) => Err(malformed(line, Malformed::UnknownError)),
             None => Err(malformed(lines.line, Malformed::Expected("error"))),
         }
@@ -947,6 +969,10 @@ impl fmt::Display for ErrorMessage {
             Self::Malformed(reason) => {
                 write!(f, "the other side could not read the message: {reason}")
             }
+            Self::UnknownWant(commit) => write!(
+                f,
+                "the other side has no branch and no tag that reaches the wanted commit {commit}"
+            ),
         }
     }
 }
@@ -1109,6 +1135,13 @@ pub enum ParseError {
         /// The rule.
         reason: statement::StatementProblem,
     },
+    /// A rule of a message of the sign-in is broken ([`sign_in`]).
+    SignIn {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: sign_in::SignInProblem,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -1136,6 +1169,7 @@ impl fmt::Display for ParseError {
             }
             Self::Record { line, reason } => write!(f, "line {line}: {reason}"),
             Self::Statement { line, reason } => write!(f, "line {line}: {reason}"),
+            Self::SignIn { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
 }
@@ -1155,7 +1189,8 @@ impl Error for ParseError {
             | Self::UnsupportedVersion { .. }
             | Self::Malformed { .. }
             | Self::Record { .. }
-            | Self::Statement { .. } => None,
+            | Self::Statement { .. }
+            | Self::SignIn { .. } => None,
         }
     }
 }
@@ -1660,6 +1695,14 @@ pub mod examples {
         Receipt,
         /// A signed statement ([`Statement`](super::statement::Statement)), of any kind.
         Statement,
+        /// The challenge of a sign-in ([`Challenge`](super::sign_in::Challenge)).
+        Challenge,
+        /// The answer of a client to a challenge
+        /// ([`SignedChallenge`](super::sign_in::SignedChallenge)).
+        SignedChallenge,
+        /// The answer of a hub with a token ([`TokenAnswer`](super::sign_in::TokenAnswer)). The token of
+        /// the example is one that no hub issued.
+        TokenAnswer,
     }
 
     /// One example message.
@@ -1693,6 +1736,7 @@ pub mod examples {
         example!("objects-empty", ObjectStream),
         example!("error-unsupported-version", Error),
         example!("error-malformed", Error),
+        example!("error-unknown-want", Error),
         example!("ref-update", RefUpdate),
         example!("receipt", Receipt),
         example!("statement-pr-opening", Statement),
@@ -1701,6 +1745,9 @@ pub mod examples {
         example!("statement-pr-closing", Statement),
         example!("statement-owner-override", Statement),
         example!("statement-unsigned", Statement),
+        example!("challenge", Challenge),
+        example!("signed-challenge", SignedChallenge),
+        example!("token", TokenAnswer),
     ];
 }
 
@@ -1708,6 +1755,8 @@ pub mod record;
 
 // The signed statements of ADR-025 (STEMMA-290).
 pub mod statement;
+
+pub mod sign_in;
 
 #[cfg(test)]
 mod tests;

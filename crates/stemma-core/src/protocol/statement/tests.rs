@@ -234,6 +234,7 @@ fn the_kinds_have_these_names_and_a_type_tag_of_their_own() {
         PayloadKind::Sponsorship,
         PayloadKind::RefUpdate,
         PayloadKind::RecordEntry,
+        PayloadKind::Challenge,
     ] {
         assert!(!names.contains(&old.name()), "{}", old.name());
     }

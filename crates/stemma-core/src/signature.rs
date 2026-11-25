@@ -1,7 +1,7 @@
 //! Signatures of proofs: SSHSIG with Ed25519 (ADR-003, ADR-020).
 //!
-//! A proof signs a log entry, an approval, a sponsorship, a ref update, or a record entry
-//! ([`PayloadKind`]). The signed bytes are not the payload alone: a header
+//! A proof signs a log entry, an approval, a sponsorship, a ref update, a record entry, or the
+//! challenge of a sign-in ([`PayloadKind`]). The signed bytes are not the payload alone: a header
 //! with the type and the format version of the payload comes first, so a
 //! signature of one type or version never verifies as another (domain separation). The SSHSIG
 //! namespace is [`NAMESPACE`] for all of them.
@@ -67,6 +67,11 @@ pub enum PayloadKind {
     /// The override of the write ownership of a branch by an owner, a signed statement
     /// (ADR-025, rule 9 of ADR-004).
     OwnerOverride,
+    /// The challenge of a hub, signed for a sign-in (ADR-024). The payload names the address of
+    /// the hub, the nonce and the key
+    /// ([`SignedChallenge::payload`](crate::protocol::sign_in::SignedChallenge::payload)). It
+    /// yields a token and is no proof about a repository.
+    Challenge,
 }
 
 impl PayloadKind {
@@ -84,6 +89,7 @@ impl PayloadKind {
             Self::CheckResult => "check-result",
             Self::PullClosing => "pr-closing",
             Self::OwnerOverride => "owner-override",
+            Self::Challenge => "challenge",
         }
     }
 }

@@ -4,7 +4,8 @@
 //! ancestors of two commits ([`merge_base`]), conflicts as sums of trees ([`conflict`]), the merge
 //! of trees ([`merge`]), the SSHSIG signatures of proofs ([`signature`], ADR-020), the messages
 //! between a clone and a hub ([`protocol`], ADR-023), the trait that carries them
-//! ([`transport`], ADR-022), and the receiving side of an object stream ([`receive`], ADR-023).
+//! ([`transport`], ADR-022), the receiving side of an object stream ([`receive`], ADR-023), and
+//! the answering side of a fetch ([`serve`], ADR-023).
 //!
 //! # Errors
 //!
@@ -32,7 +33,9 @@
 //! [`protocol::StreamError`] has one for the error of the carrier of an object stream, and
 //! [`transport::TransportError`] for the error of the carrier of a request. The errors of the
 //! receiving side ([`receive::ReceiveError`], [`receive::ConnectivityError`], and
-//! [`receive::FetchJournalError`]) have an `io_error()`, and the first two a `store_error()`. A
+//! [`receive::FetchJournalError`]) have an `io_error()`, and the first two a `store_error()`;
+//! the errors of the answering side ([`serve::ListError`] and [`serve::AnswerError`]) have
+//! both, and `io_error()` leaves out the error of the writer of the stream. A
 //! program that only reports an error prints it with `{}` and does not walk the chain.
 
 mod actor;
@@ -73,6 +76,7 @@ pub mod refs;
 pub mod register;
 pub mod remote;
 pub mod repository;
+pub mod serve;
 pub mod signature;
 pub mod statements;
 pub mod store;

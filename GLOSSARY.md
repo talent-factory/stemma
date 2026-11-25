@@ -481,8 +481,9 @@ The first step of a push: the object stream goes to the hub, which stores the ob
 until a ref update names them (ADR-023). (Upload)
 
 **Challenge**:
-A nonce of a hub that the key of the sender signs once per command, bound to the address of the
-hub. It yields a token (ADR-024). (Challenge)
+The message of a hub for a sign-in: its address and a nonce. The key of the sender signs both
+once per command, so the signature is bound to the address of the hub. It yields a token
+(ADR-024). (Challenge)
 
 **Token**:
 A short-lived credential of a hub that says which key speaks. It is transport: it never enters a
