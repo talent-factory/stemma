@@ -167,7 +167,13 @@ fact, the implementation takes the nearest one it has:
 - Only the runs of a writer who is independent of the change count for its bounds (the rule of
   `check::is_independent`): the opener and the authors of a change could otherwise clear a red tip
   or start a reservation for their own change. In an enforcing repository a run counts only with a
-  proof of its writer, a failing one as well: anyone can write the entry of a run. A failing run
+  signature of its writer on the statement of the run (ADR-025), a failing one as well: anyone
+  can write the entry of a run. One failing run counts without it: the one whose statement is
+  lost or damaged and that is read from the lines of its entry, so that the loss of a file
+  never clears a red tip (ADR-011). Such a stand-in makes its commit red and does nothing
+  else: it moves no verified tip, ends no reservation, and opens no exemption of a repair,
+  because anyone who writes the log can make one. Likewise a pull request that a closing
+  without its proof ended keeps its reservation. A failing run
   stays whoever wrote it, since it only holds a merge back. A change whose path has no level holds
   no reservation: the gate refuses it at its own merge, and it must not stop another change.
   The exemption of a repair counts independent runs only, so nobody opens it for their own change
@@ -177,7 +183,8 @@ fact, the implementation takes the nearest one it has:
   policy's to tell (`merge_gate_by_policy`).
 - Where one commit has a passing and a failing run, the pass stands (the core reads the last green
   tip from the passing runs alone). In the open mode an actor can therefore write a pass for a red
-  commit; the open mode trusts every actor, and the proof of the register closes it.
+  commit; the open mode trusts every actor, and the signature that the register asks for closes
+  it.
 
 Two bounds keep the gate from starving a change and from running far ahead of its checks. Both
 values are in the policy file (ADR-004), so changing them is level 3: a human owner and an ADR. An
@@ -261,7 +268,8 @@ meaning: different actor IDs.
   count either if its writer is the sponsor of an agent that opened the change or wrote a commit
   in it (ADR-004). For level 0 and 1 every registered actor counts. The identity counts, not the
   model or the session. The rule is `check::is_independent` and `check::counts`;
-  `Repository::counted_checks` applies it, with the proof of the signature (ADR-011).
+  `Repository::counted_checks` applies it, with the signature of the statement of the check,
+  which the register must accept for the writer (ADR-011, ADR-025).
 - Two agents of one sponsor count as two reviews. The fields `model` and `session` are descriptive
   only (STEMMA-222), so a stronger independence cannot be verified. The human at level 2 and 3
   stays the anchor.
@@ -273,7 +281,8 @@ meaning: different actor IDs.
 
 ### The gate and a hub
 
-Decided for phase 5 (STEMMA-273, ADR-025); not implemented yet.
+Decided for phase 5 (STEMMA-273, ADR-025). The second item is implemented (STEMMA-290); the
+others are not yet.
 
 - The verdict about `main` is a pure function over the commits, the register and the policy of
   the tip `T`, the namespace policy (ADR-027), and the signed statements. `merge_gate` calls it
@@ -281,8 +290,15 @@ Decided for phase 5 (STEMMA-273, ADR-025); not implemented yet.
   operation calls it on a hub, so the rule stands in one place.
 - The evidence is signed statements. An approval and a check result are statements of registered
   actors, and the gate folds the set of statements instead of the entries of the log; the entries
-  `pr-open`, `pr-approve` and `check` name the hash of the statement they made (ADR-011). The
-  rule for who counts as independent holds unchanged.
+  `pr-open`, `pr-close`, `pr-approve` and `check` name the hash of the statement they made
+  (ADR-011). The rule for who counts as independent holds unchanged.
+  *(STEMMA-290)* The local gate reads the pull request, the results of the checks, and the runs
+  of its bounds from one fold of the statements (`evidence::fold`), which takes the statements
+  in the order of whoever holds them and is the function that a hub calls for its set. The
+  rule table, the bounds, and the rule of independence are unchanged and read the result of
+  that fold, so the gate comes to the verdicts that it came to from the entries. One thing is
+  new: an ended pull request is final in the sense of ADR-025, so the same opening is not
+  accepted twice, and the next pull request of a branch needs a new head.
 - A hub enforces all bounds: the pause at a red tip with the exemption of a repair, the
   reservation and `max_unverified`. They are computed over the order and the time in the lines
   that the hub adds to every accepted statement. A fetch brings the statements with these lines,
@@ -343,7 +359,8 @@ Decided for phase 5 (STEMMA-273, ADR-025); not implemented yet.
 - [x] The form of the entry `pr-open` and the syntax of `repairs`: the lines `repairs <commit>`
   after the reviewers (ADR-011, STEMMA-238).
 - [x] The form of the entry `check`: the lines `version 1`, `commit`, `base`, and `result`
-  (ADR-011, STEMMA-240). The approval (STEMMA-227) is a separate record.
+  (ADR-011, STEMMA-240). The approval (STEMMA-227) is a separate record. Since STEMMA-290 the
+  result is a signed statement, and the entry has `version 2` and names its hash (ADR-025).
 - [ ] Whether a result may name a *set* of tested base commits when several changes were tested
   together, and what this does to the rule for levels 0 and 1.
 - [x] A bound for the retries of a change of level 2 or 3: the reservation after `N` = 3

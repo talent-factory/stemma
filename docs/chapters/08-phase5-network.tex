@@ -30,7 +30,8 @@ die Remotes im Layout des Klons mit ihren Remote-Referenzen,
 die empfangende Seite des Objektstroms,
 die antwortende Seite eines Fetch,
 die Formate des Ref-Updates und der Aufzeichnung,
-die Anmeldung mit ihren drei Nachrichten
+die Anmeldung mit ihren drei Nachrichten,
+die signierten Erklärungen mit ihrer Menge im Klon
 und die annehmende Operation für Branches und Tags.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
@@ -90,7 +91,7 @@ darin, sodass die Suche der Befehlszeile es nie findet:
 
 \starttyping
 <verzeichnis>/
-    format        stemma-repository 15
+    format        stemma-repository 16
     bare          stemma-bare (die Markierung eines Bare-Repositorys)
     objects/      Objekte (ADR-007)
     refs/heads/   Branches (ADR-008)
@@ -103,8 +104,9 @@ Es fehlen \type{HEAD}, der Working-Copy-Commit, das Operation Log, die Leases un
 Zustandsverzeichnisse der Worktrees.
 Die Datei \type{bare} unterscheidet die beiden Layouts; ein fehlendes \type{HEAD} taugt nicht
 als Zeichen, weil es auch ein Schaden sein kann.
-Das Format trägt die Version 15, damit ein älteres Programm ein Bare-Repository an der Version
-ablehnt und nicht als beschädigt meldet.
+Das Bare-Repository kam mit der Version 15 des Formats, damit ein älteres Programm es an der
+Version ablehnt und nicht als beschädigt meldet; angelegt wird es in der jeweils aktuellen
+Version.
 
 Eine Operation, die eine Arbeitskopie oder das Operation Log braucht, lehnt auf einem
 Bare-Repository mit einem eigenen Fehler ab (\type{RefError::Bare}).
@@ -815,7 +817,7 @@ Abschnitts.
 
 \subsection{Belege als signierte Erklärungen}
 
-In Phase 4 liegen Pull Request, Freigaben und Prüfergebnisse im Operation Log.
+In Phase 4 lagen Pull Request, Freigaben und Prüfergebnisse im Operation Log.
 Ein Hub sieht keinen Eintrag dieses Logs, denn es kann ein Geheimnis enthalten, bis ein Purge es
 entfernt.
 Die Belege bekommen deshalb eine eigene, tragbare Form: die signierte Erklärung.
@@ -828,12 +830,37 @@ Der Hash der signierten Eröffnung ist der Name des Pull Requests.
 Niemand vergibt ihn, er gilt in jedem Klon und auch ohne Hub, und ein übernommener Hub kann eine
 Freigabe nicht einem anderen Pull Request zuordnen.
 Die Erklärungen sind der Beleg, das Log hält die Handlung fest: Die Einträge \type{pr-open},
-\type{pr-approve} und \type{check} nennen den Hash der Erklärung, die sie erzeugt haben.
+\type{pr-close}, \type{pr-approve} und \type{check} nennen den Hash der Erklärung, die sie
+erzeugt haben.
 Ein Klon und der Hub halten je eine Menge von Erklärungen und falten sie mit derselben Funktion.
 Ein Fetch bringt die Erklärungen offener Pull Requests in den Klon, sodass das lokale Gate gleich
 zählt wie der Hub.
 Diese Form ersetzt die Einträge aus Phase 4 als Quelle des Gates und kostet eine neue Version des
-Formats.
+Formats, die Version 16.
+
+Gebaut ist davon der Teil, den ein Klon allein braucht.
+Die Erklärungen der Eröffnung, der Freigabe, des Prüfergebnisses, des Schliessens und des
+Owner-Overrides haben ihr Format mit Schreiber und strengem Leser; die Erklärung des Purge kommt
+mit dem Purge auf dem Hub.
+Der Klon legt seine Erklärungen als Dateien unter \type{.stemma/statements/} ab, benannt nach
+ihrem Hash, und das lokale Gate liest Pull Requests, Freigaben und Prüfergebnisse aus ihnen
+(\in{Kapitel}[chap:phase4], \quotation{Erklärungen und Einträge}).
+Die Funktion, die sie faltet, nimmt die Erklärungen in der Ordnung dessen, der sie hält: im
+Klon in der Ordnung der Einträge des Logs, auf dem Hub in der Ordnung seiner Zeilen.
+Dass ein Pull Request gemergt ist, sagt keine Erklärung; der Klon weiss es aus dem Eintrag
+\type{pr-merge}, der Hub aus dem Eintrag der Aufzeichnung, der \type{main} bewegt hat.
+Noch nicht gebaut sind das Einreichen einer Erklärung, die Zeilen des Hubs und der Fetch, der
+Erklärungen bringt.
+
+\startinfobox
+{\bf Was eine lokale Erklärung noch nicht kann.}
+Ein Klon schreibt heute \type{repository -}: Die Erklärung nennt kein Repository eines Hubs und
+zählt nur lokal.
+Welches Remote einer Erklärung seine ID gibt, entscheidet der Teil, der sie einreicht.
+Im offenen Modus trägt eine Erklärung weder Schlüssel noch Signatur; sie zählt nur ohne
+Register,
+und ein Hub nimmt sie nie an.
+\stopinfobox
 
 Der Hub prüft eine eingereichte Erklärung nach den Regeln des lokalen Schreibers: Signatur und
 aktiver Schlüssel, eine Eröffnung nur durch den Schreibinhaber, eine Freigabe nur für den

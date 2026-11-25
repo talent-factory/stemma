@@ -1116,11 +1116,19 @@ mod tests {
     #[test]
     fn a_purge_makes_a_stub_of_a_check_that_names_a_rewritten_commit() {
         use crate::oplog::{CheckEntry, CheckResult};
+        use crate::protocol::statement::{Body, Checked, Statement};
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [first, second, _] = history(&dir, &repository);
-        let named = CheckEntry::new(1, actor(), second, None, CheckResult::Pass);
+        let checked = Checked::try_new(None, second, None, CheckResult::Pass).unwrap();
+        let hash = repository
+            .statement_set()
+            .put(&Statement::unsigned(Body::Check(checked)))
+            .unwrap();
+        let named =
+            CheckEntry::new(1, actor(), second, None, CheckResult::Pass).with_statement(hash);
         let number = repository.oplog().append_check(&named).unwrap().number();
+        assert_eq!(repository.checks().unwrap().len(), 1);
         let purged = apply(&repository);
         assert!(purged.plan().entries().contains(&number));
         assert_purged(&dir, &repository, &purged);
@@ -1128,33 +1136,59 @@ mod tests {
             repository.checks().unwrap().is_empty(),
             "the stub is no check"
         );
-        repository
+        let entries = repository
             .oplog()
             .verify()
             .expect("the chain holds over the stub");
+        // The statement stays in the set and counts for nothing: no entry names it any more
+        // (ADR-025 leaves open what a purge does with it).
+        let verified = repository.verify_statements(&entries, None).unwrap();
+        assert_eq!((verified.statements, verified.unnamed), (1, 1));
         let _ = first;
     }
 
     #[test]
     fn a_purge_makes_a_stub_of_the_opening_of_an_ended_pull_request() {
         use crate::oplog::PullEntry;
+        use crate::protocol::statement::{Body, Closing, Opening, Statement};
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [_, second, _] = history(&dir, &repository);
         let branch = BranchName::try_new("feature").unwrap();
-        let open = PullEntry::open(1, actor(), branch, second, vec![], None).unwrap();
+        let set = repository.statement_set();
+        let opening = Opening::try_new(None, branch.clone(), second, Vec::new(), None).unwrap();
+        let opening = set
+            .put(&Statement::unsigned(Body::Opening(opening)))
+            .unwrap();
+        let open = PullEntry::open(1, actor(), branch, second, vec![], None)
+            .unwrap()
+            .with_statement(opening)
+            .unwrap();
         let number = repository.oplog().append_pull(&open).unwrap().number();
-        let close = PullEntry::close(2, actor(), number).unwrap();
+        let closing = set
+            .put(&Statement::unsigned(Body::Closing(Closing::new(
+                None, opening,
+            ))))
+            .unwrap();
+        let close = PullEntry::close(2, actor(), number)
+            .unwrap()
+            .with_statement(closing)
+            .unwrap();
         repository.oplog().append_pull(&close).unwrap();
+        assert_eq!(repository.pull_requests(None).unwrap().len(), 1);
         let purged = apply(&repository);
         assert!(purged.plan().entries().contains(&number));
         assert_purged(&dir, &repository, &purged);
         // The closing names no commit and stays; without its opening it tells of nothing.
-        assert!(repository.pull_requests().unwrap().is_empty());
-        repository
+        assert!(repository.pull_requests(None).unwrap().is_empty());
+        let entries = repository
             .oplog()
             .verify()
             .expect("the chain holds over the stub");
+        // The closing still names its statement, and that it names a purged opening is no
+        // damage; the statement of the opening is in the set and no entry names it.
+        let verified = repository.verify_statements(&entries, None).unwrap();
+        assert_eq!((verified.statements, verified.unnamed), (2, 1));
     }
 
     fn ids(repository: &Repository) -> BTreeSet<ObjectId> {
@@ -1249,7 +1283,7 @@ mod tests {
         }
         assert!(!journal_exists(dir));
         assert!(!lock_exists(dir));
-        assert_eq!(format(dir), "stemma-repository 15\n");
+        assert_eq!(format(dir), "stemma-repository 16\n");
     }
 
     #[test]
@@ -1748,7 +1782,7 @@ mod tests {
             repository.verify_refs().unwrap().is_empty(),
             "verify is clean"
         );
-        assert_eq!(format(&dir), "stemma-repository 15\n");
+        assert_eq!(format(&dir), "stemma-repository 16\n");
     }
 
     #[test]
@@ -2292,7 +2326,7 @@ mod tests {
         fs::write(dir.path().join(".stemma/format"), "stemma-repository 3\n").unwrap();
         let purged = repository.resume_purge(&actor(), &AllowAll).unwrap();
         assert_purged(&dir, &repository, &purged);
-        assert_eq!(format(&dir), "stemma-repository 15\n");
+        assert_eq!(format(&dir), "stemma-repository 16\n");
         assert!(repository.oplog().verify().is_ok());
     }
 
@@ -2414,7 +2448,7 @@ mod tests {
         assert!(!lock_exists(&dir));
         assert_eq!(
             format(&dir),
-            "stemma-repository 15\n",
+            "stemma-repository 16\n",
             "a format is never lowered"
         );
         // The repository can be written again, and purged.
@@ -3043,7 +3077,7 @@ mod tests {
             "the purge ran at the stop point"
         );
         // The writer moved the repository to the format of the chain; the purge left it alone.
-        assert_eq!(format(&dir), "stemma-repository 15\n");
+        assert_eq!(format(&dir), "stemma-repository 16\n");
         assert!(!lock_exists(&dir));
         assert!(repository.objects().contains(&secret()).unwrap());
         assert_reachable_objects_exist(&repository);

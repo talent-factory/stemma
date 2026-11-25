@@ -417,6 +417,11 @@ fn other_kinds() -> Vec<PayloadKind> {
         | PayloadKind::Sponsorship
         | PayloadKind::RefUpdate
         | PayloadKind::RecordEntry
+        | PayloadKind::PullOpening
+        | PayloadKind::PullApproval
+        | PayloadKind::CheckResult
+        | PayloadKind::PullClosing
+        | PayloadKind::OwnerOverride
         | PayloadKind::Challenge => kind,
     };
     vec![
@@ -425,6 +430,11 @@ fn other_kinds() -> Vec<PayloadKind> {
         known(PayloadKind::Sponsorship),
         known(PayloadKind::RefUpdate),
         known(PayloadKind::RecordEntry),
+        known(PayloadKind::PullOpening),
+        known(PayloadKind::PullApproval),
+        known(PayloadKind::CheckResult),
+        known(PayloadKind::PullClosing),
+        known(PayloadKind::OwnerOverride),
     ]
 }
 

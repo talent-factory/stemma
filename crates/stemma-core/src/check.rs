@@ -1,9 +1,11 @@
 //! The check as evidence about a pair of commits (ADR-019, STEMMA-240).
 //!
-//! A check is a statement about one commit: its tree passed or failed a set of tests. The entry
-//! `check` of the operation log ([`CheckEntry`](crate::oplog::CheckEntry)) names the commit that
-//! was tested and the tip of `main` it was merged onto for the test, its *base*, one entry per
-//! pair (ADR-011). A run on the tip of `main` itself, after a merge, has no base.
+//! A check is a statement about one commit: its tree passed or failed a set of tests. The signed
+//! statement of a check ([`Checked`], ADR-025) names the
+//! commit that was tested and the tip of `main` it was merged onto for the test, its *base*, one
+//! statement per pair. A run on the tip of `main` itself, after a merge, has no base. The fold
+//! of the statements ([`crate::evidence::fold`]) lists the checks in the order of whoever holds
+//! them; in a clone that is the order of the entries `check` of the operation log (ADR-011).
 //!
 //! This module reads the evidence and decides nothing about a merge. It answers three questions
 //! that the gate asks:
@@ -17,45 +19,73 @@
 //!   ([`applies_at`]). Whether a result for the level 0 and 1 is still enough after `main` moved
 //!   is a question of a clean merge, which the gate computes at the moment of the merge.
 //!
-//! The functions are pure over the entries, the register, and the authors of the change.
+//! The functions are pure over the checks, the register, and the authors of the change.
 //! [`Repository::counted_checks`](crate::repository::Repository::counted_checks) finds the
-//! authors of the commits `tip..commit`, checks the proof of the signature, and applies them.
+//! authors of the commits `tip..commit`, checks the signature of the statement, and applies
+//! them.
 
+use crate::evidence::Placed;
 use crate::object::CommitId;
-use crate::oplog::{CheckResult, Entry, EntryHash};
+use crate::oplog::CheckResult;
 use crate::policy::RiskLevel;
+use crate::protocol::statement::{Checked, Statement};
 use crate::register::{Identity, Register};
 use crate::{Actor, ActorRef};
 
-/// A check as the log tells it: the entry `check` with its number.
+/// A check as a statement tells it, with its place in the order of whoever holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     number: u64,
-    hash: EntryHash,
     time: i64,
     writer: Actor,
     commit: CommitId,
     base: Option<CommitId>,
     result: CheckResult,
+    statement: Statement,
+    stand_in: bool,
 }
 
 impl Check {
-    /// The number of the entry.
+    /// The check that a placed statement makes.
+    pub(crate) fn placed(placed: &Placed, checked: &Checked) -> Self {
+        Self {
+            number: placed.number(),
+            time: placed.time(),
+            writer: placed.actor().clone(),
+            commit: checked.commit(),
+            base: checked.base(),
+            result: checked.result(),
+            statement: placed.statement().clone(),
+            stand_in: placed.is_stand_in(),
+        }
+    }
+
+    /// Whether the check stands in for one whose statement the holder could not read
+    /// ([`Placed::stand_in`]). Only a failing run does. Its statement carries no signature.
+    /// Where a register is asked, the gate lets it make its commit red and nothing else: the
+    /// loss of a file must not take a red tip away, and a stand-in must not help a change.
+    pub fn is_stand_in(&self) -> bool {
+        self.stand_in
+    }
+
+    /// The number of the check in the order of the holder: in a clone the number of the entry
+    /// `check`. Of several runs on one commit the one with the largest number is the newest, and
+    /// the register counts a retired or revoked key by it (ADR-003).
     pub fn number(&self) -> u64 {
         self.number
     }
 
-    /// The hash of the entry, which the proof file of the writer signs.
-    pub fn hash(&self) -> EntryHash {
-        self.hash
+    /// The statement of the check, whose signature is the proof of its writer.
+    pub fn statement(&self) -> &Statement {
+        &self.statement
     }
 
-    /// The time that the writer claims, in seconds since the Unix epoch (UTC).
+    /// The time that the holder names, in seconds since the Unix epoch (UTC).
     pub fn time(&self) -> i64 {
         self.time
     }
 
-    /// The actor who ran the check and wrote the entry.
+    /// The actor who ran the check and made the statement.
     pub fn writer(&self) -> &Actor {
         &self.writer
     }
@@ -82,28 +112,6 @@ impl Check {
     }
 }
 
-/// The checks that the log tells of, in the order of their entries. An entry that a purge replaced
-/// by a stub is no check any more and is left out.
-pub fn checks(entries: &[Entry]) -> Vec<Check> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            let check = entry.check()?;
-            // An entry of the chain has a hash; a check is never outside the chain.
-            let hash = entry.hash()?;
-            Some(Check {
-                number: entry.number(),
-                hash,
-                time: check.time(),
-                writer: check.actor().clone(),
-                commit: *check.commit(),
-                base: check.base().copied(),
-                result: check.result(),
-            })
-        })
-        .collect()
-}
-
 /// The results for the pair `commit` and `base`, oldest first. `base` is `None` for the runs on
 /// a tip of `main` itself.
 pub fn for_pair<'a>(
@@ -121,10 +129,10 @@ pub fn for_pair<'a>(
 /// The last green tip (ADR-019): the newest commit of `main` that a passing run without a base
 /// covered. `main` is the first-parent history of its tip, newest commit first; a run on a commit
 /// that is not in it says nothing about `main` and is left out. Of several runs on the same
-/// commit the newest in the log counts. The result of a failing run does not take the place of
+/// commit the newest counts, the one with the largest number. The result of a failing run does not take the place of
 /// an older passing one; the gate finds the first red tip from the failing runs after the last
-/// green tip in the history of `main`. This function reads the log and the history only: it asks
-/// neither for the register nor for a proof;
+/// green tip in the history of `main`. This function reads the checks and the history only: it asks
+/// neither for the register nor for a signature;
 /// [`Repository::last_green_tip`](crate::repository::Repository::last_green_tip) does.
 pub fn last_green_tip<'a>(checks: &'a [Check], main: &[CommitId]) -> Option<&'a Check> {
     checks
@@ -240,7 +248,8 @@ pub fn counts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oplog::{Chain, CheckEntry, Record};
+    use crate::evidence::fold;
+    use crate::protocol::statement::Body;
 
     const A: &str = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
     const B: &str = "b3:4feb2d73a2c706e33c2a71f6f03cbfb48f0a20b48567936fca293159e7e3b32c";
@@ -258,21 +267,26 @@ mod tests {
         Actor::agent(id, "m", "s", sponsor).unwrap()
     }
 
+    /// The result of a run as a statement of the open mode, placed at `number`.
     fn entry(
         number: u64,
         writer: Actor,
         tested: &str,
         base: Option<&str>,
         result: CheckResult,
-    ) -> Entry {
-        let check = CheckEntry::new(
+    ) -> Placed {
+        let checked = Checked::try_new(None, commit(tested), base.map(commit), result).unwrap();
+        Placed::new(
+            number,
             number as i64,
             writer,
-            commit(tested),
-            base.map(commit),
-            result,
-        );
-        Entry::linked(number, Chain::Start, Record::Check(check)).unwrap()
+            Statement::unsigned(Body::Check(checked)),
+        )
+    }
+
+    /// The checks that the fold lists for these placed statements.
+    fn checks(placed: &[Placed]) -> Vec<Check> {
+        fold(placed, &[]).checks
     }
 
     fn register() -> Register {
@@ -296,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn the_checks_of_a_log_keep_their_numbers_and_skip_what_is_no_check() {
+    fn the_checks_of_the_fold_keep_their_numbers_and_their_statements() {
         let log = [
             entry(1, human("mia"), A, Some(B), CheckResult::Pass),
             entry(2, human("ana"), A, None, CheckResult::Fail),
@@ -309,11 +323,12 @@ mod tests {
         assert!(found[0].passed());
         assert_eq!(found[1].base(), None);
         assert!(!found[1].passed());
-        let stub = log[0].to_stub().unwrap();
+        assert_eq!(found[1].time(), 2);
+        assert_eq!(found[0].statement(), log[0].statement());
         assert_eq!(
-            checks(&[stub, log[1].clone()]).len(),
+            checks(&log[1..]).len(),
             1,
-            "a stub is no check"
+            "a statement that is not placed is no check"
         );
     }
 

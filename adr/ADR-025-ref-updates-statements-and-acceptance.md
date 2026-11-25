@@ -4,10 +4,12 @@
 for the ref update and its record, STEMMA-273 for the enforcement, with the addenda of STEMMA-274,
 STEMMA-276 and STEMMA-278) and carried into the ADRs by STEMMA-280. Nothing of it was measured.
 Built are the formats of the ref update and of the record with their writers and strict readers
-(STEMMA-291, see "The formats as built") and the accepting operation for branches and tags
-(STEMMA-296, see "The accepting operation as built"); the statements, `accept_statement` and the
-gate on a hub are not. The names of functions that are not built yet are a direction for the
-slices.
+(STEMMA-291, see "The formats as built"), the signed statements with the set of a clone, the
+entries of the log that name them, and the fold (STEMMA-290, see "The statements as built"), and
+the accepting operation for branches and tags (STEMMA-296, see "The accepting operation as
+built"). The lines that a hub adds to a statement, the request that submits one,
+`accept_statement` and the gate on a hub are not built. The names of functions that are not
+built yet are a direction for the slices.
 
 ## Context
 
@@ -247,6 +249,98 @@ would be bound to the hub, and an approval from another clone would name a pull 
 not exist there), evidence as objects in the store (ADR-011), a running number of the hub as the
 name of a pull request, two forms of evidence side by side, and "merged" as a statement of its
 own.
+
+### The statements as built
+
+Built in STEMMA-290, in `stemma_core::protocol::statement`, for the opening of a pull request, an
+approval, a check result, a closing, and an owner override. The purge statement comes with the
+purge on a hub. A statement is line-oriented text by the rules of ADR-023, and a value that is
+not there is written `-`, as in the ref update.
+
+```text
+stemma-protocol 1
+statement <kind>
+repository <32 lower-case hexadecimal digits, or `-`>
+<the lines of the kind>
+key ssh-ed25519 <base64>                         or `key -`
+signature <SSHSIG signature on one line>         or `signature -`
+
+pr-opening       branch <name>
+                 commit <head>
+                 reviewer <human or agent> <id>   zero or more, in ascending order
+                 repairs <commit, or `-`>
+pr-approval      pull <hash of the opening>
+                 commit <head>
+check-result     commit <commit>
+                 base <commit, or `-`>
+                 result <pass or fail>
+pr-closing       pull <hash of the opening>
+owner-override   branch <name>
+                 holder <human or agent> <id>
+                 commit <commit, or `-`>
+                 reason <one line>
+```
+
+- **The payload and the type tag.** The key signs the lines from `repository` to `key`, as a
+  proof whose type tag is the word of the kind: `pr-opening`, `pr-approval`, `check-result`,
+  `pr-closing`, or `owner-override`. None of them is a tag of phase 4, so the signature of an
+  approval of phase 4 (`approval`, over the number of a pull request in one log) never stands
+  for a statement. The line `statement` is no part of the payload; the type tag stands for it,
+  so a statement whose kind was changed carries a signature that does not verify.
+- **The repository.** `repository` is the ID that the hub assigned (ADR-027), or `-` for a
+  statement that names no repository of a hub and counts locally only. The writers of a clone
+  write `-` until the slice that submits statements gives them the ID of a remote.
+- **No actor, no number, no time.** The actor follows from the key and the register. In a clone
+  the entry of the log that names the statement gives it its number, its time, and its actor
+  (ADR-011); on a hub the lines of the hub do.
+- **The opening.** The branch is not `main`. The reviewers are identities of the register
+  (`human <id>` or `agent <id>`), in the ascending order of their text, each once, at most 32.
+  That the opener is none of them is a rule of the fold, which knows the opener.
+- **The check result.** `base` is the tip of `main` that the commit was merged onto for the
+  run, or `-` for a run on the commit as it is; it is never the commit itself.
+- **The owner override.** It names the branch, the holder whose write ownership is overridden,
+  the commit at the tip of the branch (or `-` for a branch that does not exist), and the
+  reason: one line of 1 to 1,024 bytes without a control character, without a line or
+  paragraph separator, and without a space at its ends. The commit binds the statement to one state of the branch. The local entry
+  `lease-override` does not name it yet (ADR-011).
+- **The hash.** The hash of a statement is the BLAKE3 hash of the line `stemma-statement-hash 1`
+  and the whole message, the signature included. It has the form of an object ID and is the
+  evidence that a ref update names. The hash of the opening names the pull request. The hash
+  covers the signature, so the same opening signed by another key is another pull request. An
+  Ed25519 signature is deterministic, so signing the same payload again gives the same
+  statement; that is what makes "the same opening is not accepted twice" a question of one
+  hash.
+- **A statement without a signature.** A repository in the open mode has no register and no
+  key (ADR-003), and its evidence has the same form: a statement with `key -` and
+  `signature -`, both or neither. It proves nothing. It counts where the verdict is reached
+  without a register, and whoever holds a register refuses it, a hub among them. This keeps
+  one form of evidence where phase 4 had entries without a proof.
+- **The reader.** It holds the rule of ADR-005 and checks the signature of a signed statement
+  against the key that the statement names. A signature that names another key than the `key`
+  line is refused as such, apart from one that names that key and does not verify. Whether the
+  key is the right one is asked apart, against a register (`Register::verify_statement`).
+- **The set.** A clone keeps its statements as files named by their hash (ADR-009); the type
+  takes its directory from the caller, so a hub keeps its set with the same code.
+- **The fold.** `evidence::fold` takes the statements in the order of whoever holds them, each
+  with its number, its time, and its actor, and the merges that the holder knows ("merged" is
+  no statement), and returns the pull requests with their state, the approvals, and the
+  checks. A clone calls it with the entries of its log as that order (ADR-011), and the local
+  gate reads its result (ADR-019); a hub calls the same function with its lines. The fold is
+  tolerant: it skips a closing or a merge of a pull request that it does not
+  know, whatever follows the end of a pull request, an opening that is placed a second time,
+  and an opening whose opener is one of its reviewers. It lists every approval and every
+  check as it is, and where the statement of a closing or of a failing run cannot be read, a
+  clone places it from the lines of its entry, because what says something against a change
+  must not vanish with a file. Such a stand-in may only make things stricter where a register
+  is asked (ADR-011). An enforcing clone places an opening only if its register accepts
+  the signature for the opener. Which approvals and checks count is
+  decided by the rules of phase 4, unchanged, which now ask the register for the signature of
+  the statement.
+
+Example messages are checked in beside the others (`statement-pr-opening`,
+`statement-pr-approval`, `statement-check-result`, `statement-pr-closing`,
+`statement-owner-override`, `statement-unsigned`), with keys from fixed seeds; nobody may trust
+them.
 
 ### What the hub checks when a statement is submitted
 
@@ -546,6 +640,21 @@ revocation on `main` takes the effect from the statements of a key.
 
 - [ ] How clones follow a `main` that was purged on the hub, how a purge treats remote references
       in a clone, and what becomes of the statements of a clone about removed commits (ADR-014).
+      Until it is decided, a local purge makes stubs of the entries and leaves the set alone:
+      the statement of a stub stays as a file that no entry names and counts for nothing
+      (STEMMA-290). It names the IDs of removed commits, as the name of a purged blob does on
+      the command line (ADR-011).
+- [ ] The statements that the writers of a clone make name no repository of a hub
+      (`repository -`), so they count locally only. Which remote gives a statement its ID, and
+      whether a statement made before the first push is signed again, belongs to the slice that
+      submits statements.
+- [x] An opening counts in an enforcing clone only with a signature that the register accepts
+      for its opener: the clone asks before it places the opening, so the fold stays one
+      function without a register (STEMMA-290, ADR-011). A closing is placed whatever its
+      signature, because it ends a pull request; one that the register does not accept is a
+      stand-in, which may only make things stricter, so the gate keeps the reservation of the
+      pull request it ended (ADR-011, ADR-019). `op verify` reports it, and a hub checks every
+      statement when it is submitted.
 - [ ] How commands name a pull request for people (a prefix of the hash, a running number in the
       lines of the hub). It belongs to the command surface.
 - [ ] A policy that names the writers of checks. Possible later without a break, because it only

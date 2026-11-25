@@ -237,12 +237,26 @@ impl fmt::Display for HubAddress {
     }
 }
 
-/// The hash of a signed statement that a move rests on (ADR-025): the opening of a pull request,
-/// a purge statement, or an owner override. Its text is that of an object ID, `b3:` and 64
-/// lowercase hexadecimal digits, but it names a statement, not an object. The statements and
-/// their hash belong to a later slice; until then a value comes from text only.
+/// The hash of a signed statement (ADR-025): the name of a pull request, which is the hash of
+/// its opening, and the evidence that a move rests on (the opening of a pull request, a purge
+/// statement, or an owner override). Its text is that of an object ID, `b3:` and 64 lowercase
+/// hexadecimal digits, but it names a statement, not an object. It is computed by
+/// [`Statement::hash`](super::statement::Statement::hash).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StatementHash(ObjectId);
+
+impl StatementHash {
+    /// Wraps the digest of a statement.
+    pub(crate) fn from_digest(digest: blake3::Hash) -> Self {
+        Self(ObjectId::from_digest(digest))
+    }
+
+    /// The 64 lowercase hexadecimal digits of the hash, the name of the file of the statement
+    /// in a set of statements (ADR-009).
+    pub fn hex(&self) -> String {
+        self.0.hex()
+    }
+}
 
 impl fmt::Display for StatementHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

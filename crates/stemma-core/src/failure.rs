@@ -673,6 +673,8 @@ impl Classify for PurgeError {
             | Self::TaggedCommit { .. }
             | Self::RemoteReference { .. }
             | Self::Unsound { .. } => FailureKind::Other,
+            // A statement that cannot be read is damage of the set.
+            Self::UnreadableOpening { .. } => FailureKind::Damaged,
         }
     }
 }

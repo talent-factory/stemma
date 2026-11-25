@@ -28,11 +28,11 @@ use super::snapshot::{read_any_commit, read_object, SnapshotError};
 use super::{Repository, UpdateError};
 use crate::conflict::{AnyCommit, FromSumError, Merge};
 use crate::object::{BlobId, CommitId, FileMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
-use crate::oplog::PullKind;
 use crate::oplog::{Entry, Moved, OpLogError, OperationName};
-use crate::pull::{self, PullRequest};
+use crate::oplog::{PullEntry, PullKind};
 use crate::refs::{BranchName, Head, RefError};
 use crate::remote::{RemoteRef, RemoteRefName};
+use crate::statements::SetError;
 use crate::store::{Batch, FsObjectStore, ObjectStore, StoreError};
 use crate::{Actor, ActorRef, Allowed, Authorizer};
 
@@ -405,16 +405,39 @@ impl Repository {
         trees.extend(views.trees);
         trees.sort();
         trees.dedup();
-        // The entry `pr-open` of an open pull request stays: its state is the log (ADR-004).
-        let open: HashSet<u64> = pull::pull_requests(&log)
-            .iter()
-            .filter(|pull| pull.is_open())
-            .map(PullRequest::number)
-            .collect();
-        if let Some(entry) = replaced.iter().find(|entry| open.contains(&entry.number())) {
-            return Err(PurgeError::OpenPullRequest {
-                number: entry.number(),
-            });
+        // The entry `pr-open` of an open pull request stays: it gives the opening its place and
+        // its opener, so the pull request would vanish with it (ADR-004, ADR-011). An opening
+        // counts as open unless the evidence shows that its pull request ended: one whose
+        // statement cannot be read is kept as well, because a stub would hide the damage from
+        // `op verify` for good.
+        // The question is asked by the name of the pull request, the hash of its opening, and
+        // not by the number of the entry: an opening that the log names twice is one pull
+        // request.
+        // No register is asked: an opening that an enforcing repository does not count is kept
+        // as well while its pull request has not ended.
+        let pulls = self
+            .evidence_of(&log, None)
+            .map_err(statements_unreadable)?
+            .pulls;
+        for entry in &replaced {
+            let opening = entry
+                .pull()
+                .filter(|pull| pull.kind() == PullKind::Open)
+                .and_then(PullEntry::statement);
+            let Some(opening) = opening else { continue };
+            match pulls.iter().find(|pull| pull.id() == opening) {
+                Some(pull) if pull.is_open() => {
+                    return Err(PurgeError::OpenPullRequest {
+                        number: pull.number(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    return Err(PurgeError::UnreadableOpening {
+                        number: entry.number(),
+                    });
+                }
+            }
         }
         // A log with 2^24 entries is too large for a test, so no test notices if this goes.
         // Without it, a purge writes a journal that `--resume` and `--abort` cannot read.
@@ -1025,6 +1048,14 @@ pub enum PurgeError {
         /// The number of the pull request.
         number: u64,
     },
+    /// The plan would replace an entry `pr-open` whose opening the evidence does not know: its
+    /// statement is missing or damaged, or it says something else than the entry. Whether the
+    /// pull request is open cannot be told, and a stub in place of the entry would hide the
+    /// damage from `op verify` for good. Restore the statement first (ADR-011, ADR-025).
+    UnreadableOpening {
+        /// The number of the entry.
+        number: u64,
+    },
     /// Tags point to commits that the purge would rewrite. A tag never moves (ADR-008), so the
     /// purge would leave the commits with the secret reachable.
     TaggedCommit {
@@ -1102,6 +1133,13 @@ impl PurgeError {
                 f,
                 "the pull request {number} is still open and names a commit that the purge would \
                  rewrite; close it or merge it first"
+            ),
+            Self::UnreadableOpening { number } => write!(
+                f,
+                "entry {number} opens a pull request and names a commit that the purge would \
+                 rewrite, but its statement cannot be read, so the pull request may be open; \
+                 `stemma op verify` says what is wrong with the statement, and the purge goes \
+                 on once it is restored"
             ),
             Self::Rewrite { commit, source } => write!(
                 f,
@@ -1181,10 +1219,28 @@ impl Error for PurgeError {
             | Self::NoSuchBlob { .. }
             | Self::TooManyEntries { .. }
             | Self::OpenPullRequest { .. }
+            | Self::UnreadableOpening { .. }
             | Self::TaggedCommit { .. }
             | Self::RemoteReference { .. }
             | Self::Unsound { .. } => None,
         }
+    }
+}
+
+/// The failure to read a statement as a failure of the store: the fold fails for the file system
+/// only, as a statement that is missing or damaged does not count and is no error.
+fn statements_unreadable(error: SetError) -> PurgeError {
+    match error {
+        SetError::Io {
+            operation,
+            path,
+            source,
+        } => PurgeError::Store(Box::new(StoreError::Io {
+            operation,
+            path,
+            source,
+        })),
+        other => unreachable!("the fold skips a statement that is not readable: {other}"),
     }
 }
 
@@ -1524,20 +1580,31 @@ mod tests {
         }
     }
 
-    /// Writes the entry of a pull request for `branch`, which names `commit`, and returns its
-    /// number.
-    fn open_pull(repository: &Repository, commit: CommitId) -> u64 {
+    /// Writes the opening of a pull request for the branch `feature`, which names `commit` and,
+    /// if given, the commit that it repairs: the statement of the open mode and the entry that
+    /// names it. Returns the number of the entry.
+    fn open_pull_repairing(
+        repository: &Repository,
+        commit: CommitId,
+        repairs: Option<CommitId>,
+    ) -> u64 {
         use crate::oplog::PullEntry;
-        let entry = PullEntry::open(
-            1,
-            actor(),
-            BranchName::try_new("feature").unwrap(),
-            commit,
-            vec![],
-            None,
-        )
-        .unwrap();
+        use crate::protocol::statement::{Body, Opening, Statement};
+        let branch = BranchName::try_new("feature").unwrap();
+        let opening = Opening::try_new(None, branch.clone(), commit, Vec::new(), repairs).unwrap();
+        let hash = repository
+            .statement_set()
+            .put(&Statement::unsigned(Body::Opening(opening)))
+            .unwrap();
+        let entry = PullEntry::open(1, actor(), branch, commit, vec![], repairs)
+            .unwrap()
+            .with_statement(hash)
+            .unwrap();
         repository.oplog().append_pull(&entry).unwrap().number()
+    }
+
+    fn open_pull(repository: &Repository, commit: CommitId) -> u64 {
+        open_pull_repairing(repository, commit, None)
     }
 
     #[test]
@@ -1566,6 +1633,30 @@ mod tests {
     }
 
     #[test]
+    fn a_purge_keeps_an_opening_whose_statement_cannot_be_read() {
+        let dir = TempDir::new();
+        let repository = repository(&dir);
+        let [_, second, _] = history(&dir, &repository);
+        let number = open_pull(&repository, second);
+        // Without its statement the pull request is not known to the fold. A stub in place of
+        // the entry would hide that from `op verify` for good, so the purge refuses.
+        let set = repository.statement_set();
+        let [hash] = set.hashes().unwrap()[..] else {
+            panic!("one statement")
+        };
+        std::fs::remove_file(set.path_of(&hash)).unwrap();
+        assert!(repository.pull_requests(None).unwrap().is_empty());
+        let error = repository
+            .plan_purge(secret(), &actor(), &AllowAll)
+            .unwrap_err();
+        assert!(
+            matches!(error, PurgeError::UnreadableOpening { number: n } if n == number),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("stemma op verify"), "{error}");
+    }
+
+    #[test]
     fn a_purge_replaces_the_opening_of_a_pull_request_that_has_ended() {
         use crate::oplog::PullEntry;
         for merged in [false, true] {
@@ -1576,7 +1667,15 @@ mod tests {
             let end = if merged {
                 PullEntry::merge(2, actor(), number, second).unwrap()
             } else {
-                PullEntry::close(2, actor(), number).unwrap()
+                // A closing is a statement that names the pull request by its hash.
+                use crate::protocol::statement::{Body, Closing, Statement};
+                let id = repository.pull_requests(None).unwrap()[0].id();
+                let closing = Statement::unsigned(Body::Closing(Closing::new(None, id)));
+                let hash = repository.statement_set().put(&closing).unwrap();
+                PullEntry::close(2, actor(), number)
+                    .unwrap()
+                    .with_statement(hash)
+                    .unwrap()
             };
             repository.oplog().append_pull(&end).unwrap();
             let plan = repository
@@ -1656,20 +1755,10 @@ mod tests {
 
     #[test]
     fn the_repaired_commit_of_an_open_pull_request_counts_as_a_commit_it_names() {
-        use crate::oplog::PullEntry;
         let dir = TempDir::new();
         let repository = repository(&dir);
         let [first, second, _] = history(&dir, &repository);
-        let entry = PullEntry::open(
-            1,
-            actor(),
-            BranchName::try_new("feature").unwrap(),
-            first,
-            vec![],
-            Some(second),
-        )
-        .unwrap();
-        let number = repository.oplog().append_pull(&entry).unwrap().number();
+        let number = open_pull_repairing(&repository, first, Some(second));
         let error = repository
             .plan_purge(secret(), &actor(), &AllowAll)
             .unwrap_err();
