@@ -10,7 +10,7 @@ use crate::change::ChangeId;
 use crate::index::Index;
 use crate::object::{Blob, Commit, FileMode};
 use crate::oplog::OperationName;
-use crate::protocol::{FormerKey, ObjectStreamReader, StreamObject};
+use crate::protocol::{FormerKey, FormerKeys, ObjectStreamReader, StreamObject};
 use crate::receive::{Bounds, ConnectivityError};
 use crate::refs::encode_branch;
 use crate::refs::RefError;
@@ -54,7 +54,9 @@ fn key() -> PublicKey {
 /// The keys of a hub without a former key. They are leaked, so that the facts of a test can
 /// borrow them for as long as the test runs.
 fn keys() -> &'static HubKeys {
-    Box::leak(Box::new(HubKeys::try_new(key(), Vec::new()).unwrap()))
+    Box::leak(Box::new(
+        HubKeys::try_new(key(), FormerKeys::none()).unwrap(),
+    ))
 }
 
 /// The facts of a hub whose record names the same entry for every reference.
@@ -599,7 +601,13 @@ fn the_list_names_the_facts_of_the_caller_and_refuses_a_reference_without_an_ent
         RefKind::Branch => Some(record(0xb1)),
         RefKind::Tag => Some(record(0xb2)),
     };
-    let with_former = HubKeys::try_new(key(), vec![former(5, 9), former(1, 4)]).unwrap();
+    // Former keys stand in the list with the signature of the current key over them.
+    let rotated = crate::protocol::record::tests::Seeded::new(0x40);
+    let with_former = HubKeys::try_new(
+        rotated.public(),
+        crate::protocol::record::tests::signed_former(&rotated, vec![former(5, 9), former(1, 4)]),
+    )
+    .unwrap();
     let named = ListFacts::new(repository_id(), &with_former, entries);
     let list = hub.answer_refs(&named).unwrap();
     assert_eq!(list.former(), [former(1, 4), former(5, 9)]);

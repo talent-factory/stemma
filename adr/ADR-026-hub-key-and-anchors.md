@@ -2,8 +2,9 @@
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 and 2026-11-24 (STEMMA-274)
 and carried into the ADRs by STEMMA-280. Built are the signature of the hub over a record entry,
-the check of a receipt and the keys of a hub by record number (STEMMA-291, ADR-025); the pinning,
-the anchors and the rest are not implemented yet.
+the check of a receipt and the keys of a hub by record number (STEMMA-291, ADR-025), and the
+pinning of the key in a clone with the signed list of former keys and the entry `remote-pin`
+(STEMMA-297); the anchors and the rest are not implemented yet.
 
 ## Context
 
@@ -50,6 +51,44 @@ trust. A different key later is a typed error, and nothing moves. No format in t
 A human pins a new key again, with a fingerprint from a second channel, and this writes a log
 entry. The hub keeps a list of its former keys with the range of record numbers that each signed,
 signed by the current key, so old entries stay checkable for a clone that pinned the current key.
+
+How it is built (STEMMA-297):
+
+- **The fingerprint** is the SHA-256 fingerprint in the form of OpenSSH, `SHA256:` and the
+  Base64 text of the digest without padding, as `ssh-keygen -l` shows it. Its reader accepts this
+  form only.
+- **The list of former keys** stands in the list of references as the `former` lines, followed
+  by one line `former-signature <SSHSIG signature on one line>` if there is a former key, and by
+  none otherwise. The signature is a proof of its own type, `former-keys`, over the `key` line of
+  the current key and the `former` lines, in the order of the ranges:
+
+  ```text
+  key ssh-ed25519 <base64>
+  former <first> <last> ssh-ed25519 <base64>      one or more
+  ```
+
+  The current key is part of the payload, so a list that one key signed is never the list of
+  another. The reader of the list checks the signature against the `key` line; a changed range,
+  an exchanged key and a missing signature are refused there. Whether the `key` line is the key of
+  the hub is decided by the comparison with the pinned key. A hub signs the list once, when it
+  rotates its key; the core builds the list from what the hub hands it and never signs.
+- **The first contact** pins the key of the list in the line `hub-key` of the configuration and
+  returns its fingerprint for the command to show. With an expected fingerprint, a key with
+  another fingerprint is a typed error and nothing is pinned. A configuration that holds a key
+  keeps it: the same key is no change, another key is the error below.
+- **A different key later** is a typed error that names both fingerprints; the remote references
+  and the configuration stay. The clone does not follow a rotation even when the list names the
+  pinned key as a former key.
+- **Every receipt and every confirmation** is checked against the pinned key. Old record entries
+  are checked through the keys of the hub by record number: the pinned key as the current key and
+  the former keys of a list whose `key` line is the pinned key.
+- **Pinning again** is an operation of a human (an agent is refused), with the fingerprint from
+  the second channel and the list that the hub just sent. Under the lock of the references it
+  writes the entry `remote-pin` with the old and the new key (ADR-011), then replaces the
+  configuration. The same key as the pinned one writes nothing. The entry raises the repository
+  format to 18 (ADR-009).
+- **The commands** (`remote add`, `clone` with an option for the expected fingerprint, and the
+  command that pins again) belong to the command slice.
 
 Rejected: the key in a level 3 file of the tree (the tree would know its remotes, and the first
 clone does not have the repository yet), no pinning, and a statement of rotation that the old key

@@ -9,6 +9,7 @@ use super::*;
 use crate::change::sample_change;
 use crate::fuzz::check_rejection;
 use crate::object::{Blob, Commit, FileMode, Tree, TreeEntry};
+use crate::protocol::FormerKeysError;
 use crate::signature::NAMESPACE;
 use crate::store::FsObjectStore;
 use crate::testutil::TempDir;
@@ -100,7 +101,12 @@ fn hub() -> Seeded {
 }
 
 fn keys() -> HubKeys {
-    HubKeys::try_new(hub().public(), Vec::new()).unwrap()
+    HubKeys::try_new(hub().public(), FormerKeys::none()).unwrap()
+}
+
+/// The former keys, signed by `current`.
+pub(crate) fn signed_former(current: &Seeded, keys: Vec<FormerKey>) -> FormerKeys {
+    FormerKeys::sign(&current.public(), keys, current).unwrap()
 }
 
 /// The text of an ID whose bytes are all `byte`.
@@ -795,7 +801,10 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
     // The key of the hub was another one for the first entry.
     let former = HubKeys::try_new(
         hub().public(),
-        vec![FormerKey::try_new(1, 1, Seeded::new(8).public()).unwrap()],
+        signed_former(
+            &hub(),
+            vec![FormerKey::try_new(1, 1, Seeded::new(8).public()).unwrap()],
+        ),
     )
     .unwrap();
     assert_eq!(former.at(1), &Seeded::new(8).public());
@@ -811,7 +820,10 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
     // With the range of the former key after the record, the current key signed both.
     let later = HubKeys::try_new(
         Seeded::new(8).public(),
-        vec![FormerKey::try_new(1, 2, hub().public()).unwrap()],
+        signed_former(
+            &Seeded::new(8),
+            vec![FormerKey::try_new(1, 2, hub().public()).unwrap()],
+        ),
     )
     .unwrap();
     assert!(Chain::new(repository())
@@ -819,11 +831,23 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
         .is_ok());
     // The ranges of the former keys share no number, in whatever order they are given.
     let range = |first, last| FormerKey::try_new(first, last, Seeded::new(8).public()).unwrap();
+    assert!(matches!(
+        FormerKeys::sign(&hub().public(), vec![range(5, 9), range(1, 5)], &hub()),
+        Err(FormerKeysError::List(RefListError::OverlappingRanges(5)))
+    ));
+    let sorted = HubKeys::try_new(
+        hub().public(),
+        signed_former(&hub(), vec![range(5, 9), range(1, 4)]),
+    )
+    .unwrap();
+    // Former keys that another key signed are not the former keys of this one.
     assert_eq!(
-        HubKeys::try_new(hub().public(), vec![range(5, 9), range(1, 5)]),
-        Err(RefListError::OverlappingRanges(5))
+        HubKeys::try_new(
+            Seeded::new(8).public(),
+            signed_former(&hub(), vec![range(1, 4)])
+        ),
+        Err(RefListError::FormerKeysOfOtherKey)
     );
-    let sorted = HubKeys::try_new(hub().public(), vec![range(5, 9), range(1, 4)]).unwrap();
     assert_eq!(sorted.at(4), &Seeded::new(8).public());
     assert_eq!(sorted.at(10), &hub().public());
 
@@ -833,7 +857,10 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
     assert_eq!(chain.last_number(), 0);
     let wrong_second = HubKeys::try_new(
         hub().public(),
-        vec![FormerKey::try_new(2, 2, Seeded::new(8).public()).unwrap()],
+        signed_former(
+            &hub(),
+            vec![FormerKey::try_new(2, 2, Seeded::new(8).public()).unwrap()],
+        ),
     )
     .unwrap();
     assert!(matches!(

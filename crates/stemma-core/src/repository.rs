@@ -67,6 +67,7 @@ mod follow;
 mod gate;
 mod lease;
 mod merge_branch;
+mod pin;
 mod pull;
 mod purge;
 #[cfg(any(fuzzing, test))]
@@ -94,6 +95,7 @@ pub use follow::{Behind, Followed};
 pub use gate::{GateError, GateMerge, Retry, MAX_ATTEMPTS};
 pub use lease::{Claimed, LeaseError};
 pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
+pub use pin::PinError;
 pub use pull::PullError;
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
@@ -122,7 +124,7 @@ use crate::fault;
 use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
 use crate::oplog::{
     Change, CheckEntry, Entry, FsOpLog, LeaseEntry, Moved, OpLogError, OperationName, PullEntry,
-    Purge, TAKE_OVER,
+    Purge, RemotePinEntry, TAKE_OVER,
 };
 use crate::refs::{
     encode_working_copy, BareLacks, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError,
@@ -1143,6 +1145,24 @@ impl Repository {
         self.refuse_append()?;
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append_check(check)
+    }
+
+    /// Writes the entry that pins the key of a hub again, as [`FsOpLog::append_remote_pin`]
+    /// does, after it moved the repository to the current format; the caller holds the lock of
+    /// the references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed, and what
+    /// [`FsOpLog::append_remote_pin`] returns.
+    pub(crate) fn append_remote_pin(
+        &self,
+        _lock: &WriteLock,
+        pin: &RemotePinEntry,
+    ) -> Result<Entry, OpLogError> {
+        self.refuse_append()?;
+        raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
+        self.oplog.append_remote_pin(pin)
     }
 
     /// Writes the entries of a purge, as [`FsOpLog::append_purge`] does. The purge holds the lock

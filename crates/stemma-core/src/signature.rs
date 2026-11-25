@@ -1,7 +1,7 @@
 //! Signatures of proofs: SSHSIG with Ed25519 (ADR-003, ADR-020).
 //!
-//! A proof signs a log entry, an approval, a sponsorship, a ref update, a record entry, or the
-//! challenge of a sign-in ([`PayloadKind`]). The signed bytes are not the payload alone: a header
+//! A proof signs a log entry, an approval, a sponsorship, a ref update, a record entry, the
+//! challenge of a sign-in, or the former keys of a hub ([`PayloadKind`]). The signed bytes are not the payload alone: a header
 //! with the type and the format version of the payload comes first, so a
 //! signature of one type or version never verifies as another (domain separation). The SSHSIG
 //! namespace is [`NAMESPACE`] for all of them.
@@ -72,6 +72,10 @@ pub enum PayloadKind {
     /// ([`SignedChallenge::payload`](crate::protocol::sign_in::SignedChallenge::payload)). It
     /// yields a token and is no proof about a repository.
     Challenge,
+    /// The list of the former keys of a hub with the ranges of record numbers that they signed,
+    /// signed by the current key of the hub (ADR-026). The payload is that of
+    /// [`FormerKeys::payload`](crate::protocol::FormerKeys::payload).
+    FormerKeys,
 }
 
 impl PayloadKind {
@@ -90,6 +94,7 @@ impl PayloadKind {
             Self::PullClosing => "pr-closing",
             Self::OwnerOverride => "owner-override",
             Self::Challenge => "challenge",
+            Self::FormerKeys => "former-keys",
         }
     }
 }
@@ -151,6 +156,19 @@ impl PublicKey {
     }
 }
 
+impl PublicKey {
+    /// The SHA-256 fingerprint of the key, as `ssh-keygen -l` shows it (ADR-026). A human
+    /// compares it with a fingerprint from a second channel before a clone pins the key.
+    pub fn fingerprint(&self) -> KeyFingerprint {
+        let fingerprint = self.0.fingerprint(HashAlg::Sha256);
+        KeyFingerprint(
+            fingerprint
+                .sha256()
+                .expect("a SHA-256 fingerprint was asked for"),
+        )
+    }
+}
+
 impl fmt::Display for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_openssh())
@@ -164,6 +182,50 @@ impl FromStr for PublicKey {
         Self::from_openssh(text)
     }
 }
+
+/// The SHA-256 fingerprint of a public key in the form of OpenSSH: `SHA256:` and the Base64 text
+/// of the digest without padding, such as `SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU`.
+/// It is what a hub publishes on a second channel and what a human passes when a clone pins the
+/// key of the hub (ADR-026). The reader accepts this form only, so one key has one text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyFingerprint([u8; 32]);
+
+impl fmt::Display for KeyFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ssh_key::Fingerprint::Sha256(self.0).fmt(f)
+    }
+}
+
+impl FromStr for KeyFingerprint {
+    type Err = FingerprintError;
+
+    /// Reads `SHA256:<Base64 without padding>`. Another hash, padding, a space, or any other
+    /// text is refused.
+    fn from_str(text: &str) -> Result<Self, FingerprintError> {
+        match ssh_key::Fingerprint::from_str(text) {
+            Ok(found @ ssh_key::Fingerprint::Sha256(digest)) if found.to_string() == text => {
+                Ok(Self(digest))
+            }
+            _ => Err(FingerprintError(text.to_owned())),
+        }
+    }
+}
+
+/// A text that is no SHA-256 fingerprint in the form of OpenSSH. Carries the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FingerprintError(pub String);
+
+impl fmt::Display for FingerprintError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:?} is no SHA-256 fingerprint of the form `SHA256:<Base64 without padding>`",
+            self.0
+        )
+    }
+}
+
+impl Error for FingerprintError {}
 
 /// A signature in the armored SSHSIG form (`-----BEGIN SSH SIGNATURE-----`), as
 /// `ssh-keygen -Y sign` writes it. [`Signature::from_armored`], the only public constructor, accepts
@@ -1169,5 +1231,41 @@ AVIRoZlxo88ExLG0/iVqNKMORmBJ7dsKhnfS9dIz37M=\n\
             "{error}"
         );
         assert!(error.io_error().is_some());
+    }
+
+    #[test]
+    fn a_fingerprint_is_the_sha256_form_of_openssh_and_nothing_else() {
+        // `ssh-keygen -lf` shows this fingerprint for this key.
+        let key = PublicKey::from_openssh(
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBukB1t3yeP7Ps3hXNr1Ih88EDc+Yj97Dh73Y2awr3E3",
+        )
+        .unwrap();
+        assert_eq!(
+            key.fingerprint().to_string(),
+            "SHA256:bypXheKaWn8wIPoKqXYeKJ+WUQ/jJEr8dX87zwFmXtc"
+        );
+        let fingerprint = key.fingerprint();
+        let text = fingerprint.to_string();
+        assert!(
+            text.starts_with("SHA256:") && !text.ends_with('='),
+            "{text}"
+        );
+        assert_eq!(text.len(), "SHA256:".len() + 43);
+        assert_eq!(text.parse::<KeyFingerprint>(), Ok(fingerprint));
+        let other = crate::protocol::record::tests::Seeded::new(9).public();
+        assert_ne!(other.fingerprint(), fingerprint);
+        for bad in [
+            String::new(),
+            text.to_lowercase(),
+            format!("{text}="),
+            format!(" {text}"),
+            text.replacen("SHA256:", "SHA512:", 1),
+            text.replacen("SHA256:", "", 1),
+            "MD5:00:11".to_owned(),
+        ] {
+            let error = bad.parse::<KeyFingerprint>().unwrap_err();
+            assert_eq!(error, FingerprintError(bad.clone()));
+            assert!(!error.to_string().is_empty());
+        }
     }
 }

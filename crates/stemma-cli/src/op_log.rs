@@ -4,7 +4,8 @@
 use std::fmt::{self, Display, Write};
 
 use stemma_core::oplog::{
-    Change, CheckEntry, Entry, LeaseEntry, Moved, Outcome, PullEntry, Purge, Record, CHECK,
+    Change, CheckEntry, Entry, LeaseEntry, Moved, Outcome, PullEntry, Purge, Record,
+    RemotePinEntry, CHECK, REMOTE_PIN,
 };
 use stemma_core::refs::Head;
 
@@ -123,6 +124,19 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             if let Some(repairs) = pull.repairs() {
                 let _ = write!(out, "  repairs {repairs}");
             }
+            out.push('\n');
+            return out;
+        }
+        Record::RemotePin(pin) => {
+            let mut out = head(&REMOTE_PIN);
+            let _ = write!(out, "    remote {}", pin.remote());
+            match pin.old() {
+                Some(old) => {
+                    let _ = write!(out, "  old {}", old.fingerprint());
+                }
+                None => out.push_str("  old -"),
+            }
+            let _ = write!(out, "  new {}", pin.new_key().fingerprint());
             out.push('\n');
             return out;
         }
@@ -263,6 +277,8 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// `null`. A lease has `time`, `actor`, `operation`
 /// (`lease-acquire`, `lease-release`, `lease-takeover`, or `lease-override`), `branch`, `from`, `expires`, and `reason`; the last
 /// three are `null` where the operation has none.
+/// The pinning of the key of a hub has `time`, `actor`, `operation` (`remote-pin`), `remote`,
+/// `old`, the key that was pinned before or `null`, and `new`, each key in its OpenSSH form.
 /// A stub has only `time` and `actor` besides; a purge has `time`, `actor`, `operation`,
 /// `commits`, `tags`, and `stubs`, a list of ranges `[start, end]` (ADR-014). The fields above
 /// are those of a change, which has `purge_pending` before `took_effect` as well: `true` if a
@@ -280,7 +296,24 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
         Record::Lease(lease) => lease_json(entry, lease),
         Record::Pull(pull) => pull_json(entry, pull),
         Record::Check(check) => check_json(entry, check),
+        Record::RemotePin(pin) => remote_pin_json(entry, pin),
     }
+}
+
+fn remote_pin_json(entry: &Entry, pin: &RemotePinEntry) -> String {
+    let old = pin
+        .old()
+        .map_or_else(|| "null".to_owned(), |old| quote(&old.to_string()));
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"remote-pin\",\"time\":{},\
+         \"actor\":{},\"operation\":{},\"remote\":{},\"old\":{old},\"new\":{}}}",
+        entry.number(),
+        entry.time(),
+        quote(&entry.actor().to_string()),
+        quote(REMOTE_PIN),
+        quote(pin.remote().as_str()),
+        quote(&pin.new_key().to_string())
+    )
 }
 
 fn check_json(entry: &Entry, check: &CheckEntry) -> String {
@@ -548,5 +581,46 @@ mod tests {
             line.ends_with("\"base\":null,\"result\":\"fail\"}"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_pinning_of_the_key_of_a_hub_shows_the_fingerprints_and_the_keys() {
+        let old =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBukB1t3yeP7Ps3hXNr1Ih88EDc+Yj97Dh73Y2awr3E3";
+        let new =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgHWll+choVbi4Hmd5cwMUyTcbn6vHN1GJQho7FMhXd";
+        let text = format!(
+            "stemma-oplog 3\nnumber 4\ntime 1700000000\nactor human daniel\nprevious -\n\
+             operation remote-pin\nremote origin\nold {old}\nnew {new}\n"
+        );
+        let entry = Entry::parse(text.as_bytes()).unwrap();
+        let shown = super::text(&entry, Outcome::Unknown, false);
+        assert_eq!(
+            shown,
+            "4  2023-11-14T22:13:20Z  human daniel  remote-pin\n    remote origin  old \
+             SHA256:bypXheKaWn8wIPoKqXYeKJ+WUQ/jJEr8dX87zwFmXtc  new \
+             SHA256:B8JSQsDUxln206lXjAC0EGoeZM26uKDIrXLuTIeUh1s\n"
+        );
+        assert_eq!(
+            json(&entry, Outcome::Unknown, false),
+            format!(
+                "{{\"schema\":1,\"number\":4,\"kind\":\"remote-pin\",\"time\":1700000000,\
+                 \"actor\":\"human daniel\",\"operation\":\"remote-pin\",\"remote\":\"origin\",\
+                 \"old\":\"{old}\",\"new\":\"{new}\"}}"
+            )
+        );
+        let unset = text.replace(&format!("old {old}"), "old -");
+        let line = json(
+            &Entry::parse(unset.as_bytes()).unwrap(),
+            Outcome::Unknown,
+            false,
+        );
+        assert!(line.contains("\"old\":null,"), "{line}");
+        let shown = super::text(
+            &Entry::parse(unset.as_bytes()).unwrap(),
+            Outcome::Unknown,
+            false,
+        );
+        assert!(shown.contains("  old -  new "), "{shown}");
     }
 }

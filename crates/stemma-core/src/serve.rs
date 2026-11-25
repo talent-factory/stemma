@@ -629,12 +629,12 @@ impl Repository {
             };
             references.push(Reference::new(name, commit, entry));
         }
-        // The ranges of the former keys were checked when the keys were built, and a store
-        // lists a name once per kind.
+        // The keys of a hub hold former keys that their current key signed, and a store lists a
+        // name once per kind.
         Ok(RefList::try_new(
             facts.repository,
             facts.keys.current().clone(),
-            facts.keys.former().to_vec(),
+            facts.keys.former_keys().clone(),
             references,
         )
         .expect("the keys of a hub and the references of a store make a list"))

@@ -184,6 +184,7 @@ impl Repository {
     /// [`RestoreError::Purged`] for a stub, [`RestoreError::IsPurge`] for the entry of a purge,
     /// [`RestoreError::IsLease`] for the entry of a lease, [`RestoreError::IsPull`] for the entry
     /// of a pull request, [`RestoreError::IsCheck`] for the entry of a check,
+    /// [`RestoreError::IsRemotePin`] for the entry that pins the key of a hub,
     /// [`RestoreError::PurgePending`] for an entry that an unfinished purge lists,
     /// [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the working-copy
     /// commit that the entry created (they cannot be absent), [`RestoreError::Refs`] for a commit
@@ -350,6 +351,7 @@ impl Repository {
             Record::Lease(_) => return Err(RestoreError::IsLease { number }),
             Record::Pull(_) => return Err(RestoreError::IsPull { number }),
             Record::Check(_) => return Err(RestoreError::IsCheck { number }),
+            Record::RemotePin(_) => return Err(RestoreError::IsRemotePin { number }),
         };
         // A restore puts back head, working copy, and branches (ADR-013). An entry that only made
         // or deleted tags has nothing of that, and its tags stay as they are, so the restore says
@@ -535,7 +537,7 @@ impl Repository {
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
 /// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `IsLease`, `IsPull`,
-/// `IsCheck`, `TagsOnly`, `WorktreeEntry`, `GoneWorktree`, `OtherWorktree`, `PurgePending`,
+/// `IsCheck`, `IsRemotePin`, `TagsOnly`, `WorktreeEntry`, `GoneWorktree`, `OtherWorktree`, `PurgePending`,
 /// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
 /// those with an `entry` wrote it.
 #[derive(Debug)]
@@ -578,6 +580,12 @@ pub enum RestoreError {
     /// The entry is that of a check, which moved no pointer: there is nothing to restore
     /// (ADR-019, ADR-011).
     IsCheck {
+        /// The number.
+        number: u64,
+    },
+    /// The entry pins the key of a hub, which is no pointer: there is nothing to restore
+    /// (ADR-026, ADR-011).
+    IsRemotePin {
         /// The number.
         number: u64,
     },
@@ -717,6 +725,7 @@ impl RestoreError {
             | Self::IsLease { .. }
             | Self::IsPull { .. }
             | Self::IsCheck { .. }
+            | Self::IsRemotePin { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
@@ -806,6 +815,11 @@ impl fmt::Display for RestoreError {
             Self::IsCheck { number } => write!(
                 f,
                 "entry {number} is a check, which moved no pointer, so there is nothing to restore"
+            ),
+            Self::IsRemotePin { number } => write!(
+                f,
+                "entry {number} pins the key of a hub, which is no pointer, so there is nothing \
+                 to restore"
             ),
             Self::TagsOnly { number } => write!(
                 f,
@@ -943,6 +957,7 @@ impl Error for RestoreError {
             | Self::IsLease { .. }
             | Self::IsPull { .. }
             | Self::IsCheck { .. }
+            | Self::IsRemotePin { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
