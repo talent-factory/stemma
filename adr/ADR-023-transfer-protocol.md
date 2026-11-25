@@ -245,11 +245,11 @@ bare or with a working copy, take no lock, keep no state and leave no file.
 
 - **The list.** It names the branches and the tags of the store. The ID of the repository, the
   keys of the hub and the record entry of each name are not kept by a store; the caller passes
-  them (`ListFacts`), a hub from its record (`Chain`, ADR-025). A reference without a record
+  them (`ListFacts`), a hub the ID and the entries from its record (`Chain`, ADR-025). A reference without a record
   entry cannot be listed and fails the call. The references are read one after the other, so the
   list is no snapshot (ADR-025), and a reference is not compared with the record.
 - **`want`.** Every `want` must be reachable from a branch or a tag, the references that the list
-  names. A remote reference of a clone names nothing that is served. The refusal comes before
+  names, which is what "a reference of the repository" means for a fetch. A remote reference of a clone names nothing that is served. The refusal comes before
   the first byte of the stream and names the first such commit in the order of the IDs. It is
   the same for a commit that the store lacks and for one that it holds unnamed, so it does not
   say whether an object exists.
@@ -269,17 +269,20 @@ bare or with a working copy, take no lock, keep no state and leave no file.
   it names them, and the `want` commits in the order of their IDs. Inside a commit a tree stands
   after what it names. Every beginning of the stream that ends with a commit is then complete
   for a receiver that has the `have` commits: the parents of the commit stand before it or lie
-  below a `have`, and every object of its trees is held by a parent at the same path or stands
-  before it.
+  below a `have`, and every object of its trees is held by a parent at the same path, stands
+  before it, or was left out with an earlier commit of the stream, which is complete.
 - **Failures.** A `want` that no reference reaches is the one refusal, the error
   `unknown-want`. Every other error is a failure of the answering side and no message of the
-  protocol. The commits are walked before the stream begins, so a commit that is missing fails
-  the call before the first byte. A tree or a blob that is missing, as after a purge that ran
-  beside the fetch, cuts the stream off; the receiver keeps what arrived whole and resumes.
-- **The cost.** The walk reads the commits that it sends and every commit below the known `have`
-  commits once, also for a fetch that brings one commit. A `want` or a `have` that is no tip of
-  a reference costs the history below the references on top, until it is found. See the open
-  items.
+  protocol. The commits are walked before the stream begins, so a commit that is missing then
+  fails the call before the first byte. A commit, a tree or a blob that is missing when it is
+  written, as after a purge that ran beside the fetch, cuts the stream off; the receiver keeps
+  what arrived whole and resumes. A parent or a tree of a parent that cannot be read then fails
+  nothing and prunes nothing, as on the receiving side.
+- **The cost.** The walk over the commits reads every commit that it sends, and every commit
+  below the known `have` commits, once, also for a fetch that brings one commit. A `want` or a
+  `have` that is no tip of a reference costs the history below the references on top, until it
+  is found. Writing the stream reads each commit that is sent once more, its parents, its new
+  trees and blobs, and the trees of the parents at the changed paths. See the open items.
 
 ### One number covers every message
 
@@ -387,8 +390,8 @@ want <commit>
   version that its sender speaks, so a client of another number still learns the list. The
   versions of `spoken` ascend, each once, at least one, and the first line carries the last of
   them. A reason is one line that is not empty and holds no control character and no line or
-  paragraph separator. `unknown-want` answers a fetch request with a `want` that no reference
-  of the repository reaches, with one line `want <commit>` for the first such commit in the
+  paragraph separator. `unknown-want` answers a fetch request with a `want` that no branch and
+  no tag of the repository reaches, with one line `want <commit>` for the first such commit in the
   order of the IDs (STEMMA-288, see "The answering side"). The refusals of a ref update, of a
   statement and of the bounds add their kinds with their slices.
 - **Ref update and receipt.** The ref update and the record entry that answers it are messages

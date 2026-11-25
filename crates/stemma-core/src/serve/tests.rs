@@ -13,8 +13,9 @@ use crate::oplog::OperationName;
 use crate::protocol::{ObjectStreamReader, StreamObject};
 use crate::receive::{Bounds, ConnectivityError};
 use crate::refs::encode_branch;
+use crate::refs::RefError;
 use crate::repository::InitOptions;
-use crate::testutil::{conflicted_commit, write_remote_ref, TempDir};
+use crate::testutil::{conflicted_commit, damage, write_remote_ref, TempDir};
 use crate::transport::{Answer, MemoryTransport, Transport, TransportError};
 use crate::{Actor, AllowAll, Allowed};
 
@@ -385,6 +386,8 @@ fn a_want_that_no_reference_reaches_is_refused_before_anything_is_written() {
         // The first one in the order of the IDs is named, and a reachable one beside it does
         // not help.
         (vec![unnamed, missing, history.merge], missing.min(unnamed)),
+        // Also one that comes after a commit that a reference reaches.
+        (vec![history.merge, absent(0xff)], absent(0xff)),
     ] {
         let mut stream = Vec::new();
         let error = hub
@@ -427,6 +430,9 @@ fn a_remote_reference_of_a_clone_names_nothing_that_is_served() {
         matches!(error, AnswerError::UnknownWant(commit) if commit == fetched),
         "{error:?}"
     );
+    // The list names the same references as the fetch serves.
+    let list = clone.answer_refs(&facts()).unwrap();
+    assert!(list.references().is_empty());
 }
 
 #[test]
@@ -499,6 +505,9 @@ fn a_fetch_that_was_cut_off_resumes_with_the_commits_that_arrived() {
     );
 
     assert_eq!(commits(&rest), [history.merge, history.top]);
+    // The trees of both parents of the merge count: it adds its root tree alone, and `top`
+    // adds its root tree, `d.txt`, and the content to which `a.txt` returns.
+    assert_eq!(ids(&rest).len(), 6);
     let clone = bare(&dir, "clone");
     for part in [&arrived, &rest] {
         clone
@@ -612,10 +621,15 @@ fn an_object_that_the_store_lacks_fails_the_answer_and_names_what_needs_it() {
     // A blob of the answer is gone, as after a purge that ran beside the fetch.
     assert!(hub.objects().remove(&blob_id("one\n")).unwrap());
     let error = hub.answer_fetch(&fetch, io::sink()).unwrap_err();
+    let root_of = |commit: CommitId| {
+        let commit = hub.objects().get_any_commit(&commit).unwrap().unwrap();
+        commit.tree_sum().terms()[0]
+    };
     assert!(
         matches!(
             error,
-            AnswerError::Missing { id, expected: Kind::Blob, .. } if id == blob_id("one\n")
+            AnswerError::Missing { id, expected: Kind::Blob, needed_by }
+                if id == blob_id("one\n") && needed_by == root_of(history.top).object_id()
         ),
         "{error:?}"
     );
@@ -623,13 +637,7 @@ fn an_object_that_the_store_lacks_fails_the_answer_and_names_what_needs_it() {
     assert!(error.to_string().contains("is missing"));
 
     // A tree of the answer is gone.
-    let tree = hub
-        .objects()
-        .get_any_commit(&history.top)
-        .unwrap()
-        .unwrap()
-        .tree_sum()
-        .terms()[0];
+    let tree = root_of(history.top);
     assert!(hub.objects().remove(&tree.object_id()).unwrap());
     let error = hub.answer_fetch(&fetch, io::sink()).unwrap_err();
     assert!(
@@ -772,4 +780,228 @@ fn a_refusal_travels_as_its_error_message_and_a_failure_as_no_answer() {
         matches!(error, TransportError::NoAnswer { .. }),
         "{error:?}"
     );
+}
+
+/// Stores a commit with this tree, which the store need not hold as a tree.
+fn commit_with_tree(repository: &Repository, tree: TreeId, parents: Vec<CommitId>) -> CommitId {
+    let commit = Commit::try_new(
+        tree,
+        parents,
+        ChangeId::generate().unwrap(),
+        daniel(),
+        1,
+        "a commit",
+    )
+    .unwrap();
+    repository.objects().put_commit(&commit).unwrap()
+}
+
+#[test]
+fn a_commit_stands_after_its_parents_where_a_merge_names_an_ancestor_of_its_other_parent() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let root = commit_of(&hub, &[("a.txt", "0\n")], Vec::new());
+    let a = commit_of(&hub, &[("a.txt", "1\n")], vec![root]);
+    let b = commit_of(&hub, &[("a.txt", "2\n")], vec![a]);
+    // The root is a parent of the merge and lies two commits below its other parent.
+    let near_first = commit_of(&hub, &[("a.txt", "3\n")], vec![root, b]);
+    let far_first = commit_of(&hub, &[("a.txt", "4\n")], vec![b, root]);
+    set_reference(&hub, "heads/near", &near_first);
+    set_reference(&hub, "heads/far", &far_first);
+
+    for (index, merge) in [near_first, far_first].into_iter().enumerate() {
+        let stream = answer(&hub, &request(&[merge], &[]));
+        assert_eq!(commits(&stream), [root, a, b, merge]);
+        for (prefix, commit) in prefixes(&stream) {
+            let receiver = bare(&dir, &format!("clone-{index}-{commit}"));
+            receiver
+                .receive_objects(prefix.as_slice(), Bounds::default())
+                .unwrap();
+            receiver.check_connectivity(&[commit]).unwrap();
+        }
+        let stream = answer(&hub, &request(&[merge], &[a]));
+        assert_eq!(commits(&stream), [b, merge]);
+    }
+}
+
+#[test]
+fn a_path_that_changes_between_a_file_and_a_directory_is_sent_whole() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let file = commit_of(&hub, &[("x", "file\n")], Vec::new());
+    let directory = commit_of(&hub, &[("x/y.txt", "below\n")], vec![file]);
+    let back = commit_of(&hub, &[("x", "again\n")], vec![directory]);
+    set_reference(&hub, "heads/main", &back);
+    let have = answer(&hub, &request(&[file], &[]));
+
+    let stream = answer(&hub, &request(&[back], &[file]));
+
+    assert_eq!(commits(&stream), [directory, back]);
+    assert!(ids(&stream).contains(&blob_id("below\n")));
+    assert!(ids(&stream).contains(&blob_id("again\n")));
+    for (index, (prefix, commit)) in prefixes(&stream).into_iter().enumerate() {
+        let receiver = bare(&dir, &format!("fetch-{index}"));
+        receiver
+            .receive_objects(have.as_slice(), Bounds::default())
+            .unwrap();
+        set_reference(&receiver, "heads/main", &file);
+        receiver
+            .receive_objects(prefix.as_slice(), Bounds::default())
+            .unwrap();
+        receiver.check_connectivity(&[commit]).unwrap();
+    }
+}
+
+#[test]
+fn a_tree_of_a_parent_that_is_gone_prunes_nothing_and_fails_nothing() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let history = history(&hub);
+    set_reference(&hub, "heads/main", &history.top);
+    let fetch = request(&[history.top], &[history.merge]);
+    let pruned = ids(&answer(&hub, &fetch));
+    assert!(!pruned.contains(&blob_id("b\n")) && !pruned.contains(&blob_id("c\n")));
+    let merged = hub.objects().get_any_commit(&history.merge).unwrap();
+    let base = merged.unwrap().tree_sum().terms()[0];
+
+    assert!(hub.objects().remove(&base.object_id()).unwrap());
+    let stream = answer(&hub, &fetch);
+
+    // Without the tree of the parent the whole tree of the commit is sent.
+    assert_eq!(commits(&stream), [history.top]);
+    let sent = ids(&stream);
+    assert!(sent.len() > pruned.len());
+    assert!(sent.contains(&blob_id("b\n")) && sent.contains(&blob_id("c\n")));
+}
+
+#[test]
+fn a_reference_that_cannot_be_read_fails_both_answers() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let commit = commit_of(&hub, &[("a.txt", "one\n")], Vec::new());
+    set_reference(&hub, "tags/v1", &commit);
+    fs::write(hub.metadata_dir().join("refs/heads/main"), "no commit\n").unwrap();
+
+    let listed = hub.answer_refs(&facts()).unwrap_err();
+    let mut stream = Vec::new();
+    let fetched = hub
+        .answer_fetch(&request(&[commit], &[]), &mut stream)
+        .unwrap_err();
+
+    for error in [&listed, &fetched] {
+        assert!(
+            matches!(error, AnswerError::Refs(source) if matches!(**source, RefError::Corrupt { .. })),
+            "{error:?}"
+        );
+        assert!(error.answer().is_none());
+    }
+    assert!(stream.is_empty());
+    let mut transport = MemoryTransport::new(Answering::new(&hub, facts()));
+    let error = transport.refs().unwrap_err();
+    assert!(
+        matches!(error, TransportError::NoAnswer { .. }),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_damaged_object_fails_the_answer_as_an_error_of_the_store_or_of_the_reader() {
+    let dir = TempDir::new();
+    let hub = bare(&dir, "hub");
+    let history = history(&hub);
+    set_reference(&hub, "heads/main", &history.top);
+
+    // The file of a blob of the answer is damaged: the stream is cut off before its commit.
+    let path = hub.objects().object_path(&blob_id("d\n"));
+    damage(&path, b"no object");
+    let mut stream = Vec::new();
+    let error = hub
+        .answer_fetch(&request(&[history.top], &[history.merge]), &mut stream)
+        .unwrap_err();
+    assert!(
+        matches!(&error, AnswerError::Store(source) if matches!(**source, StoreError::Corrupt { .. })),
+        "{error:?}"
+    );
+    assert!(error.store_error().is_some() && error.answer().is_none());
+    assert!(stream.starts_with(b"stemma-protocol 1\n"));
+
+    // A directory entry names a blob: the store returns no tree for it.
+    let blob = hub.objects().put_blob(&Blob::new("a blob\n")).unwrap();
+    let entry = TreeEntry::directory("x", TreeId::new(blob.object_id())).unwrap();
+    let tree = Tree::try_new(vec![entry]).unwrap();
+    let tree = hub.objects().put_tree(&tree).unwrap();
+    let wrong_kind = commit_with_tree(&hub, tree, Vec::new());
+    set_reference(&hub, "heads/wrong-kind", &wrong_kind);
+    let error = hub
+        .answer_fetch(&request(&[wrong_kind], &[]), io::sink())
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            AnswerError::Store(source) if matches!(**source, StoreError::KindMismatch { .. })
+        ),
+        "{error:?}"
+    );
+
+    // A tree whose body the strict reader refuses is intact as an object.
+    let body = hub.objects().put_raw(Kind::Tree, b"no tree").unwrap();
+    let unreadable = commit_with_tree(&hub, TreeId::new(body), Vec::new());
+    set_reference(&hub, "heads/unreadable", &unreadable);
+    let error = hub
+        .answer_fetch(&request(&[unreadable], &[]), io::sink())
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            AnswerError::Unreadable { needed_by, source }
+                if *needed_by == unreadable.object_id()
+                    && matches!(**source, ReadError::Tree { .. })
+        ),
+        "{error:?}"
+    );
+    assert!(error.store_error().is_none() && error.answer().is_none());
+    assert!(error.to_string().contains(&unreadable.to_string()));
+}
+
+#[test]
+fn a_commit_that_is_gone_below_a_reference_or_a_have_fails_before_the_stream_begins() {
+    let dir = TempDir::new();
+    // The walk below the references meets the gap while it looks for the wanted commit.
+    let hub = bare(&dir, "below-reference");
+    let first = history(&hub);
+    set_reference(&hub, "heads/main", &first.top);
+    assert!(hub.objects().remove(&first.right.object_id()).unwrap());
+    let mut stream = Vec::new();
+    let error = hub
+        .answer_fetch(&request(&[first.root], &[]), &mut stream)
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            AnswerError::History(source)
+                if matches!(**source, HistoryError::Missing { id, .. } if id == first.right)
+        ),
+        "{error:?}"
+    );
+    assert!(stream.is_empty());
+
+    // The walk below a known `have` meets it.
+    let hub = bare(&dir, "below-have");
+    let second = history(&hub);
+    set_reference(&hub, "heads/main", &second.top);
+    assert!(hub.objects().remove(&second.root.object_id()).unwrap());
+    let error = hub
+        .answer_fetch(&request(&[second.top], &[second.left]), &mut stream)
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            AnswerError::History(source) if matches!(
+                **source,
+                HistoryError::Missing { id, child } if id == second.root && child == Some(second.left)
+            )
+        ),
+        "{error:?}"
+    );
+    assert!(stream.is_empty());
 }

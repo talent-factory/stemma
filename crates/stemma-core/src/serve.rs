@@ -2,8 +2,8 @@
 //! and a fetch request from a repository.
 //!
 //! Both run on every repository, on a bare one in a hub and on one with a working copy alike
-//! (ADR-022). They read and write nothing but the stream: they take no lock, keep no state
-//! between two requests, and leave no file.
+//! (ADR-022). They write nothing but the stream: they take no lock, keep no state between two
+//! requests, and leave no file.
 //!
 //! - **The list of references.** [`Repository::answer_refs`] lists the branches and the tags of
 //!   the store. What a list names beyond them (the ID of the repository, the keys of the hub,
@@ -23,15 +23,17 @@
 //!   the commit, a tree after what it names. So every beginning of the stream that ends with a
 //!   commit is a complete state for a receiver that has the `have` commits, and a transfer that
 //!   was cut off resumes with the commits that arrived as further `have` lines.
-//! - **The refusal.** A `want` that no reference reaches is refused before the first byte of
-//!   the stream is written ([`AnswerError::UnknownWant`]), in the same words for a commit that
+//! - **The refusal.** A `want` that no branch and no tag reaches is refused before the first
+//!   byte of the stream is written ([`AnswerError::UnknownWant`]), in the same words for a commit that
 //!   the store lacks and for one that it holds unnamed, as the objects of a refused push are.
 //!
-//! The walk reads the commits that it sends and every commit below the known `have` commits
-//! once, also for a fetch that brings one new commit: only the whole of that history says which
-//! commits a `have` reaches. A `want` or a `have` that is no tip of a reference costs the
-//! history below the references on top, until it is found; a `have` that the store does not
-//! hold costs one lookup.
+//! The walk over the commits reads every commit that it sends, and every commit below the known
+//! `have` commits, once, also for a fetch that brings one new commit: only the whole of that
+//! history says which commits a `have` reaches. A `want` or a `have` that is no tip of a
+//! reference costs the history below the references on top, until it is found; a `have` that
+//! the store does not hold costs one lookup. Writing the stream then reads every commit that is
+//! sent once more, its parents, its new trees and blobs, and the trees of the parents at the
+//! changed paths.
 //!
 //! [`Answering`] joins the two operations to the trait [`OtherSide`], so that a
 //! [`MemoryTransport`](crate::transport::MemoryTransport) answers from a repository.
@@ -61,8 +63,8 @@ type EntryOf<'a> = Box<dyn Fn(&QualifiedName) -> Option<RecordHash> + 'a>;
 
 /// What a list of references names beyond the references of a store (ADR-023): the ID of the
 /// repository (ADR-027), the public key of the hub with its former keys (ADR-026), and for each
-/// name the hash of its last record entry (ADR-025). A hub knows them from its record; a store
-/// holds none of them.
+/// name the hash of its last record entry (ADR-025). A hub knows the ID and the entries from
+/// its record and holds its keys itself; a store holds none of them.
 pub struct ListFacts<'a> {
     repository: RepositoryId,
     key: PublicKey,
@@ -147,17 +149,21 @@ pub enum AnswerError {
         /// The commit or the tree that names it.
         needed_by: ObjectId,
     },
-    /// A tree that a commit of the answer names cannot be read as a tree.
+    /// A tree that a commit of the answer names is intact as an object, and the strict reader
+    /// refuses its body (ADR-005) or returns a value with another ID. The source is never
+    /// [`ReadError::Store`]: an error of the store is [`Store`](Self::Store).
     Unreadable {
         /// The commit or the tree that names it.
         needed_by: ObjectId,
-        /// The error of the read, which names the tree.
+        /// The refusal of the reader, which names the tree.
         source: Box<ReadError>,
     },
-    /// The store could not return a blob: the storage failed, the file is damaged, or the
-    /// object has another kind.
+    /// The store could not answer: it could not say whether it holds a `have`, or it could not
+    /// return a tree or a blob of the answer, because the storage failed, the file is damaged,
+    /// or the object has another kind than the tree that names it claims.
     Store(Box<StoreError>),
-    /// The stream could not be written. The other side may hold a part of it, cut off anywhere.
+    /// The stream could not be written: its first line, or an object after it. The other side
+    /// may hold a part of it, cut off anywhere.
     Io(io::Error),
 }
 
@@ -174,17 +180,18 @@ impl AnswerError {
     }
 
     /// Returns the error of the store if the store could not answer, also inside the error of
-    /// the references or of the history.
+    /// the references or of the history. `None` for every other error; the source of
+    /// [`Unreadable`](Self::Unreadable) is never one of the store.
     pub fn store_error(&self) -> Option<&StoreError> {
         match self {
             Self::Refs(source) => source.store_error(),
             Self::History(source) => source.store_error(),
-            Self::Unreadable { source, .. } => source.store_error(),
             Self::Store(source) => Some(source),
             Self::UnknownWant(_)
             | Self::NoRecordEntry(_)
             | Self::List(_)
             | Self::Missing { .. }
+            | Self::Unreadable { .. }
             | Self::Io(_) => None,
         }
     }
@@ -431,8 +438,8 @@ impl<W: Write> Sender<'_, W> {
     fn send_commit(&mut self, id: CommitId) -> Result<(), AnswerError> {
         // The commit was read when the graph was walked; a purge may have removed it since.
         let commit = read_commit(self.store, id, None)?;
-        // The trees of the parents only save work: one that cannot be read saves none, and the
-        // walk then sends what it would have left out.
+        // The trees of the parents only save work: a parent that cannot be read saves none,
+        // and the walk then sends what it would have left out.
         let mut bases = Vec::new();
         for parent in commit.parents() {
             if let Ok(Some(parent)) = self.store.get_any_commit(parent) {
@@ -462,10 +469,10 @@ impl<W: Write> Sender<'_, W> {
             let (tree_id, bases, needed_by) = match step {
                 TreeStep::Enter(tree_id, bases, needed_by) => (tree_id, bases, needed_by),
                 TreeStep::Exit(tree_id, tree) => {
-                    // A tree that stands twice in one commit is written by the first exit.
-                    if self.written.insert(tree_id.object_id()) {
-                        self.write(Kind::Tree, &tree.encode())?;
-                    }
+                    // Everything below the tree is written, so it counts as written from here
+                    // on. A second entry of the same tree comes after this exit and is skipped.
+                    self.written.insert(tree_id.object_id());
+                    self.write(Kind::Tree, &tree.encode())?;
                     continue;
                 }
             };
@@ -482,6 +489,7 @@ impl<W: Write> Sender<'_, W> {
                         needed_by,
                     })
                 }
+                Err(ReadError::Store(source)) => return Err(AnswerError::Store(source)),
                 Err(source) => {
                     return Err(AnswerError::Unreadable {
                         needed_by,
@@ -489,6 +497,8 @@ impl<W: Write> Sender<'_, W> {
                     })
                 }
             };
+            // As for the parents of the commit: a tree of a parent that cannot be read saves no
+            // work, and what it would have pruned is sent.
             let bases: Vec<Tree> = bases
                 .iter()
                 .filter_map(|base| self.store.get_tree(base).ok().flatten())
@@ -587,8 +597,12 @@ impl Repository {
     ///
     /// The call takes no lock and keeps no state, and it works on a bare repository and on one
     /// with a working copy alike. `stream` is written as the walk goes and is not flushed; a
-    /// caller that writes to a file or a socket wraps it in a buffer. A purge that removes an
-    /// object while the call runs makes it fail with the object as missing.
+    /// caller that writes to a file or a socket wraps it in a buffer.
+    ///
+    /// A purge that runs beside the call may remove an object that the answer sends. A commit
+    /// that is gone when the graph is walked fails the call before the first byte; a commit, a
+    /// tree, or a blob that is gone when it is written cuts the stream off. A parent or a tree
+    /// of a parent that is gone fails nothing: the answer then holds more.
     ///
     /// # Errors
     ///
@@ -641,7 +655,8 @@ impl Repository {
 /// [`Repository::answer_refs`] and [`Repository::answer_fetch`] (ADR-022).
 ///
 /// A refusal travels as its error message ([`AnswerError::answer`]), and every other error as
-/// a side that failed before it could answer.
+/// a side that failed. What such a call had written of a stream is discarded by the transport
+/// in memory, so its caller sees no stream that is cut off.
 #[derive(Debug)]
 pub struct Answering<'a> {
     repository: &'a Repository,

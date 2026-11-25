@@ -850,7 +850,8 @@ pub enum ErrorMessage {
     UnsupportedVersion(Spoken),
     /// The message could not be read. Carries what the reader reported.
     Malformed(Reason),
-    /// A fetch request wants a commit that no reference of the repository reaches (ADR-023).
+    /// A fetch request wants a commit that no branch and no tag of the repository reaches
+    /// (ADR-023).
     /// Carries the first such commit in the order of the IDs. The answer is the same for a
     /// commit that the store does not hold and for one that it holds unnamed, so it does not
     /// say whether an object exists. The ID is a claim, as in the request.
@@ -968,7 +969,7 @@ impl fmt::Display for ErrorMessage {
             }
             Self::UnknownWant(commit) => write!(
                 f,
-                "the other side has no reference that reaches the wanted commit {commit}"
+                "the other side has no branch and no tag that reaches the wanted commit {commit}"
             ),
         }
     }
