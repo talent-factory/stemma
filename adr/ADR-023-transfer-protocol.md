@@ -4,7 +4,8 @@
 for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-56, STEMMA-273,
 STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
-"The first number is 1") and with the ref update and its receipt (STEMMA-291, ADR-025), and the
+"The first number is 1"), with the ref update and its receipt (STEMMA-291, ADR-025) and with the
+two errors that answer a ref update (STEMMA-296), and the
 receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
 receiving side"); nothing else of it is implemented yet. The numbers under "Basis" give a
 direction, not a threshold.
@@ -337,8 +338,9 @@ spoken <version> <version> ...
   version that its sender speaks, so a client of another number still learns the list. The
   versions of `spoken` ascend, each once, at least one, and the first line carries the last of
   them. A reason is one line that is not empty and holds no control character and no line or
-  paragraph separator. The refusals of a ref update, of a statement and of the bounds add their
-  kinds with their slices.
+  paragraph separator. A ref update that is not accepted is answered with `stale` or with
+  `refused`; their lines stand in ADR-025 ("The accepting operation as built"). The refusals of
+  a statement and of the bounds add their kinds with their slices.
 - **Ref update and receipt.** The ref update and the record entry that answers it are messages
   of number 1 as well; their lines and rules stand in ADR-025 ("The formats as built").
 
@@ -392,7 +394,7 @@ Status codes are the coarse class only:
 | 409 | A ref update that is `Stale` |
 | 413 | An object, a request or a quota exceeded |
 | 415 | An unknown content encoding |
-| 422 | A ref update whose objects are missing or not connected; the client uploads once more |
+| 422 | A ref update whose objects are missing or not connected; the client uploads once more. The body is an `error refused` with a reference that is `incomplete` |
 | 429 with `Retry-After` | The limit on requests without a valid token |
 | 503 with `Retry-After` | The hub is busy; the client retries a bounded number of times |
 

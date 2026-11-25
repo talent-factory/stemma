@@ -11,7 +11,8 @@
 //! The small messages are line-oriented text: the first line, then lines `<keyword> <value>` in
 //! a fixed order, each ended by a line feed. They are the list of references ([`RefList`]), the
 //! fetch request ([`FetchRequest`]), the error ([`ErrorMessage`]), and, in the module [`record`],
-//! the ref update and the record entry that answers it as a receipt (ADR-025). The object stream
+//! the ref update and the record entry that answers it as a receipt (ADR-025); the module
+//! [`refusal`] holds the reasons for which a ref update is not accepted. The object stream
 //! is binary and begins with the same first line ([`ObjectStreamWriter`], [`ObjectStreamReader`]).
 //! There are no capabilities and no optional fields: from the first release that carries the
 //! protocol on, every change of a message is a new number (see [`VERSION`]).
@@ -822,10 +823,11 @@ impl Error for ErrorMessageError {}
 /// first line, then the kind of the error with its facts. The kind decides what the receiver
 /// does; a status code of the transport names the coarse class only.
 ///
-/// This version knows the two kinds that the reading of a message gives. The refusals of a ref
-/// update and of a statement come with the slices that build them, and the refusal of a bound
-/// with the slice that carries an upload over a transport: the bounds themselves are set by
-/// the receiver ([`crate::receive::Bounds`]).
+/// This version knows the two kinds that the reading of a message gives, and the two answers to a
+/// ref update that is not accepted, whose lines are those of the module [`refusal`]. The refusal
+/// of a statement comes with the slice that builds it, and the refusal of a bound with the slice
+/// that carries an upload over a transport: the bounds themselves are set by the receiver
+/// ([`crate::receive::Bounds`]).
 ///
 /// ```text
 /// stemma-protocol <highest version spoken>      stemma-protocol 1
@@ -845,6 +847,12 @@ pub enum ErrorMessage {
     UnsupportedVersion(Spoken),
     /// The message could not be read. Carries what the reader reported.
     Malformed(Reason),
+    /// A ref update does not continue the chains of its names (ADR-025). Carries every reference
+    /// that does not match, with its state on the hub.
+    Stale(record::Stale),
+    /// A ref update is refused by the register, the policy, the write ownership, or the gate
+    /// (ADR-025). Carries the typed reason.
+    Refused(refusal::Refused),
 }
 
 impl ErrorMessage {
@@ -862,6 +870,16 @@ impl ErrorMessage {
             Self::Malformed(reason) => {
                 format!("{}error malformed\nreason {reason}\n", first_line(VERSION))
             }
+            Self::Stale(stale) => format!(
+                "{}error stale\n{}",
+                first_line(VERSION),
+                refusal::encode_stale(stale)
+            ),
+            Self::Refused(refused) => format!(
+                "{}error refused\n{}",
+                first_line(VERSION),
+                refusal::encode_refused(refused)
+            ),
         }
         .into_bytes()
     }
@@ -887,6 +905,11 @@ impl ErrorMessage {
     ///
     /// `malformed` also refuses a reason that is empty or holds a control character or a line or
     /// paragraph separator.
+    ///
+    /// `stale` and `refused` also refuse a `ref` line that does not come after the one before it
+    /// in the order of the qualified names, a name, a hash, a commit, an address, a repository
+    /// ID, an actor, or a time that is not in canonical form, a reference of a `stale` that names
+    /// a commit and no entry, and a reason of a `refused` that this version does not know.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let (version, rest) = read_version(bytes)?;
         // Under another number only the second line of an `unsupported-version` is known, so
@@ -927,6 +950,8 @@ impl ErrorMessage {
                 lines.end()?;
                 Ok(Self::Malformed(Reason(value.to_owned())))
             }
+            Some((_, "stale")) => refusal::read_stale(&mut lines).map(Self::Stale),
+            Some((_, "refused")) => refusal::read_refused(&mut lines).map(Self::Refused),
             Some((line, _)) => Err(malformed(line, Malformed::UnknownError)),
             None => Err(malformed(lines.line, Malformed::Expected("error"))),
         }
@@ -947,6 +972,8 @@ impl fmt::Display for ErrorMessage {
             Self::Malformed(reason) => {
                 write!(f, "the other side could not read the message: {reason}")
             }
+            Self::Stale(stale) => stale.fmt(f),
+            Self::Refused(refused) => refused.fmt(f),
         }
     }
 }
@@ -1684,10 +1711,14 @@ pub mod examples {
         example!("error-malformed", Error),
         example!("ref-update", RefUpdate),
         example!("receipt", Receipt),
+        example!("error-stale", Error),
+        example!("error-refused", Error),
+        example!("error-refused-update", Error),
     ];
 }
 
 pub mod record;
+pub mod refusal;
 
 #[cfg(test)]
 mod tests;

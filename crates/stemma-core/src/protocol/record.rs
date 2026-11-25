@@ -57,8 +57,9 @@
 //! pinned ([`RecordEntry::check_receipt`], [`HubKeys`]).
 //!
 //! Not part of this module: the accepting operation that decides whether an update may be written
-//! (ADR-025), the error that answers a stale update, and the request that reads a range of the
-//! record. They come with the slices that build them.
+//! ([`Repository::accept_ref_update`](crate::repository::Repository::accept_ref_update),
+//! ADR-025), the errors that answer a stale and a refused update ([`refusal`](super::refusal)),
+//! and the request that reads a range of the record, which comes with the slice that builds it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -111,6 +112,8 @@ pub enum RecordProblem {
     /// A tag is moved from one commit to another. A tag is set and deleted only (ADR-008).
     TagMoved,
     /// `old` names a commit while `previous` is `-`: a name that the hub never saw has no value.
+    /// The same holds for the state of a reference in the answer to a stale update, which names
+    /// a commit only together with the entry that left it.
     OldWithoutPrevious,
     /// The update names no reference.
     NoReference,
@@ -1152,6 +1155,36 @@ pub struct StaleReference {
 pub struct Stale(Vec<StaleReference>);
 
 impl Stale {
+    /// The answer to a stale update from its references, for the reader of the error that
+    /// carries it ([`ErrorMessage::Stale`](super::ErrorMessage::Stale)). The references are
+    /// sorted by their qualified names, so the order of the argument does not matter.
+    ///
+    /// # Errors
+    ///
+    /// [`RecordProblem::NoReference`] if `references` is empty,
+    /// [`RecordProblem::DuplicateReference`] if a qualified name is named twice, and
+    /// [`RecordProblem::OldWithoutPrevious`] if a reference names a commit and no entry: a name
+    /// that the record never listed has no value.
+    pub fn try_new(mut references: Vec<StaleReference>) -> Result<Self, RecordProblem> {
+        if references.is_empty() {
+            return Err(RecordProblem::NoReference);
+        }
+        references.sort_by(|a, b| a.name.cmp(&b.name));
+        if references
+            .windows(2)
+            .any(|pair| pair[0].name == pair[1].name)
+        {
+            return Err(RecordProblem::DuplicateReference);
+        }
+        if references
+            .iter()
+            .any(|stale| stale.entry.is_none() && stale.commit.is_some())
+        {
+            return Err(RecordProblem::OldWithoutPrevious);
+        }
+        Ok(Self(references))
+    }
+
     /// The references that do not match, each with its state in the record.
     pub fn references(&self) -> &[StaleReference] {
         &self.0

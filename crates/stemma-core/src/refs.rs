@@ -2613,6 +2613,77 @@ impl FsRefStore {
         Ok(Self::after_move(done, deleted))
     }
 
+    /// What a branch or a tag is for the accepting operation of a bare repository (ADR-025),
+    /// under the lock of the references that the caller holds (`_lock`): its commit, or `None`
+    /// if it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::Conflict`] if the name is held by another entry, so that the
+    /// reference cannot be created, and the errors of reading it.
+    pub(crate) fn recorded(
+        &self,
+        _lock: &WriteLock,
+        kind: RefKind,
+        name: &BranchName,
+    ) -> Result<Option<CommitId>, RefError> {
+        self.require_root()?;
+        let current = self.current(kind, name)?;
+        match current.in_the_way {
+            Some((with, conflict)) => Err(RefError::Conflict {
+                reference: kind,
+                name: name.clone(),
+                with,
+                kind: conflict,
+            }),
+            None => Ok(current.commit),
+        }
+    }
+
+    /// Sets a branch or a tag to what an entry of the record of ref updates says (ADR-025):
+    /// `new`, or no reference for `None`. The entry was written before, so there is no step, no
+    /// `expected`, and no rule of `HEAD`: the record is the order, and the call makes the
+    /// reference agree with it, whatever it was. It is the move of an accepted update and the
+    /// completion of one that stopped after its entry. Returns whether the reference changed.
+    ///
+    /// The caller holds the lock of the references (`_lock`) and has checked before the entry
+    /// was written that the name can be taken ([`recorded`](Self::recorded)).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefError::MissingCommit`] or [`RefError::NotACommit`] if `new` is no commit of
+    /// `objects`, [`RefError::Conflict`] if the name is held by another entry,
+    /// [`RefError::Io`] if the storage fails, and [`RefError::NotFlushed`] if the reference
+    /// changed and the directory could not be flushed.
+    pub(crate) fn set_recorded(
+        &self,
+        lock: &WriteLock,
+        kind: RefKind,
+        name: &BranchName,
+        new: Option<CommitId>,
+        objects: &dyn ObjectStore,
+    ) -> Result<bool, RefError> {
+        if let Some(new) = &new {
+            Self::require_commit(new, objects)?;
+        }
+        if self.recorded(lock, kind, name)? == new {
+            return Ok(false);
+        }
+        let Some(new) = new else {
+            return self.delete_reference_file(kind, name);
+        };
+        if let Some(empty) = &self.current(kind, name)?.empty_directory {
+            // Nothing is below it, and the lock is held, so no reference is lost.
+            fault::remove_dir_all(empty).map_err(io_error("remove the empty directory", empty))?;
+        }
+        self.write_replacing(
+            &self.reference_path(kind, name),
+            &encode_branch(&new),
+            &self.namespace_dir(kind),
+        )?;
+        Ok(true)
+    }
+
     /// Deletes the branch `name` if it is at `expected`, and runs `step` after the checks and
     /// before the deletion, under the lock of the references that the caller holds (`_lock`). The
     /// checks are the ones of [`RefStore::delete_branch`] and one more: the branch that HEAD

@@ -37,8 +37,9 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
 
 - It has one synchronous method per request of the protocol (ADR-023). The first two are `refs`
   and `fetch`; a slice that adds a request adds its method, and the sign-in adds its step
-  (ADR-024). The ref update and its receipt exist as messages (ADR-025); their request comes
-  with the slice of `push`, which builds the operation that answers it.
+  (ADR-024). The third is `ref_update`, which sends a ref update and is answered with its
+  receipt or with a typed error (STEMMA-296, ADR-025); the in-memory variant answers it through
+  the accepting operation of the core.
 - Every body is a stream. A request body is read from a reader, and the body of an answer is a
   reader that borrows the transport, so one request runs at a time and an object stream never
   has to lie in memory as a whole.

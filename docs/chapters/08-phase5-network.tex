@@ -27,8 +27,9 @@ Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs
 umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository,
 die Schnittstelle für den Transport,
 die Remotes im Layout des Klons mit ihren Remote-Referenzen,
-die empfangende Seite des Objektstroms
-und die Formate des Ref-Updates und der Aufzeichnung.
+die empfangende Seite des Objektstroms,
+die Formate des Ref-Updates und der Aufzeichnung
+und die annehmende Operation für Branches und Tags.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -317,7 +318,9 @@ Es gibt keine Listen von Fähigkeiten und keine optionalen Felder: Nach der erst
 ist jede Änderung einer Nachricht eine neue Protokollversion.
 Gebaut sind die ersten vier Nachrichten: die Liste der Referenzen, die Fetch-Anfrage, der
 Objektstrom und der Fehler.
-Dazu kommen das Ref-Update und seine Quittung (\in{Abschnitt}[sec:ref-update]).
+Dazu kommen das Ref-Update und seine Quittung (\in{Abschnitt}[sec:ref-update])
+und zwei weitere Arten des Fehlers, mit denen ein Hub ein Ref-Update beantwortet, das er nicht
+annimmt (\in{Abschnitt}[sec:accept-ref-update]).
 Die Liste der Referenzen eines Repositorys mit einem Branch sieht so aus, mit gekürzten Werten:
 
 \starttyping
@@ -750,6 +753,9 @@ Die Lease läuft ab der Zeit des Hubs in diesem Eintrag, mit der Dauer aus der P
 Der Hub braucht dafür keinen eigenen Zustand, und jeder Leser kann es nachrechnen.
 Der Schreibinhaber darf seinen Branch beliebig bewegen; die Aufzeichnung hält fest, wenn eine
 Bewegung kein Fast-Forward war.
+Vor dem Ende der Lease lehnt der Hub einen anderen Akteur ab, danach übernimmt den Branch, wer
+im Register steht.
+Ein gelöschter Branch hat keinen Schreibinhaber.
 Ein Owner-Override ist eine signierte Erklärung mit Begründung, die alle Leser sehen.
 
 Ein Tag wird nach derselben Regel gesetzt und gelöscht wie lokal.
@@ -758,6 +764,140 @@ Für einen Purge legt ein menschlicher Owner nach dem Register von $T$ eine sign
 Purge-Erklärung vor, mit alter Spitze, neuer Spitze und Begründung.
 Der Eintrag ist für alle Leser sichtbar, und Erklärungen über entfernte Commits zählen nicht
 mehr.
+
+\subsection[sec:accept-ref-update]{Die annehmende Operation}
+
+Ein Ref-Update annehmen heisst prüfen, aufzeichnen und bewegen, und zwischen diesen Schritten
+darf kein anderes Ref-Update liegen.
+Der Kern bietet dafür einen einzigen Aufruf auf einem Bare-Repository
+(\type{accept_ref_update}), damit ein Hub die Reihenfolge der Prüfungen nicht selbst
+zusammensetzt.
+Der Hub übergibt das Ref-Update und einen Kontext: seine öffentliche Adresse, die ID des
+Repositorys, den Ort der Aufzeichnung, seine Zeit und seinen Signierer.
+Gebaut ist der Teil für Branches und Tags.
+\type{main} nimmt die Operation bisher nur beim ersten Push an; das Gate auf dem Hub, der Purge
+und der Owner-Override folgen.
+
+\startitemize[n]
+\item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload und fragt
+den Authorizer ein erstes Mal, nach dem Stand der Referenzen, wie er gerade ist.
+Die Sperre der Referenzen öffnet nur der Beleg dieser Frage (ADR-002); entschieden wird unter
+der Sperre noch einmal.
+\item Sie nimmt die Sperre der Referenzen, ohne zu warten.
+\item Sie liest die Aufzeichnung und prüft deren Ketten.
+Ein Ref-Update, dessen Eintrag geschrieben ist und dessen Bewegungen fehlen, vollendet sie jetzt.
+Danach muss jeder Branch und jeder Tag dort stehen, wo die Aufzeichnung ihn lässt.
+\item Sie prüft \type{previous} und \type{old} jeder Referenz gegen die Kette ihres Namens.
+\item Sie prüft die Namen neuer Referenzen und den Zusammenhang der Objekte jedes neuen Commits
+(\in{Abschnitt}[sec:transfer]).
+\item Sie bestimmt den Absender: den Eintrag des Registers an der Spitze von \type{main} vor dem
+Ref-Update, der den Schlüssel des Ref-Updates als aktiven Schlüssel führt.
+\item Sie urteilt über jede Referenz: Der Authorizer wird mit \type{push}, \type{tag} oder
+\type{untag} gefragt, und für einen Branch gilt die Schreibhoheit.
+\item Sie schreibt den Eintrag mit der Signatur des Hubs und lässt ihn dauerhaft ablegen.
+\item Sie bewegt die Referenzen, die Löschungen zuerst, und gibt den Eintrag als Quittung zurück.
+\stopitemize
+
+Alle Referenzen eines Ref-Updates bewegen sich oder keine.
+Jede Ablehnung fällt vor Schritt 8, also bevor ein Byte geschrieben ist: Die Aufzeichnung enthält
+nur angenommene Ref-Updates.
+Der Hub antwortet auf zwei Arten.
+Ein veraltetes Ref-Update (\type{error stale}) nennt jede Referenz, deren \type{previous} oder
+\type{old} nicht passt, mit ihrem Stand auf dem Hub.
+Eine Ablehnung (\type{error refused}) nennt jede abgelehnte Referenz mit ihrem Grund
+(\in{Tabelle}[tab:refusal-reasons]), oder das Ref-Update als Ganzes: Es nennt einen anderen Hub
+oder ein anderes Repository, das Register führt seinen Schlüssel nicht, oder das Repository hat
+noch kein \type{main}.
+
+\starttyping
+stemma-protocol 1
+error refused
+ref heads/feature leased human mia 1767225600
+ref heads/main gate -
+ref tags/v0.2.0 denied tag
+\stoptyping
+
+Endet der Prozess zwischen Schritt 8 und dem Ende von Schritt 9, steht der Eintrag in der
+Aufzeichnung, und einige Referenzen stehen noch am alten Wert.
+Das Ref-Update ist damit angenommen, denn der Eintrag kommt vor der Bewegung, wie im Operation
+Log (\in{Abschnitt}[sec:outcome]).
+Der nächste Aufruf für dieses Repository macht in Schritt 3 die Bewegungen des letzten Eintrags
+noch einmal, bevor er über sein eigenes Ref-Update urteilt.
+Das genügt: Nur diese Operation bewegt Referenzen, und sie tut es unter der Sperre.
+Jeder Aufruf vollendet den letzten Eintrag, bevor er einen neuen schreibt, also kann nur der
+letzte Eintrag unvollendet sein, und jede seiner Referenzen steht am alten oder am neuen Wert.
+Steht eine Referenz an keinem der beiden Werte, hat jemand sie an der Operation vorbei bewegt;
+der Aufruf meldet das und repariert nichts.
+
+Die erste Fassung liest bei jedem Aufruf die ganze Aufzeichnung unter der Sperre.
+Bei $k$ Einträgen kostet ein Ref-Update deshalb $O(k)$ Schritte und zwei Signaturprüfungen je
+Eintrag.
+Der Auslöser dafür, den Stand der Ketten zwischen zwei Aufrufen zu halten, ist die gemessene
+Haltezeit der Sperre (ADR-025).
+
+\startplacetable[title={Die Gründe, aus denen ein Hub eine Referenz eines Ref-Updates ablehnt},
+reference=tab:refusal-reasons]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.22\textwidth] {\bf Grund} \stopxcell
+\startxcell {\bf Bedeutung} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{denied} \stopxcell
+\startxcell Der Authorizer lehnt die Operation ab. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{leased} \stopxcell
+\startxcell Ein anderer Akteur ist Schreibinhaber; die Zeile nennt ihn und das Ende der Lease.
+\stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{gate} \stopxcell
+\startxcell \type{main} bewegt sich nach dem ersten Push nur durch das Merge-Gate. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{reserved}, \type{conflict} \stopxcell
+\startxcell Der Name einer neuen Referenz beginnt mit einem reservierten Präfix, oder eine andere
+Referenz belegt ihn im Dateisystem. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{no-register}, \type{bad-register}, \type{not-owner} \stopxcell
+\startxcell Der erste Push: Der Commit enthält kein Register, eines, das sich nicht lesen lässt,
+oder eines, das den Schlüssel nicht als aktiven Schlüssel eines Owners führt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{incomplete} \stopxcell
+\startxcell Objekte des neuen Commits fehlen; der Klon lädt noch einmal hoch. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{policy} \stopxcell
+\startxcell Die Policy an der Spitze von \type{main}, die die Dauer der Lease nennt, lässt sich
+nicht verwenden. \stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
+\startinfobox
+{\bf Grenzfälle der annehmenden Operation.}
+Der erste Push setzt \type{main}, allein oder zusammen mit weiteren Referenzen; für alle gilt
+das Register des hochgeladenen Commits.
+Ein Repository ohne \type{main} nimmt kein Ref-Update an, das \type{main} nicht setzt.
+Jedes spätere Ref-Update von \type{main} lehnt diese Fassung ab, auch das eines Owners; ein
+Push, der das Register von \type{main} entfernt, scheitert also ebenso wie das Löschen von
+\type{main}.
+Jede angenommene Bewegung eines Branch ist sein nächster Eintrag, deshalb beginnt mit jeder
+Bewegung des Schreibinhabers eine neue Lease.
+Der Eintrag nennt den Commit der Policy genau dann, wenn das Urteil auf ihr beruht: wenn eine
+Lease abgelaufen ist und ein anderer Akteur den Branch übernimmt.
+Ein Tag hat keinen Schreibinhaber; ihn setzt und löscht, wem der Authorizer es erlaubt.
+Zwei neue Namen eines Ref-Updates können einander im Weg stehen, ohne dass eine Datei existiert,
+etwa \type{heads/a} und \type{heads/a/b} oder zwei Namen, die sich nur in der
+Gross-/Kleinschreibung unterscheiden; der Hub lehnt den späteren ab.
+Die Payload nennt keinen Akteur: Die Identität folgt aus dem Schlüssel, und Modell und Session
+eines Agenten kennt der Hub nicht.
+Scheitert der Speicher nach dem Eintrag, sendet der Hub keine Quittung; der Klon erfährt den
+Ausgang aus der Liste der Referenzen.
+\stopinfobox
 
 \subsection{Garantien und Grenzen}
 

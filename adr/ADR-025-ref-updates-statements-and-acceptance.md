@@ -4,8 +4,10 @@
 for the ref update and its record, STEMMA-273 for the enforcement, with the addenda of STEMMA-274,
 STEMMA-276 and STEMMA-278) and carried into the ADRs by STEMMA-280. Nothing of it was measured.
 Built are the formats of the ref update and of the record with their writers and strict readers
-(STEMMA-291, see "The formats as built"); the statements and the accepting operation are not. The
-names of functions that are not built yet are a direction for the slices.
+(STEMMA-291, see "The formats as built") and the accepting operation for branches and tags
+(STEMMA-296, see "The accepting operation as built"); the statements, `accept_statement` and the
+gate on a hub are not. The names of functions that are not built yet are a direction for the
+slices.
 
 ## Context
 
@@ -204,8 +206,8 @@ the hub, and cuts it back to its old length after a failed write.
   entry once.
   The message that carries a range of the record through the protocol comes with its request.
 - The answer to a stale update is typed in the core (every reference that does not match, with
-  the hash of its last entry and its commit); the error message that carries it comes with the
-  accepting operation.
+  the hash of its last entry and its commit); the error message that carries it is `stale` (see
+  "The accepting operation as built").
 
 Example messages are checked in beside those of ADR-023 (`ref-update`, `receipt`). Their keys
 come from fixed seeds of the tests, so their signatures are reproducible; nobody may trust them.
@@ -361,6 +363,116 @@ without a clone (ADR-015):
    upload, and the quota and the removal treat them as every unnamed object.
 5. The record entry needs no second kind of signed part.
 6. Every later request is a new protocol number and changes no existing request.
+
+### The accepting operation as built
+
+Built in STEMMA-296 for branches and tags: `Repository::accept_ref_update` in `stemma-core`, with
+the reasons of a refusal in `stemma_core::protocol::refusal`. The gate on a hub, the purge, the
+owner override and `accept_statement` are not built.
+
+**The call.** It takes the ref update and a context: the address under which the hub was called,
+the ID of the repository, the destination of the record, the time of the hub, and the signer of
+the hub. It returns the record entry, which is the receipt, or an error. Two errors are answers
+to the sender, `Stale` and `Refused`; every other error is a failure of the hub (the lock is
+held, the record cannot be read or written or is damaged, the store or the signer fails). The
+call works on a bare repository only: a repository with a working copy moves its references
+through the operation log (ADR-011).
+
+**The destination of the record** is a trait with two methods: read the whole record, and append
+the bytes of one entry durably. The operation reads the record under the lock, so a second
+process of the hub cannot write between the reading and the entry. This first version reads and
+checks the whole record with every call, which is linear in the entries; the trigger for keeping
+the state of the chains between two calls is the measured holding time of the lock.
+
+**The order.** Before the lock: the address and the ID against the payload, and one question to
+the authorizer by the references as they are, because the lock of the references is opened with
+the proof of that question only (ADR-002). Nothing is decided by this pass that the pass under
+the lock does not decide again. Under the lock:
+
+1. The record is read and its chains are checked.
+2. An update that stopped after its entry is completed (see below), and every branch and tag
+   must be where the record leaves it. A reference that is elsewhere was moved past the
+   operation; the call fails and repairs nothing.
+3. `previous` and `old` of every reference against the chain of its name (`Stale`).
+4. The names of new references: a reserved prefix (ADR-008), and a name that another reference
+   holds in the file system, in the store or in the update itself, also one that differs in the
+   case of ASCII letters only.
+5. The connectivity of every new commit (ADR-023).
+6. The sender: the entry of the register at the tip of `main` before the update that holds the
+   key of the update as an active key. Without a `main`, the register of the commit that the
+   update sets `main` to, in which the key must be an active key of an owner (ADR-024).
+7. For every reference the authorizer, with the operation `push` for a branch, `tag` to set a
+   tag and `untag` to delete one, and for a branch the write ownership.
+8. The record entry with the signature of the hub, made durable by the destination.
+9. The moves, the deletions first, and the receipt.
+
+All refusals come before step 8, so only accepted updates are recorded.
+
+**Branches.** The write owner is the actor of the last record entry of the name, and the lease
+ends at the time of that entry plus the duration that `.stemma-policy` at the tip of `main`
+names. Another actor is refused before that time, with the holder and the end of the lease, and
+takes the branch from that time on. Every accepted move of a name is its next entry, so a move of
+the write owner begins a new lease. A name whose last entry deleted the branch has no write
+owner: nothing is there to own, and the chain of the name still shows who deleted it. The entry
+names the commit of the policy in a `policy` line exactly when the verdict rested on it, which
+is when a lease had ended and another actor took the branch; a move of the write owner and the
+creation of a free name read no policy.
+
+**Tags.** A tag has no write owner. It is set and deleted by the authorizer, and it never moves
+from one commit to another (ADR-008).
+
+**`main`.** The first push sets it, alone or with further references, which are judged by the
+register of the pushed commit as well. A repository without `main` accepts no update that does
+not set it. Every later update of `main` is refused with the reason `gate`, for an owner too,
+until the gate on a hub is built; so a push that removes the register of `main` is refused, and
+the deletion of `main` is too.
+
+**The actor.** The payload names no actor. The identity follows from the key, which stands once
+in a register. The authorizer is the one of an enforcing repository, as locally, so it is asked
+with an actor: for an agent, the model and the session, which are no part of the identity, are
+`-`, and the sponsor is the one of the register entry.
+
+**A stop between the entry and the moves.** The entry is durable before the first reference
+moves (the order of ADR-011), so a process that ends in between leaves an accepted update whose
+references stand partly at their old values. The next call for the repository reads the last
+entry under the lock and makes its moves again before it judges its own update. No earlier entry
+can be incomplete, because every call completes the last one before it appends. A reference of
+the last entry that is at neither its old nor its new value was not left by a stop; the call
+fails. A call whose storage fails after the entry reports that the entry is written and names
+it, and the hub sends no receipt: the client learns the outcome from the list of references.
+
+**The answers.** Both are kinds of the error message of ADR-023, read under number 1 only:
+
+```text
+stemma-protocol 1                                   a stale update (409)
+error stale
+ref <qualified name> <entry> <commit>               one or more, in the order of the names
+
+stemma-protocol 1                                   a refused update (403, or 422)
+error refused
+update <hub, repository, key or no-main> <fact>     one `update` line,
+ref <qualified name> <reason> <facts>               or one or more `ref` lines
+```
+
+- `stale` names every reference whose `previous` or `old` does not match, with the hash of the
+  last entry of its name and its commit, each `-` where there is none. A reference of the update
+  that matches is not named.
+- `refused` with an `update` line refuses the update as a whole: `hub <address>` and
+  `repository <id>` name what the hub is where the update names another, `key <commit>` names
+  the commit of `main` whose register does not hold the key, and `no-main -` answers an update
+  that does not set `main` in a repository without one.
+- `refused` with `ref` lines names every refused reference with its reason: `denied <operation>`,
+  `leased <human or agent> <id> <end of the lease>`, `gate -`, `reserved -`, `no-register -`,
+  `bad-register <text>`, `not-owner -`, `conflict <the name in the way>`, `incomplete <text>`
+  and `policy <text>`. A reference that is not named was not refused itself, and it did not move
+  either. A refusal with an `incomplete` reference is the 422 of ADR-023: the client uploads
+  once more.
+- After a refusal of the names or of the connectivity of the commit of a first push, the other
+  references are not judged, because their register lies in that commit.
+
+The reasons are one type, `Refused`, which the hub answers and the client reads. The holder of a
+lease is an identity there, as the record names it, where the local refusal names the actor of
+the lease file.
 
 ### A refusal names its reason, and only the evidence is shared
 

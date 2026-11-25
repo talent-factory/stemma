@@ -147,6 +147,9 @@ fn written(example_name: &str) -> Vec<u8> {
         }
         "ref-update" => record::tests::example_update().encode(),
         "receipt" => record::tests::example_receipt().encode(),
+        "error-stale" => refusal::tests::example_stale().encode(),
+        "error-refused" => refusal::tests::example_refused().encode(),
+        "error-refused-update" => refusal::tests::example_refused_update().encode(),
         other => panic!("no value for the example {other}"),
     }
 }
@@ -482,7 +485,8 @@ fn an_error_message_refuses_everything_else() {
         at(2, Malformed::Expected("error"))
     );
     for kind in [
-        "stale",
+        "quota",
+        "Stale",
         "Malformed",
         "malformed ",
         "",

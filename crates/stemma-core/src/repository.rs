@@ -54,6 +54,7 @@ use std::sync::{Arc, Mutex};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod accept;
 mod bounds;
 mod check;
 mod checkout;
@@ -79,6 +80,7 @@ mod switch;
 mod track;
 mod worktree;
 
+pub use accept::{AcceptContext, AcceptError, RecordDestination};
 pub use bounds::Pause;
 pub use check::CheckError;
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};
