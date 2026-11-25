@@ -3,8 +3,8 @@
 //! journal of a running fetch.
 
 use std::collections::{BTreeSet, HashSet};
-use std::fs::{self, File};
-use std::io::{self, BufRead, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -1527,6 +1527,9 @@ fn a_journal_that_cannot_be_written_or_removed_is_reported_and_the_objects_stay(
     let mut fetch = receiver.begin_fetch().unwrap();
     fetch.journal.file = File::open(journal_path(&receiver)).unwrap();
     let error = fetch.receive(&stream[..], Bounds::default()).unwrap_err();
+    // Nothing was written, and the cut after the failure failed on this handle too: the
+    // journal remembers where the next write has to cut first.
+    assert_eq!(fetch.journal.torn, Some("stemma-fetch 1\n".len() as u64));
     assert!(
         matches!(
             &error,
@@ -1611,4 +1614,273 @@ fn a_batch_is_durable_before_its_commits_are_reported() {
         batches,
         [&commits[..2], &commits[2..4], &commits[4..]].map(<[CommitId]>::to_vec)
     );
+}
+
+#[test]
+fn a_journal_whose_name_is_gone_or_leads_elsewhere_is_not_the_open_file() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let path = journal_path(&receiver);
+    // A second fetch opened the journal just before the first one ended and removed it.
+    let fetch = receiver.begin_fetch().unwrap();
+    let opened = OpenOptions::new().read(true).write(true).open(&path);
+    // On Windows the lock of the running fetch does not keep the file from being opened.
+    let opened = opened.unwrap();
+    assert!(names_file(&path, &opened));
+    fetch.finish().unwrap();
+    assert!(!names_file(&path, &opened));
+    // A third fetch made a new journal under the name: on Unix the file tells them apart.
+    let third = receiver.begin_fetch().unwrap();
+    assert_eq!(names_file(&path, &opened), !cfg!(unix));
+    assert!(names_file(&path, &third.journal.file));
+    // The handle that was opened too early is free to lock, and no fetch may use it.
+    drop(opened);
+    third.finish().unwrap();
+}
+
+#[test]
+fn a_torn_line_that_could_not_be_cut_is_cut_before_the_next_line() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let mut fetch = receiver.begin_fetch().unwrap();
+    // What a write leaves that failed in its middle and whose cut failed too.
+    let end = fetch.journal.file.seek(SeekFrom::End(0)).unwrap();
+    fetch.journal.file.write_all(b"commit b3:12").unwrap();
+    fetch.journal.torn = Some(end);
+
+    fetch
+        .receive(
+            &stream_of_commits(&sender, &[commit])[..],
+            Bounds::default(),
+        )
+        .unwrap();
+    assert_eq!(fetch.journal.torn, None);
+    drop(fetch);
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        format!("stemma-fetch 1\ncommit {commit}\n")
+    );
+}
+
+#[test]
+fn the_beginning_of_a_line_of_a_fetch_is_a_cut_line_and_nothing_else_is() {
+    let id = format!("b3:{}", "0123456789abcdef".repeat(4));
+    // The first line, at every length up to its line feed.
+    let header = "stemma-fetch 1\n";
+    for end in 0..=header.len() {
+        assert!(is_cut_line(&header.as_bytes()[..end], true), "{end}");
+    }
+    for tail in ["stemma-fetch 2", "stemma-fetch 1 ", "commit ", "x", "\n"] {
+        assert!(!is_cut_line(tail.as_bytes(), true), "{tail:?}");
+    }
+    // A line `commit <id>`, at every length up to the whole ID without its line feed.
+    let line = format!("commit {id}");
+    for end in 0..=line.len() {
+        assert!(is_cut_line(&line.as_bytes()[..end], false), "{end}");
+    }
+    for tail in [
+        format!("commit {id}0"),
+        format!("commit {id} "),
+        "commit B3:".to_owned(),
+        "commit b3:0g".to_owned(),
+        "commit b3:0A".to_owned(),
+        "commit  ".to_owned(),
+        "commit b4".to_owned(),
+        "commits".to_owned(),
+        "tree".to_owned(),
+        "stemma-fetch 1".to_owned(),
+    ] {
+        assert!(!is_cut_line(tail.as_bytes(), false), "{tail:?}");
+    }
+}
+
+#[test]
+fn a_whole_line_that_lacks_only_its_line_feed_is_cut_and_the_fetch_begins() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&receiver, &[("a.txt", "one\n")], vec![]);
+    for content in [
+        format!("stemma-fetch 1\ncommit {commit}"),
+        "stemma-fetch 1\ncommit ".to_owned(),
+        "stemma-fetch 1\nc".to_owned(),
+        "stemma-fetch 1".to_owned(),
+    ] {
+        fs::write(journal_path(&receiver), &content).unwrap();
+        let fetch = receiver.begin_fetch().unwrap();
+        assert!(fetch.resumed().is_empty(), "{content:?}");
+        drop(fetch);
+        assert_eq!(
+            fs::read_to_string(journal_path(&receiver)).unwrap(),
+            "stemma-fetch 1\n",
+            "{content:?}"
+        );
+    }
+}
+
+#[test]
+fn what_the_sender_delivered_goes_before_a_journal_that_cannot_be_written() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let good = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let bad = commit_of(&sender, &[("a.txt", "two\n")], vec![good]);
+    let after = commit_of(&sender, &[("a.txt", "three\n")], vec![bad]);
+    let mut stream = stream_of_commits(&sender, &[good, bad, after]);
+    let at = stream
+        .windows(4)
+        .position(|bytes| bytes == b"two\n")
+        .unwrap();
+    stream[at] = b'T';
+
+    let mut fetch = receiver.begin_fetch().unwrap();
+    fetch.journal.file = File::open(journal_path(&receiver)).unwrap();
+    let error = fetch.receive(&stream[..], Bounds::default()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ReceiveError::Connectivity(ConnectivityError::Missing { id, .. })
+                if *id == blob_id("two\n")
+        ),
+        "{error}"
+    );
+    // The check ended at the commit that is not connected: the one after it was not looked at.
+    assert!(fetch.connectivity.verified.contains(&good));
+    assert!(!fetch.connectivity.verified.contains(&after));
+}
+
+#[test]
+fn a_reader_that_returns_another_id_is_a_defect_and_not_an_incomplete_upload() {
+    let requested = blob_id("one\n");
+    let parsed = blob_id("two\n");
+    let mismatch = ConnectivityError::Unreadable {
+        needed_by: None,
+        source: Box::new(ReadError::IdMismatch { requested, parsed }),
+    };
+    assert!(!mismatch.is_incomplete());
+    assert_eq!(mismatch.kind(), FailureKind::Damaged);
+    assert!(mismatch.store_error().is_none());
+    assert!(mismatch.io_error().is_none());
+    // Without an object that names it, the message is that of the reader alone.
+    assert_eq!(
+        mismatch.to_string(),
+        ReadError::IdMismatch { requested, parsed }.to_string()
+    );
+
+    // The check never builds this value, and its class is that of the store error inside.
+    let path = PathBuf::from("objects/b3/00");
+    let inside = ConnectivityError::Unreadable {
+        needed_by: None,
+        source: Box::new(ReadError::Store(Box::new(StoreError::Io {
+            operation: "read the object file",
+            path,
+            source: io::Error::other("disk"),
+        }))),
+    };
+    assert_eq!(inside.kind(), FailureKind::Other);
+    assert!(inside.store_error().is_some());
+    assert!(inside.io_error().is_some());
+}
+
+/// A carrier that fails once the reader has taken its bytes.
+struct Broken<'a>(&'a [u8]);
+
+impl Read for Broken<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let count = available.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl BufRead for Broken<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.0.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::ConnectionReset, "reset"));
+        }
+        Ok(self.0)
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.0 = &self.0[count..];
+    }
+}
+
+#[test]
+fn a_carrier_that_fails_is_an_error_of_the_stream_and_what_arrived_is_kept() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let stream = stream_of_commits(&sender, &[commit]);
+
+    let mut fetch = receiver.begin_fetch().unwrap();
+    let error = fetch
+        .receive(Broken(&stream), Bounds::default())
+        .unwrap_err();
+    assert!(
+        matches!(error, ReceiveError::Stream(StreamError::Io(_))),
+        "{error}"
+    );
+    // A connection that broke is no failure of the file system of the repository.
+    assert!(error.io_error().is_none());
+    assert!(error.store_error().is_none());
+    assert!(!error.exceeds_bound());
+    assert_eq!(error.kind(), FailureKind::Other);
+    drop(fetch);
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        format!("stemma-fetch 1\ncommit {commit}\n")
+    );
+    assert!(tmp_names(&receiver).is_empty());
+}
+
+#[test]
+fn a_store_that_cannot_be_written_fails_the_upload_and_leaves_no_directory() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let hub = hub(&dir);
+    let commit = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let stream = stream_of_commits(&sender, &[commit]);
+
+    let error = {
+        let _denied = fault::deny_writes_in(&hub.metadata_dir().join("objects"));
+        hub.receive_objects(&stream[..], Bounds::default())
+            .unwrap_err()
+    };
+    assert!(matches!(error, ReceiveError::Store(_)), "{error}");
+    assert!(error.store_error().is_some());
+    assert_eq!(
+        error.io_error().map(io::Error::kind),
+        Some(io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(error.kind(), FailureKind::Other);
+    assert!(!hub.objects().contains(&commit.object_id()).unwrap());
+    assert!(tmp_names(&hub).is_empty(), "{:?}", tmp_names(&hub));
+    // The upload is repeated and passes.
+    hub.receive_objects(&stream[..], Bounds::default()).unwrap();
+    hub.check_connectivity(&[commit]).unwrap();
+}
+
+#[test]
+fn references_that_cannot_be_read_stop_a_fetch_before_it_makes_its_journal() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let commit = commit_of(&receiver, &[("a.txt", "one\n")], vec![]);
+    let _denied = fault::deny_reads_of(&receiver.metadata_dir().join("refs/heads"));
+
+    let error = receiver.begin_fetch().unwrap_err();
+    assert!(matches!(error, ReceiveError::Refs(_)), "{error}");
+    assert!(error.io_error().is_some());
+    assert!(error.store_error().is_none());
+    assert!(!journal_path(&receiver).exists());
+
+    let error = receiver.check_connectivity(&[commit]).unwrap_err();
+    assert!(matches!(error, ConnectivityError::Refs(_)), "{error}");
+    assert!(!error.is_incomplete());
+    assert!(error.io_error().is_some());
+    assert!(error.store_error().is_none());
 }

@@ -274,7 +274,7 @@ commit <ID>          null oder mehr, in der Reihenfolge der Ankunft
 
 \startitemize[n]
 \item Der Fetch öffnet das Journal und hält eine Sperre des Betriebssystems darauf; ein zweiter
-Fetch im selben Repository lehnt ab, solange der erste läuft.
+Fetch im selben Repository wird abgelehnt, solange der erste läuft.
 Auf einem Dateisystem ohne solche Sperren laufen beide, und eine Zeile kann verloren gehen;
 das kostet eine zweite Übertragung ihres Commits.
 \item Er sammelt die Objekte des Stroms in temporären Dateien.
@@ -292,13 +292,14 @@ Journal.
 Eine Zeile des Journals nennt also nur einen Commit, dessen Objekte dauerhaft gespeichert sind.
 Ein Absturz kostet höchstens die Objekte der letzten Gruppe, die noch nicht gesichert war.
 Das Journal ist dabei ein Hinweis und kein Beweis: Der nächste Fetch prüft jeden festgehaltenen
-Commit noch einmal und sendet nur, was noch besteht, etwa nicht mehr nach einem Purge, der ein
-Objekt entfernt hat.
+Commit noch einmal und sendet nur, was noch besteht; ein Commit besteht etwa nicht mehr nach
+einem Purge, der ein Objekt entfernt hat, oder wenn die Datei eines Objekts beschädigt ist.
 Von den bestehenden sendet er jene, die kein anderer von ihnen als Elter hat, denn ein
 \type{have} sagt, dass alles darunter vorhanden ist.
-Eine letzte Zeile ohne Zeilenende stammt von einem Prozess, der beim Schreiben endete; sie wird
-beim Öffnen abgeschnitten.
-Jedes andere Journal, das kein Fetch so schreibt, lehnt der Leser mit der Nummer der Zeile ab.
+Eine letzte Zeile ohne Zeilenende, die der Anfang einer Zeile ist, wie ein Fetch sie schreibt,
+stammt von einem Prozess, der beim Schreiben endete; sie wird beim Öffnen abgeschnitten.
+Jeden anderen Inhalt, auch in einer letzten Zeile ohne Zeilenende, lehnt der Leser mit der
+Nummer der Zeile ab.
 
 \subsection{Nachrichten und Anfragen}
 

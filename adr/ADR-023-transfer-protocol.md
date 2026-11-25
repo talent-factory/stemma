@@ -201,18 +201,22 @@ for the upload on a hub, `Repository::check_connectivity` for the check of a ref
   the order of arrival. A fetch holds a lock of the system on it, so a second fetch in the same
   repository is refused while the first runs; on a file system without locks of files two
   fetches at once may lose lines of each other, which costs a second transfer of those commits.
-  A commit that a reference reaches, or that the journal or the walk of this fetch found
-  complete already, gets no line. A line is written, and the file flushed, only
+  A commit that a reference reaches, or that this fetch found complete already (at its start
+  from the journal, or since), gets no line; a recorded commit that did not hold at the start
+  gets a second line when it arrives again. A line is written, and the file flushed, only
   after the objects of the commit are durable and the commit passed the check. The journal is a
   hint and no proof: the next fetch checks every recorded commit again and sends as `have` those
   that still hold and that no other of them has as a parent. A recorded commit that lost an
-  object since, as after a purge, is fetched again. A last line without a line feed is left by
-  a process that ended while it wrote and is cut off when the journal is opened; any other
-  content that no fetch writes is refused with its line. The journal is removed after the
+  object since, as after a purge, or that reaches an object whose file is damaged, is fetched
+  again. A last line without a line feed that is the beginning of a line a fetch writes was
+  left by a process that ended while it wrote, and is cut off when the journal is opened;
+  every other content, also in a last line without a line feed, is refused with the number of
+  its line. The journal is removed after the
   remote references have moved.
 - **`have`.** A fetch sends the commits of its branches, its tags and its remote references, and
-  the commits of the journal. The tags were added to the decision above by this slice, because
-  the walk takes them as complete too.
+  the commits of the journal that still hold and that no other of them has as a parent. The
+  tags were added to the decision above by this slice, because the walk takes them as complete
+  too.
 - **The check and the lock.** `Fetch::check` does not read a commit again that the fetch found
   complete while it received, without the lock of the references. A purge between that read
   and the move of a remote reference is not seen by it; the slice that moves the references

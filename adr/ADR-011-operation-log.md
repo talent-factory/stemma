@@ -367,7 +367,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   that write from before their first object (ADR-014), the moves of `Repository`, and the purge
   with its resume and abort. The one writer without the lock, the receiving side of an object
   stream, writes into a directory of its own below `tmp/` and no file into `tmp/` itself (see
-  "The log and a hub", STEMMA-289). Whoever takes the lock is therefore the only writer (but see the advisory lock
+  "The log and a hub", STEMMA-289).
+  Whoever takes the lock is therefore the only writer (but see the advisory lock
   below), and every file in `tmp/` is left over from a write that failed or was interrupted. Right
   after the lock is taken and no journal of a purge is found (or `--resume` or `--abort` took the
   lock over), every name in `tmp/` that is not a directory is removed, without following a link,

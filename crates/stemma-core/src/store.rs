@@ -1260,9 +1260,9 @@ pub(crate) fn create_temp(
 ///
 /// It is best effort: a name that cannot be removed stays, and the next writer tries again, as a
 /// cleanup must not stop a change; [`scratch_left`] lists what stayed. An entry is never followed:
-/// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory in
-/// `tmp/` stays: the receiving side of an object stream, which holds no lock, makes one for its
-/// temporary files and removes it itself (`receive-…`, ADR-023). A directory of the working copy whose name only starts
+/// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory
+/// in `tmp/` stays: the receiving side of an object stream, which holds no lock, makes one for
+/// its temporary files and removes it itself (`receive-…`, ADR-023). A directory of the working copy whose name only starts
 /// like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
     if let Ok(entries) = fault::read_dir(&root.join("tmp")) {

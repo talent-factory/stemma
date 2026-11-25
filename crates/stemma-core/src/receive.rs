@@ -35,9 +35,10 @@
 //! commit <id>                     zero or more, in the order in which they arrived
 //! ```
 //!
-//! A last line without a line feed is left by a process that ended while it wrote, and is cut
-//! off when the journal is opened. A commit may stand more than once: one that was recorded,
-//! lost its objects, and arrived again.
+//! A last line without a line feed is left by a process that ended while it wrote. It is cut
+//! off when the journal is opened, if it is the beginning of a line that a fetch writes; any
+//! other end is refused as damage, like every other content that no fetch writes. A commit may
+//! stand more than once: one that was recorded, lost its objects, and arrived again.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
@@ -90,8 +91,13 @@ const MAX_JOURNAL_LEN: u64 = 1 << 30;
 /// How often a receiving operation tries a new name for its directory.
 const DIR_ATTEMPTS: usize = 16;
 
+/// How often a fetch opens the journal again because a fetch that ended removed the file that it
+/// had opened.
+const JOURNAL_ATTEMPTS: usize = 16;
+
 /// The count of objects of a stream since the last batch, with those that the store had already,
-/// from which a receiver makes them durable at the next commit of the stream. The tests take a small count, so that a short stream fills a batch.
+/// from which a receiver makes them durable at the next commit of the stream. The tests take a
+/// small count, so that a short stream fills a batch.
 const FLUSH_OBJECTS: u64 = if cfg!(test) { 4 } else { 1024 };
 
 /// The bytes of the bodies of these objects from which a receiver makes them durable at the
@@ -178,8 +184,10 @@ pub enum ConnectivityError {
         needed_by: Option<ObjectId>,
     },
     /// A tree or a commit that the walk reached is intact as an object, and the strict reader
-    /// refuses its body (ADR-005). The source is never [`ReadError::Store`]: an error of the
-    /// store is [`Store`](Self::Store), and another kind is [`WrongKind`](Self::WrongKind).
+    /// refuses its body (ADR-005), or returns a value with another ID than the one it was read
+    /// by ([`ReadError::IdMismatch`], a defect of the reader). The source is never
+    /// [`ReadError::Store`]: an error of the store is [`Store`](Self::Store), and another kind
+    /// is [`WrongKind`](Self::WrongKind).
     Unreadable {
         /// The commit or the tree that names it, or `None` if it is a tip that the caller named.
         needed_by: Option<ObjectId>,
@@ -199,7 +207,9 @@ pub enum ConnectivityError {
 impl ConnectivityError {
     /// Whether the objects do not hold together: one is missing, has the wrong kind, or is
     /// refused by a strict reader. A hub answers that with the request to upload again
-    /// (ADR-023). `false` for a failure of the storage or of the own repository.
+    /// (ADR-023). `false` for a failure of the storage or of the own repository, and for a
+    /// reader that returned a value with another ID ([`ReadError::IdMismatch`]), which is a
+    /// defect of the reader that no upload mends.
     pub fn is_incomplete(&self) -> bool {
         match self {
             Self::Missing { .. } | Self::WrongKind { .. } => true,
@@ -233,7 +243,11 @@ impl ConnectivityError {
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
             Self::Refs(source) => source.io_error(),
-            _ => self.store_error().and_then(StoreError::io_error),
+            Self::Missing { .. }
+            | Self::WrongKind { .. }
+            | Self::Unreadable { .. }
+            | Self::Store(_)
+            | Self::Own(_) => self.store_error().and_then(StoreError::io_error),
         }
     }
 }
@@ -394,7 +408,8 @@ pub enum ReceiveError {
     /// The connectivity check of a fetch failed: a commit of the stream is not connected (an
     /// object below it is missing, has the wrong kind, or is refused by a strict reader;
     /// [`ConnectivityError::is_incomplete`]), or the check itself could not be made, because
-    /// the storage failed or the history below the own references cannot be read. Only a fetch
+    /// the storage failed, the history below the own references cannot be read, or a reader
+    /// returned a value with another ID. Only a fetch
     /// checks while it receives.
     Connectivity(ConnectivityError),
     /// The journal of the fetch failed.
@@ -750,7 +765,7 @@ fn finish(
 }
 
 /// The connectivity check (ADR-023) with what it has learned so far, so that a receiver that
-/// checks commit by commit reads no object twice.
+/// checks commit by commit checks no commit, tree, or blob twice.
 struct Connectivity<'a> {
     store: &'a FsObjectStore,
     /// Commits that an own reference reaches, as far as the walk below the references has come.
@@ -1013,10 +1028,31 @@ fn is_cut_line(tail: &[u8], first: bool) -> bool {
         })
 }
 
+/// Whether `path` still leads to the open `file`: on Unix by the device and the number of the
+/// file, elsewhere by a name that exists. `false` if the name is gone or cannot be inspected.
+fn names_file(path: &Path, file: &File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!(
+            (fs::symlink_metadata(path), file.metadata()),
+            (Ok(named), Ok(open)) if named.dev() == open.dev() && named.ino() == open.ino()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        fs::symlink_metadata(path).is_ok()
+    }
+}
+
 /// The open journal of a running fetch, with the lock of the system on it.
 struct Journal {
     path: PathBuf,
     file: File,
+    /// The length that the file had before a write that failed, if what the write left could
+    /// not be cut off again. The next write cuts there first.
+    torn: Option<u64>,
 }
 
 impl Journal {
@@ -1030,7 +1066,12 @@ impl Journal {
 
     /// Opens the journal in the metadata directory `root`, or makes it, takes the lock on it,
     /// and returns the commits that it records, each once, in the order of the file. A last line
-    /// that was cut off is removed from the file.
+    /// without a line feed is removed from the file if it is the beginning of a line that a fetch
+    /// writes ([`is_cut_line`]), and refused as damage if not.
+    ///
+    /// A fetch that ends removes the name of the journal while it holds the lock. A lock that
+    /// is taken on a file that was opened just before counts therefore only if the name still
+    /// leads to that file; else the journal is opened again.
     ///
     /// If the lock cannot be taken for another reason than a fetch that holds it, as on a file
     /// system without locks of files, the journal is used without the lock. Two fetches at once
@@ -1041,15 +1082,29 @@ impl Journal {
         let path = root.join(FETCH_JOURNAL);
         let mut options = OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        let file = fault::open_with(&options, &path).map_err(|source| FetchJournalError::Io {
-            operation: "open the journal of the fetch",
-            path: path.clone(),
-            source,
-        })?;
-        if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
-            return Err(FetchJournalError::Running { path });
-        }
-        let mut journal = Self { path, file };
+        let mut attempts = 0;
+        let file = loop {
+            let file =
+                fault::open_with(&options, &path).map_err(|source| FetchJournalError::Io {
+                    operation: "open the journal of the fetch",
+                    path: path.clone(),
+                    source,
+                })?;
+            if matches!(file.try_lock(), Err(TryLockError::WouldBlock)) {
+                return Err(FetchJournalError::Running { path });
+            }
+            attempts += 1;
+            // After the last attempt the file is used as it is: the fetches that end one after
+            // the other so fast lose a resumption at most.
+            if names_file(&path, &file) || attempts == JOURNAL_ATTEMPTS {
+                break file;
+            }
+        };
+        let mut journal = Self {
+            path,
+            file,
+            torn: None,
+        };
         let mut bytes = Vec::new();
         (&journal.file)
             .take(MAX_JOURNAL_LEN + 1)
@@ -1083,7 +1138,8 @@ impl Journal {
         }
         if whole == 0 {
             journal.append(&format!("{JOURNAL_HEADER}\n"))?;
-            // The entry of a new file is flushed; that of a file that was there needs none.
+            // The entry of a new file is flushed. A file that was there and empty, or cut in its
+            // first line, takes the same way, where the flush does no harm.
             flush_directory(root).map_err(|source| FetchJournalError::Io {
                 operation: "flush the directory",
                 path: root.to_path_buf(),
@@ -1125,11 +1181,18 @@ impl Journal {
         Ok(commits)
     }
 
-    /// Writes `text` at the end of the journal and flushes the file. If the write fails, what
-    /// it wrote is cut off again, best effort, so that a later write does not end a torn line
-    /// with its own line feed.
+    /// Writes `text` at the end of the journal and flushes the file. If the write or the flush
+    /// fails, what
+    /// it wrote is cut off again, so that a later write does not end a torn line with its own
+    /// line feed. If that fails too, the next write cuts first, and fails if it cannot.
     fn append(&mut self, text: &str) -> Result<(), FetchJournalError> {
         let operation = "write the journal of the fetch";
+        if let Some(end) = self.torn {
+            self.file
+                .set_len(end)
+                .map_err(self.io("cut a torn line of the journal of the fetch"))?;
+            self.torn = None;
+        }
         let end = self
             .file
             .seek(SeekFrom::End(0))
@@ -1138,8 +1201,8 @@ impl Journal {
             .file
             .write_all(text.as_bytes())
             .and_then(|()| self.file.sync_all());
-        if written.is_err() {
-            let _ = self.file.set_len(end);
+        if written.is_err() && self.file.set_len(end).is_err() {
+            self.torn = Some(end);
         }
         written.map_err(self.io(operation))
     }
@@ -1158,7 +1221,7 @@ impl Journal {
 
     /// Removes the journal and flushes its directory.
     fn remove(self) -> Result<(), FetchJournalError> {
-        let Self { path, file } = self;
+        let Self { path, file, .. } = self;
         let io = |operation: &'static str, at: &Path| {
             let at = at.to_path_buf();
             move |source| FetchJournalError::Io {
@@ -1167,12 +1230,15 @@ impl Journal {
                 source,
             }
         };
-        // The name goes while the lock is held: a fetch that opens the file before sees the
-        // lock, and one that comes after makes a new file. Where a file that is open cannot be
-        // removed, the file is closed first.
+        // The name goes while the lock is held: a fetch that opened the file before finds the
+        // lock held or the name gone (see `open`), and one that comes after makes a new file.
+        // Windows may refuse to remove a file that is open; only there the removal is tried
+        // again once the file is closed, without the lock.
         let mut removed = fault::remove_file(&path);
         drop(file);
-        if matches!(&removed, Err(error) if error.kind() != io::ErrorKind::NotFound) {
+        if cfg!(windows)
+            && matches!(&removed, Err(error) if error.kind() != io::ErrorKind::NotFound)
+        {
             removed = fault::remove_file(&path);
         }
         match removed {
@@ -1200,10 +1266,11 @@ impl Journal {
 ///    [`finish`](Self::finish), which removes the journal.
 ///
 /// A fetch that fails at step 2 or 3 is dropped. Its journal stays, and the next fetch sends the
-/// recorded commits as further `have` lines, so the remote sends only what is still missing.
-/// The value holds the lock of the system on the journal, where the file system has one: a second fetch in the same repository
-/// is refused while it lives ([`FetchJournalError::Running`]), and on Windows no other handle
-/// reads the file meanwhile.
+/// recorded commits that still hold as further `have` lines ([`have`](Self::have)), so the
+/// remote sends only what is still missing.
+/// The value holds the lock of the system on the journal, where the file system has one: a
+/// second fetch in the same repository is refused while it lives
+/// ([`FetchJournalError::Running`]), and on Windows no other handle reads the file meanwhile.
 #[must_use = "a fetch that is dropped keeps its journal for the next one; `finish` removes it"]
 pub struct Fetch<'a> {
     repository: &'a Repository,
@@ -1226,7 +1293,8 @@ impl fmt::Debug for Fetch<'_> {
 impl Fetch<'_> {
     /// The commits to send as `have`: the commits that the branches, the tags, and the remote
     /// references of the repository name, and the commits of the journal that still hold and
-    /// that no other of them has as a parent. The set is that of the start of the fetch: a
+    /// that no other of them has as a parent; a recorded commit that an own reference reaches by
+    /// now is not among them. The set is that of the start of the fetch: a
     /// commit that [`receive`](Self::receive) records afterwards is not added.
     pub fn have(&self) -> &BTreeSet<CommitId> {
         &self.have
@@ -1234,18 +1302,18 @@ impl Fetch<'_> {
 
     /// The commits that an earlier fetch recorded in the journal and that the check found
     /// complete again when this fetch began, in the order of the journal. A recorded commit
-    /// whose objects are gone since, or that an own reference reaches by now, is left out.
+    /// whose objects are gone since, that reaches an object whose file is damaged, or that an
+    /// own reference reaches by now, is left out.
     pub fn resumed(&self) -> &[CommitId] {
         &self.resumed
     }
 
     /// Stores the objects of a stream, checks every commit of it for connectivity once its
     /// objects are durable, and records in the journal those that are complete and were not
-    /// before: a commit that a reference reaches or that the journal names gets no line. May be
-    /// called for several streams.
+    /// before: a commit that a reference reaches, or that this fetch found complete already (at
+    /// its start from the journal, or since), gets no line. A recorded commit that did not hold
+    /// at the start gets a second line when it arrives again. May be called for several streams.
     ///
-    /// A commit that this fetch found complete before, as an ancestor of another one, gets no
-    /// line either.
     ///
     /// When the stream is cut off or fails, the objects that were read whole are stored, and
     /// their commits are checked and recorded, before the error is returned: what arrived is
@@ -1261,8 +1329,10 @@ impl Fetch<'_> {
     /// (the storage fails, or the history below the own references cannot be read), and
     /// [`ReceiveError::Journal`] if the journal cannot be written. If several fail, the first
     /// of this order is returned: the store, the connectivity, the journal, the bound of the
-    /// request, the stream. An error of the stream is therefore not returned if the objects that
-    /// arrived before it cannot be stored, checked, or recorded.
+    /// request, the stream. The bound goes before a stream that only ends there; a frame that
+    /// the reader refuses at the bound is an error of the stream. An error of the stream is
+    /// therefore not returned if the objects that arrived before it cannot be stored, checked,
+    /// or recorded.
     pub fn receive<R: BufRead>(
         &mut self,
         stream: R,
@@ -1318,7 +1388,8 @@ impl Fetch<'_> {
     ///
     /// # Errors
     ///
-    /// See [`Repository::check_connectivity`].
+    /// See [`Repository::check_connectivity`], without [`ConnectivityError::Refs`]: the
+    /// references were read when the fetch began.
     pub fn check(&mut self, want: &BTreeSet<CommitId>) -> Result<(), ConnectivityError> {
         want.iter()
             .try_for_each(|&commit| self.connectivity.ensure_complete(commit))
@@ -1378,9 +1449,9 @@ impl Repository {
     /// (ADR-015). An object that the walk does not reach is no error.
     ///
     /// The cost is the new commits and trees, the header of every new blob, and the trees of
-    /// the parents at the changed paths, and, unless every tip is named by an own reference,
-    /// one read of every commit below the own references: only the whole of that history says
-    /// that a new commit is not part of it.
+    /// the parents at the changed paths, and, as soon as the walk meets a commit that no own
+    /// reference reaches, one read of every commit below the own references: only the whole of
+    /// that history says that a new commit is not part of it.
     ///
     /// A hub calls this for the new tip of a ref update before it accepts it (ADR-025). It
     /// takes no lock; a caller that names the tips afterwards holds the lock of the references
@@ -1418,10 +1489,11 @@ impl Repository {
     /// [`ReceiveError::Refs`] with [`RefError::Bare`] in a bare repository, which has no remote
     /// and writes no `fetch` entry, and if the references cannot be read,
     /// [`ReceiveError::Journal`] if the journal cannot be opened, is damaged, or is held by
-    /// another fetch, and [`ReceiveError::Connectivity`] if the storage fails or the history
-    /// below the own references cannot be read while the recorded commits are checked. A
-    /// recorded commit that is not complete any more, or that reaches an object whose file is
-    /// damaged, is no error: it is not resumed and arrives again.
+    /// another fetch, and [`ReceiveError::Connectivity`] if the storage fails, the history
+    /// below the own references cannot be read, or a reader returns a value with another ID
+    /// while the recorded commits are checked. A recorded commit that is not complete any more,
+    /// or that reaches an object whose file is damaged, is no error: it is not resumed and
+    /// arrives again.
     pub fn begin_fetch(&self) -> Result<Fetch<'_>, ReceiveError> {
         self.require_oplog("fetch").map_err(ReceiveError::from)?;
         // The references are read before the journal is made: a refusal leaves no file.
@@ -1435,7 +1507,8 @@ impl Repository {
                 // An own reference reaches it by now.
                 Ok(()) => {}
                 // Its objects are gone since, as after a purge, or the file of one is damaged:
-                // it is fetched again, and the transfer writes a damaged file anew.
+                // it is fetched again. The transfer writes a damaged file anew where the store
+                // can replace it; else the fetch fails there, with the damage as its error.
                 Err(error) if error.is_incomplete() || error.is_damaged_object() => {}
                 Err(error) => return Err(ReceiveError::Connectivity(error)),
             }
