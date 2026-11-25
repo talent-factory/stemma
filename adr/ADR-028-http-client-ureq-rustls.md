@@ -1,11 +1,11 @@
 # ADR-028: `ureq` with rustls for the HTTP client
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-272) and carried
-into the ADRs by STEMMA-280. The dependency is not added yet; the slice that adds it changes
-`deny.toml` and is therefore a level 3 change (ADR-004). The numbers come from the research note
+into the ADRs by STEMMA-280. The numbers of the decision come from the research note
 `docs/research/stemma-268-http-crates.md` on the branch `feat/stemma-268-research-http-crates`
-(STEMMA-268), which resolved the trees in a scratch crate against `deny.toml`. No variant was
-built with Rust 1.89, on Linux or on Windows, and no transfer was run.
+(STEMMA-268), which resolved the trees in a scratch crate against `deny.toml`. The crate
+`stemma-remote` with the dependency was added by STEMMA-301, a level 3 change (ADR-004) because it
+changes `deny.toml`; see "As built".
 
 ## Context
 
@@ -77,12 +77,72 @@ Rejected:
   and checked without trusting TLS (ADR-026).
 - A hub terminates TLS as it chooses. How the hub of stemma-hub does it is decided there.
 
+## As built
+
+STEMMA-301 added the crate `stemma-remote` with `ureq` 3.5 (`default-features = false`,
+feature `rustls`) and the four exceptions of `deny.toml`.
+
+- **The tree.** `Cargo.lock` gained 24 package names, the count of the research note, and two
+  second versions of names that were there: `getrandom` 0.2 and `windows-sys` 0.52, both through
+  `ring`; `cargo deny check` reports them as warnings. Eight of the 24 are the target crates of
+  `windows-sys` 0.52, which are built on Windows only.
+- **The mapping.** The client is `HttpTransport`, which implements `Transport` and maps its
+  requests to the paths of ADR-023 below the address of the repository. A request body and the
+  body of an answer are streamed through `Read`. The token travels as `Authorization: Bearer`
+  with every request after the sign-in, except the two requests of a sign-in.
+- **The media types.** ADR-022 leaves it to this slice how the transport tells a message from an
+  error message without reading the body. A body of the protocol carries
+  `application/vnd.stemma.message` or `application/vnd.stemma.error`. A message is a 2xx status
+  with the first, an error message a 4xx or 5xx status with the second; a 204 is a message
+  without a body. Every other answer is `TransportError::NoAnswer` with the status in its words:
+  a redirect with its new address, a page of a proxy, a status and a media type that disagree,
+  and a body with a content encoding.
+- **The status.** The client keeps the status of the last answer as the coarse class of the
+  table of ADR-023 (`Status`: the codes of the table, a 401 with `WWW-Authenticate: Bearer`,
+  `Retry-After` in seconds for 429 and 503, and the new address of a 3xx). A command reads it for
+  what the body does not say, such as the exit code 6 of a busy hub or that a remote needs a
+  sign-in. The retries of a 503 belong to the command slices, because a request body is a stream
+  that the transport cannot send a second time.
+- **The timeouts.** 30 seconds to resolve the name of the host and again 30 seconds to connect,
+  including the TLS handshake, and 60 seconds of idle time for every single read and write
+  (`timeout_per_read`, `timeout_per_write` of `ureq`). No timeout covers a whole request.
+- **The CA file.** `ureq` takes either the compiled-in roots or a list of its own, not both. With
+  a CA file the certificates of the file are therefore the only roots of that remote, in place of
+  the Mozilla roots, not in addition to them. That is what a hub with an own CA needs, and it is
+  stricter: a public CA cannot issue a certificate for that hub. A file that cannot be read or
+  holds no certificate in PEM is a typed error when the transport is made.
+- **Proxies.** A connection with `https://` uses the proxy of the environment (`ALL_PROXY`,
+  `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`) through `CONNECT`, so the proxy sees no token; one with
+  `http://` towards a loopback address uses none.
+- **No token in a log.** `ureq` writes the raw bytes of every request, with the
+  `Authorization` header, at the log level `trace`, and redacts the header at `debug`. The crate
+  turns on the features `max_level_debug` and `release_max_level_debug` of `log`, which remove the
+  records at `trace` from the whole build; a constant assertion in the crate fails the build if
+  the level is raised. No crate of the workspace installs a logger today.
+- **Not yet.** The compression with zstd (ADR-029): the client sends no `Accept-Encoding` and
+  treats a body with a content encoding as no answer. The upload of objects, the statements, the
+  record, and the anchors come with the slices that add their methods to `Transport`.
+
+How the client is tested without a server: the tests of `stemma-remote` run a scripted responder
+on a loopback socket, written with the standard library, that answers each request with bytes
+that the test sets and records what the client sent. With a test CA in `tests/data/test-ca` it
+speaks TLS through rustls, which the tree already holds. The tests cover the mapping of every
+status of the table, a status and a media type that disagree, the redirect that is not followed,
+the refused `http://` address, the idle timeout before and inside an answer, a body that ends
+early, a request body that cannot be read, the CA file, and that the token is in no error, no
+`Debug` form, and no log record. The end-to-end tests against a hub stay in stemma-hub
+(ADR-022).
+
 ## Open Points
 
 - [ ] The last release of `ring` is of March 2025. An advisory as unmaintained would fail
-      `just deps`; the way out is `aws-lc-rs` or `native-tls`.
+      `just deps`; the way out is `aws-lc-rs` or `native-tls`. `cargo audit` reported none on
+      2026-11-25 (STEMMA-301); the point stays open as a watch.
 - [ ] The build with Rust 1.89 and on Windows, the owners of the crates on crates.io, and
       `cargo deny check` with the exceptions belong to the level 3 review of the change that adds
-      the dependency.
+      the dependency. STEMMA-301 ran `cargo deny check` with the exceptions and the build and the
+      tests with Rust 1.89 on macOS; the build on Windows and on Linux is left to the CI run of
+      its pull request, and the owners to the human review.
 - [ ] Notice of the third-party licences in the distribution of a release (see ADR-020).
-- [ ] How the HTTP client is tested in this repository without a server. Left to the slice.
+- [x] How the HTTP client is tested in this repository without a server: with a scripted
+      responder on a loopback socket and a test CA (STEMMA-301, see "As built").
