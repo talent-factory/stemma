@@ -477,21 +477,25 @@ fn a_side_that_fails_before_it_answers_is_a_failure_of_the_transport() {
 }
 
 #[test]
-fn a_request_that_cannot_be_read_from_its_reader_is_an_error_of_the_carrier() {
+fn a_request_that_cannot_be_read_from_its_reader_is_an_error_of_the_request() {
     let mut transport = MemoryTransport::new(Refusing::new(|| panic!("the side was asked")));
 
     let failure = transport.fetch(&mut Broken).unwrap_err();
 
-    assert!(failure.io_error().is_some(), "{failure}");
+    assert!(matches!(failure, TransportError::Request(_)), "{failure}");
+    assert!(failure.io_error().is_some());
     assert_eq!(
         failure.to_string(),
-        "the transport failed: the reader failed"
+        "the request could not be read: the reader failed"
     );
+    let carrier = TransportError::Carrier(io::Error::other("no route"));
+    assert!(carrier.io_error().is_some());
+    assert_eq!(carrier.to_string(), "the transport failed: no route");
     assert_eq!(transport.side().asked.get(), 0);
 }
 
 #[test]
-fn the_debug_form_of_an_answer_names_the_case_and_reads_nothing() {
+fn the_debug_form_of_an_answer_names_the_case() {
     let mut transport = MemoryTransport::new(Refusing::new(|| {
         Refusal::from(ErrorMessage::UnsupportedVersion(Spoken::here()))
     }));
@@ -511,4 +515,71 @@ fn the_debug_form_of_an_answer_names_the_case_and_reads_nothing() {
         format!("{:?}", transport.refs().unwrap()),
         "Answer::Message(..)"
     );
+}
+
+/// A side that writes the beginning of a stream and then refuses.
+struct HalfWritten {
+    refusal: fn() -> Refusal,
+}
+
+impl OtherSide for HalfWritten {
+    fn refs(&self) -> Result<RefList, Refusal> {
+        Err((self.refusal)())
+    }
+
+    fn fetch(&self, _request: &FetchRequest, stream: &mut dyn Write) -> Result<(), Refusal> {
+        stream.write_all(b"stemma-protocol 1\nblob 3").unwrap();
+        Err((self.refusal)())
+    }
+}
+
+#[test]
+fn what_a_side_wrote_before_it_refused_does_not_travel() {
+    let request = examples::ALL
+        .iter()
+        .find(|example| example.message == Message::FetchRequest)
+        .unwrap();
+    let expected = ErrorMessage::UnsupportedVersion(Spoken::here());
+
+    let mut transport = MemoryTransport::new(HalfWritten {
+        refusal: || Refusal::from(ErrorMessage::UnsupportedVersion(Spoken::here())),
+    });
+    let mut bytes = request.bytes;
+    let Answer::Error(mut body) = transport.fetch(&mut bytes).unwrap() else {
+        panic!("expected an error");
+    };
+    let mut answered = Vec::new();
+    body.read_to_end(&mut answered).unwrap();
+    assert_eq!(answered, expected.encode());
+
+    let mut transport = MemoryTransport::new(HalfWritten {
+        refusal: || Refusal::Failed("the store could not be read".to_owned()),
+    });
+    let mut bytes = request.bytes;
+    let failure = transport.fetch(&mut bytes).unwrap_err();
+    assert!(
+        matches!(failure, TransportError::NoAnswer { .. }),
+        "{failure}"
+    );
+}
+
+#[test]
+fn the_source_of_a_transport_error_is_the_cause_of_its_cause() {
+    use std::error::Error as _;
+
+    use crate::testutil::DiskError;
+
+    // The message prints the error of the carrier, so the source is what lies below it.
+    for failure in [
+        TransportError::Request(io::Error::other(DiskError)),
+        TransportError::Carrier(io::Error::other(DiskError)),
+    ] {
+        let below = DiskError.source().map(ToString::to_string);
+        assert_eq!(failure.source().map(ToString::to_string), below);
+        assert!(failure.to_string().ends_with(&DiskError.to_string()));
+    }
+    let failure = TransportError::NoAnswer {
+        detail: "a page".to_owned(),
+    };
+    assert!(failure.source().is_none());
 }

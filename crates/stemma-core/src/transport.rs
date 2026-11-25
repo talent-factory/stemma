@@ -32,6 +32,9 @@ use crate::protocol::{ErrorMessage, FetchRequest, RefList};
 /// A body that ends before the other side has sent all of it is reported by the carrier: its
 /// reader returns an error, never an early end. The readers of the protocol take an early end
 /// for a shorter message, because no message carries a count or an end mark (ADR-023).
+///
+/// The caller may drop a body before its end, for example after a reader refused it. The next
+/// request is allowed then, and the transport discards what was left.
 pub type Body<'a> = Box<dyn BufRead + 'a>;
 
 /// What the other side answered to a request. The transport tells the two cases apart, because
@@ -66,8 +69,8 @@ pub trait Transport {
     ///
     /// # Errors
     ///
-    /// [`TransportError::Io`] if the carrier fails, and [`TransportError::NoAnswer`] if what
-    /// comes back is no answer of the other side.
+    /// [`TransportError::Carrier`] if the carrier fails, and [`TransportError::NoAnswer`] if
+    /// what comes back is no answer of the other side.
     fn refs(&mut self) -> Result<Answer<'_>, TransportError>;
 
     /// Sends a fetch request, which `request` holds as
@@ -77,8 +80,9 @@ pub trait Transport {
     ///
     /// # Errors
     ///
-    /// [`TransportError::Io`] if `request` cannot be read or the carrier fails, and
-    /// [`TransportError::NoAnswer`] if what comes back is no answer of the other side.
+    /// [`TransportError::Request`] if `request` cannot be read, [`TransportError::Carrier`] if
+    /// the carrier fails, and [`TransportError::NoAnswer`] if what comes back is no answer of the
+    /// other side.
     fn fetch(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError>;
 }
 
@@ -87,8 +91,12 @@ pub trait Transport {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TransportError {
-    /// The carrier failed, or the request could not be read.
-    Io(io::Error),
+    /// The body of the request could not be read from its reader, which is on this side: for an
+    /// upload it is the local store. Whether anything reached the other side is not known.
+    Request(io::Error),
+    /// The carrier failed: the other side was not reached, or the connection broke before the
+    /// answer began.
+    Carrier(io::Error),
     /// Something came back that is no answer of the other side in the protocol: the other side
     /// failed before it could answer, or something between the two sides answered in its place.
     NoAnswer {
@@ -98,10 +106,10 @@ pub enum TransportError {
 }
 
 impl TransportError {
-    /// The error of the carrier or of the reader of the request, if that is what failed.
+    /// The error of the reader of the request or of the carrier, if that is what failed.
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::Request(error) | Self::Carrier(error) => Some(error),
             Self::NoAnswer { .. } => None,
         }
     }
@@ -110,7 +118,8 @@ impl TransportError {
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(f, "the transport failed: {error}"),
+            Self::Request(error) => write!(f, "the request could not be read: {error}"),
+            Self::Carrier(error) => write!(f, "the transport failed: {error}"),
             Self::NoAnswer { detail } => {
                 write!(f, "the other side gave no answer of the protocol: {detail}")
             }
@@ -123,23 +132,19 @@ impl Error for TransportError {
         match self {
             // The message includes the message of the cause, so the source is the cause of the
             // cause (see the crate documentation).
-            Self::Io(error) => error.source(),
+            Self::Request(error) | Self::Carrier(error) => error.source(),
             Self::NoAnswer { .. } => None,
         }
-    }
-}
-
-impl From<io::Error> for TransportError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
     }
 }
 
 /// The other side of a [`MemoryTransport`]: what a repository answers to each request, through
 /// the operations of the core.
 ///
-/// The methods take and return the values of [`protocol`](crate::protocol); the transport
-/// between them reads and writes the bytes. The answering operation of the core for `refs` and
+/// The methods take the values of [`protocol`](crate::protocol): the transport reads the bytes of
+/// a request before it asks. A small answer is returned as a value, which the transport encodes;
+/// an object stream is written by this side itself, and the transport passes its bytes on as
+/// they are. The answering operation of the core for `refs` and
 /// `fetch` is the implementation that the tests of `fetch` use, once it is built; the accepting
 /// operation follows with the requests of a push. A test may implement the trait itself to
 /// answer what a correct side never answers.
@@ -181,8 +186,9 @@ impl From<ErrorMessage> for Refusal {
 /// process, with no socket and no second server (ADR-022).
 ///
 /// Between the two sides travel bytes, as over a network. A request is read to its end and
-/// parsed by the strict reader of the protocol, as a hub parses it, and an answer is encoded by
-/// its writer, so the caller reads it with the reader that it uses for every transport. A request
+/// parsed by the strict reader of the protocol, as a hub parses it. A list of references and an
+/// error are encoded by their writers; an object stream is passed on as the other side wrote it,
+/// unread. So the caller reads an answer with the reader that it uses for every transport. A request
 /// that the reader refuses is answered with the error of the protocol
 /// ([`ErrorMessage`]): `unsupported-version` for another protocol
 /// version, `malformed` for everything else, and the other side is not asked.
@@ -223,7 +229,9 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
 
     fn fetch(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
         let mut bytes = Vec::new();
-        request.read_to_end(&mut bytes)?;
+        request
+            .read_to_end(&mut bytes)
+            .map_err(TransportError::Request)?;
         let request = match FetchRequest::parse(&bytes) {
             Ok(request) => request,
             Err(error) => return answer(Err(ErrorMessage::from(&error).into())),

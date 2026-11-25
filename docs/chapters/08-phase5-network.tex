@@ -114,7 +114,8 @@ Eine Referenz bewegt auf einem Bare-Repository erst die annehmende Operation
 \startinfobox
 {\bf Wie Klon und Hub gemeinsam getestet werden.}
 Die Tests dieses Repositorys verbinden zwei Repositories im Speicher über \type{Transport}; die
-Gegenseite ist dabei die annehmende Operation des Kerns, kein zweiter Server.
+Gegenseite ist dabei die antwortende Operation des Kerns und für einen Push die annehmende,
+kein zweiter Server.
 Auch dieser Transport überträgt Bytes: Er liest eine Anfrage mit dem strengen Leser, wie ein Hub
 es tut, und beantwortet eine Anfrage, die der Leser ablehnt, mit dem Fehler des Protokolls.
 Dazu kommen eingecheckte Beispielnachrichten, gegen die auch der Hub seine Leser prüft.

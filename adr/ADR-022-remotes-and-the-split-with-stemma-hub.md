@@ -46,11 +46,15 @@ The trait lives in `stemma_core::transport` (STEMMA-287) and carries bytes, not 
   `push` stand once, above every transport.
 - An answer is one of two cases, and the transport says which: the message that was asked for, or
   an error message in its place (ADR-023). The caller chooses the reader by the case.
-- A request fails with a transport error in two cases only: the carrier failed (which includes a
-  request body that cannot be read), or what came back is no answer of the other side in the
-  protocol, such as the page of a proxy; the error then carries the words of the carrier. A body
-  that ends early is an error of its reader, never an early end, because no message carries a
-  count or an end mark.
+- A request fails with a transport error in three cases only: the body of the request could not
+  be read, the carrier failed, or what came back is no answer of the other side in the protocol,
+  such as the page of a proxy; the error then carries the words of the carrier, for HTTP the
+  status (ADR-023). A transport reads no body, so it tells such an answer from an error message by
+  something outside the body; for `stemma-remote` that is the media type, which its slice sets
+  (ADR-023, open items).
+- A body that ends early is an error of its reader, never an early end, because no message
+  carries a count or an end mark. A body that the caller drops before its end is no error: the
+  next request is allowed, and the transport discards what was left.
 - The trait names no address, path, status, header, token or compression.
 
 Rejected: methods that take and return the values of `stemma_core::protocol` (every transport
@@ -114,8 +118,9 @@ dependency.
 
 - The public CI never names the hub and needs no secret. It tests the operations through an
   in-memory `Transport` that joins two repositories through the operations of the core (no second
-  server: the other side is the accepting operation), and the protocol types against checked-in
-  example messages, which the hub reads as conformance tests through its git dependency.
+  server: the other side is the answering operation, and the accepting one for a push), and the
+  protocol types against checked-in example messages, which the hub reads as conformance tests
+  through its git dependency.
 - The in-memory `Transport` (`MemoryTransport`, STEMMA-287) passes bytes as a network does: it
   parses a request with the strict reader, answers a request that the reader refuses with the
   error message of the protocol, and encodes the answer with its writer. The other side is a
@@ -167,5 +172,8 @@ without internet. No phase schedules it.
 
 - [x] The design of the bare repository: what it contains exactly, how it is created and opened,
       and the typed refusal are in ADR-009, "A bare repository" (STEMMA-284).
+- [ ] The step of the sign-in in `Transport` (ADR-023, ADR-024): the token travels in no message
+      and stays inside the transport, while the trait reads no message and names no token. The
+      slice of the sign-in decides who reads the token message and records it here.
 - [ ] How much of the hub is passed on to third parties. The answer "a hub of one's own" to
       working without the central hub (ADR-003) depends on it; it is not decided.
