@@ -249,7 +249,9 @@ Datei und lässt Verzeichnisse stehen (\in{Abschnitt}[sec:oplog-tip]).
 Ein Verzeichnis, dessen \type{guard} frei ist, stammt von einem Prozess, der endete; der nächste
 Empfang entfernt es, und ein Hub kann das beim Start selbst anstossen.
 Eines ohne \type{guard} entfernt er nur, solange es leer ist.
-Ein laufender Empfang verliert so nie eine Datei.
+Ein laufender Empfang, der die Sperre hält, verliert so nie eine Datei.
+Ohne Sperren des Betriebssystems arbeitet er ohne sie; nimmt ihm ein Aufräumen dann das
+Verzeichnis, scheitert er oder legt es neu an, und kein gespeichertes Objekt geht verloren.
 \stopitemize
 \stopinfobox
 
@@ -275,15 +277,20 @@ commit <ID>          null oder mehr, in der Reihenfolge der Ankunft
 \startitemize[n]
 \item Der Fetch öffnet das Journal und hält eine Sperre des Betriebssystems darauf; ein zweiter
 Fetch im selben Repository wird abgelehnt, solange der erste läuft.
-Auf einem Dateisystem ohne solche Sperren laufen beide, und eine Zeile kann verloren gehen;
-das kostet eine zweite Übertragung ihres Commits.
+Wer endet, entfernt den Namen des Journals unter der Sperre; eine Sperre auf einer Datei, zu der
+der Name nicht mehr führt, zählt deshalb nicht, und der Fetch öffnet das Journal neu (ADR-023).
+Auf einem Dateisystem ohne solche Sperren laufen beide.
+Dann kann eine Zeile verloren gehen oder das Journal des anderen entfernt werden, was eine
+zweite Übertragung der betroffenen Commits kostet; eine zerrissene Zeile lehnt der nächste Fetch
+ab, bis die Datei von Hand entfernt ist.
 \item Er sammelt die Objekte des Stroms in temporären Dateien.
 An einem Commit, sobald 1024 Objekte oder 64 MiB beisammen sind, und am Ende des Stroms sichert er
 sie und verschiebt sie an ihren Platz.
 \item Erst danach prüft er die Commits dieser Gruppe und schreibt für jeden vollständigen eine
 Zeile ins Journal, das er sichert.
 Keine Zeile bekommt ein Commit, den eine Referenz erreicht oder den der Fetch schon als
-vollständig kennt.
+vollständig kennt; ein festgehaltener Commit, der zu Beginn nicht mehr bestand, bekommt eine
+zweite Zeile, wenn er wieder ankommt.
 \item Bricht der Strom ab, tut er dasselbe für alles, was ganz ankam, und meldet dann den Fehler.
 \item Hat er die verlangten Commits geprüft und die Remote-Referenzen bewegt, entfernt er das
 Journal.

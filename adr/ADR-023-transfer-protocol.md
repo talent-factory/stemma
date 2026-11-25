@@ -199,8 +199,15 @@ for the upload on a hub, `Repository::check_connectivity` for the check of a ref
 - **The journal `fetch-pending`.** The file lies in the metadata directory (ADR-009) and has the
   first line `stemma-fetch 1` and one line `commit <id>` per commit that arrived completely, in
   the order of arrival. A fetch holds a lock of the system on it, so a second fetch in the same
-  repository is refused while the first runs; on a file system without locks of files two
-  fetches at once may lose lines of each other, which costs a second transfer of those commits.
+  repository is refused while the first runs. A fetch that ends removes the name of the journal
+  while it holds the lock; a lock on a file whose name no longer leads to it does not count, and
+  the journal is opened again, at most 16 times in all, after which the fetch runs without its
+  resumption. The name is compared by the device and the number of the file on Unix and by its
+  existence elsewhere, so outside Unix the race is narrowed and not closed (see the open
+  items). On a file system without locks of files two fetches run at once: they may lose lines
+  of each other or remove the journal of the other, which costs a second transfer of those
+  commits, and a line that they tear makes the next fetch refuse the journal until the file is
+  removed by hand.
   A commit that a reference reaches, or that this fetch found complete already (at its start
   from the journal, or since), gets no line; a recorded commit that did not hold at the start
   gets a second line when it arrives again. A line is written, and the file flushed, only
@@ -211,14 +218,14 @@ for the upload on a hub, `Repository::check_connectivity` for the check of a ref
   again. A last line without a line feed that is the beginning of a line a fetch writes was
   left by a process that ended while it wrote, and is cut off when the journal is opened;
   every other content, also in a last line without a line feed, is refused with the number of
-  its line. The journal is removed after the
-  remote references have moved.
+  its line. The journal is removed after the remote references have moved.
 - **`have`.** A fetch sends the commits of its branches, its tags and its remote references, and
   the commits of the journal that still hold and that no other of them has as a parent. The
   tags were added to the decision above by this slice, because the walk takes them as complete
   too.
 - **The check and the lock.** `Fetch::check` does not read a commit again that the fetch found
-  complete while it received, without the lock of the references. A purge between that read
+  complete before, at its start from the journal or while it received, without the lock of the
+  references. A purge between that read
   and the move of a remote reference is not seen by it; the slice that moves the references
   under the lock decides whether it checks once more there.
 
@@ -479,6 +486,11 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       references per check, on a hub once per ref update. A walk that descends from the new tips
       first and asks only at the commits it reaches, or a cache of the commits that are known
       to be reachable, would avoid it; the measurement above says whether it is needed.
+- [ ] The journal of a fetch outside Unix: a fetch that locks the file of a fetch that ended,
+      after a third one made a new journal under the name, runs beside the third, because only
+      the existence of the name is checked there. Closing it needs the identity of the file on
+      Windows (`GetFileInformationByHandle`), or a journal that is emptied in place of being
+      removed, so that its file never changes.
 - [ ] The kind of the error message for a bound that was exceeded (see "Error"). The receiver
       refuses with a typed error of the core; the message on the wire comes with the slice that
       carries an upload over a transport, and until then `StreamError::answer` has none for it.

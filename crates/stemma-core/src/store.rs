@@ -1253,8 +1253,9 @@ pub(crate) fn create_temp(
 /// a directory, and, if `root` is named [`METADATA_DIR`], every directory next to it whose name is
 /// exactly one that `init` gives its temporary directory (ADR-009, [`is_init_staging_name`]). The
 /// caller holds the lock of the references, and every writer of a file in `tmp/` itself holds
-/// that lock while it writes, so no such name belongs to a write in progress. A caller of the library
-/// that stores objects through `Repository::objects()` without the lock is not protected. An
+/// that lock while it writes, so no such name belongs to a write in progress. A caller of the
+/// library that stores objects through `Repository::objects()` without the lock is not
+/// protected. An
 /// `init` that still builds its directory next to an existing `.stemma` fails, at the latest at
 /// its rename.
 ///
@@ -1262,8 +1263,8 @@ pub(crate) fn create_temp(
 /// cleanup must not stop a change; [`scratch_left`] lists what stayed. An entry is never followed:
 /// a symbolic link in `tmp/` is removed as a name, one next to `.stemma` stays, and a directory
 /// in `tmp/` stays: the receiving side of an object stream, which holds no lock, makes one for
-/// its temporary files and removes it itself (`receive-…`, ADR-023). A directory of the working copy whose name only starts
-/// like the one of `init` is content and stays.
+/// its temporary files and removes it itself (`receive-…`, ADR-023). A directory of the working
+/// copy whose name only starts like the one of `init` is content and stays.
 pub(crate) fn remove_scratch(root: &Path) {
     if let Ok(entries) = fault::read_dir(&root.join("tmp")) {
         for entry in entries.flatten() {

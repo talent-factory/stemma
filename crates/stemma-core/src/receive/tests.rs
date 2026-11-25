@@ -1550,6 +1550,21 @@ fn a_journal_that_cannot_be_written_or_removed_is_reported_and_the_objects_stay(
             .starts_with("could not write the journal of the fetch `"),
         "{error}"
     );
+    // The next write cuts first, and fails as long as it cannot: no line is put after a torn
+    // one.
+    let empty = ObjectStreamWriter::new(Vec::new()).unwrap().finish();
+    let error = fetch.receive(&empty[..], Bounds::default()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ReceiveError::Journal(FetchJournalError::Io {
+                operation: "cut a torn line of the journal of the fetch",
+                ..
+            })
+        ),
+        "{error}"
+    );
+    assert_eq!(fetch.journal.torn, Some("stemma-fetch 1\n".len() as u64));
     // The objects are stored, the commit is complete, and only its line is missing.
     fetch.check(&set(&[commit])).unwrap();
     drop(fetch);
@@ -1725,10 +1740,11 @@ fn what_the_sender_delivered_goes_before_a_journal_that_cannot_be_written() {
     let dir = TempDir::new();
     let sender = clone_in(&dir, "sender");
     let receiver = clone_in(&dir, "receiver");
-    let good = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
-    let bad = commit_of(&sender, &[("a.txt", "two\n")], vec![good]);
-    let after = commit_of(&sender, &[("a.txt", "three\n")], vec![bad]);
-    let mut stream = stream_of_commits(&sender, &[good, bad, after]);
+    // Two commits without a parent in one batch: the second is complete by itself, so only
+    // the end of the check at the first keeps it from being looked at.
+    let bad = commit_of(&sender, &[("a.txt", "two\n")], vec![]);
+    let after = commit_of(&sender, &[("b.txt", "three\n")], vec![]);
+    let mut stream = stream_of_commits(&sender, &[bad, after]);
     let at = stream
         .windows(4)
         .position(|bytes| bytes == b"two\n")
@@ -1746,9 +1762,11 @@ fn what_the_sender_delivered_goes_before_a_journal_that_cannot_be_written() {
         ),
         "{error}"
     );
-    // The check ended at the commit that is not connected: the one after it was not looked at.
-    assert!(fetch.connectivity.verified.contains(&good));
+    // The check ended at the commit that is not connected: the one after it was not looked at,
+    // although its objects are all there.
+    assert!(receiver.objects().contains(&after.object_id()).unwrap());
     assert!(!fetch.connectivity.verified.contains(&after));
+    fetch.check(&set(&[after])).unwrap();
 }
 
 #[test]
@@ -1974,7 +1992,9 @@ fn a_receiving_operation_gives_up_when_every_name_is_taken_from_it() {
         Some(io::ErrorKind::AlreadyExists)
     );
     assert!(
-        error.to_string().ends_with("every name was taken"),
+        error
+            .to_string()
+            .ends_with("a cleanup removed the directory"),
         "{error}"
     );
     assert_eq!(*attempts.borrow(), DIR_ATTEMPTS);
@@ -2078,7 +2098,21 @@ fn a_fetch_whose_journal_goes_every_time_uses_the_file_that_it_has() {
     assert_eq!(*calls.borrow(), JOURNAL_ATTEMPTS);
     assert!(!names_file(&path, &fetch.journal.file));
     drop(hook);
-    // The fetch runs without its resumption; ending it finds no name to remove.
+    // The fetch runs without its resumption. Another fetch makes a journal under the name
+    // meanwhile: ending the first one leaves it, where the files can be told apart.
+    fs::write(&path, "stemma-fetch 1\n").unwrap();
+    fetch.finish().unwrap();
+    assert_eq!(path.exists(), cfg!(unix));
+    // Without such a journal there is no name to remove, and that is no error.
+    let _ = fs::remove_file(&path);
+    let hook = hooking(move |moment, path| {
+        if moment == Moment::Lock && is_journal(path) {
+            fs::remove_file(path).unwrap();
+        }
+        None
+    });
+    let fetch = receiver.begin_fetch().unwrap();
+    drop(hook);
     fetch.finish().unwrap();
     assert!(!path.exists());
 }
@@ -2137,4 +2171,49 @@ fn a_batch_closes_at_a_commit_once_enough_bytes_have_gathered() {
         batches,
         [&commits[..1], &commits[1..3], &commits[3..]].map(<[CommitId]>::to_vec)
     );
+}
+
+#[test]
+fn the_lines_that_a_failed_write_did_not_record_are_written_with_the_next_ones() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    let first = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let second = commit_of(&sender, &[("a.txt", "two\n")], vec![first]);
+    let mut sent = HashSet::new();
+    let one = stream_of(&sender, &objects_of(&sender, &[first], &mut sent));
+    let two = stream_of(&sender, &objects_of(&sender, &[second], &mut sent));
+
+    let mut fetch = receiver.begin_fetch().unwrap();
+    // The journal cannot be written while the first stream arrives.
+    let writable = std::mem::replace(
+        &mut fetch.journal.file,
+        File::open(journal_path(&receiver)).unwrap(),
+    );
+    let error = fetch.receive(&one[..], Bounds::default()).unwrap_err();
+    assert!(matches!(error, ReceiveError::Journal(_)), "{error}");
+    assert_eq!(fetch.journal.unrecorded, [first]);
+
+    // The first commit is complete by now and is not reported again, so its line would be
+    // lost with a journal that only wrote what a call brings.
+    fetch.journal.file = writable;
+    fetch.receive(&two[..], Bounds::default()).unwrap();
+    assert!(fetch.journal.unrecorded.is_empty());
+    drop(fetch);
+    assert_eq!(
+        fs::read_to_string(journal_path(&receiver)).unwrap(),
+        format!("stemma-fetch 1\ncommit {first}\ncommit {second}\n")
+    );
+}
+
+#[test]
+fn the_answer_of_the_system_to_a_lock_is_read_in_its_three_forms() {
+    assert_eq!(lock_of(Ok(())), Lock::Held);
+    assert_eq!(lock_of(Err(TryLockError::WouldBlock)), Lock::Busy);
+    // Every other failure is a lock that cannot be had, and never one that another holds: a
+    // file system without locks must not refuse every fetch as running.
+    for kind in [io::ErrorKind::Unsupported, io::ErrorKind::Other] {
+        let error = TryLockError::Error(io::Error::new(kind, "no locks"));
+        assert_eq!(lock_of(Err(error)), Lock::Unavailable);
+    }
 }

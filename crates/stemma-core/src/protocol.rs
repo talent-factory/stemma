@@ -1539,8 +1539,9 @@ impl StreamError {
     ///
     /// `None` for [`Io`](Self::Io) and [`Failed`](Self::Failed), which say nothing about the
     /// stream, and for [`TooLarge`](Self::TooLarge): the stream is well formed. The receiver
-    /// refuses it with a typed error of its own
-    /// ([`ReceiveError::exceeds_bound`](crate::receive::ReceiveError::exceeds_bound)); the kind
+    /// passes the error on in [`ReceiveError::Stream`](crate::receive::ReceiveError::Stream)
+    /// and tells a bound by
+    /// [`ReceiveError::exceeds_bound`](crate::receive::ReceiveError::exceeds_bound); the kind
     /// of error message for a bound comes with the slice that carries an upload over a
     /// transport (ADR-023).
     pub fn answer(&self) -> Option<ErrorMessage> {
