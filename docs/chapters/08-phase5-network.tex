@@ -27,7 +27,8 @@ Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs
 umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository,
 die Schnittstelle für den Transport,
 die Remotes im Layout des Klons mit ihren Remote-Referenzen,
-die empfangende Seite des Objektstroms
+die empfangende Seite des Objektstroms,
+die antwortende Seite eines Fetch
 und die Formate des Ref-Updates und der Aufzeichnung.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
@@ -177,6 +178,84 @@ Kein Endpunkt liefert ein Objekt allein über seine ID, auch nicht in einem öff
 Repository.
 Sonst bekäme jeder, der eine ID kennt, auch die Objekte eines abgelehnten Push.
 
+\subsection[sec:fetch-answer]{Die antwortende Seite}
+
+Beide Antworten eines Fetch sind Operationen des Kerns: die Liste der Referenzen und der
+Objektstrom zu einer Fetch-Anfrage.
+Sie laufen auf jedem Repository, auf einem Bare-Repository im Hub wie auf einem mit Arbeitskopie
+(ADR-022).
+Sie nehmen keine Sperre, halten keinen Zustand zwischen zwei Anfragen und hinterlassen keine
+Datei.
+Die Liste nennt die Branches und die Tags des Repositorys.
+Was sie darüber hinaus trägt, also die ID des Repositorys, die Schlüssel des Hubs und je
+Referenz den Eintrag der Aufzeichnung, steht in keinem Speicher; der Aufrufer gibt es mit.
+
+Den Strom berechnet die Operation in vier Schritten:
+
+\startitemize[n]
+\item Sie prüft jedes \type{want}: Ein Branch oder ein Tag muss den Commit erreichen.
+Eine Remote-Referenz eines Klons zählt nicht, weil die Liste sie nicht nennt.
+\item Sie bestimmt die bekannten \type{have}, also jene, die ebenfalls ein Branch oder ein Tag
+erreicht.
+Einen Commit, den der Speicher nicht hat oder nur unbenannt hält, übergeht sie.
+\item Sie sammelt die Commits, die ein \type{want} erreicht und kein bekanntes \type{have},
+und ordnet sie so, dass jeder Commit nach seinen Eltern steht.
+\item Für jeden dieser Commits schreibt sie die Trees und Blobs, die kein Tree eines Elters am
+selben Pfad mit derselben ID hat, einen Tree nach dem, was er nennt, und danach den Commit.
+Jedes Objekt steht im Strom nur einmal.
+\stopitemize
+
+Die ersten drei Schritte lesen ausser den Referenzen nur Commits und liegen vor dem ersten Byte
+des Stroms.
+Ein \type{want}, das kein Branch und kein Tag erreicht, lehnt die Operation deshalb ab, bevor
+sie etwas schreibt, mit dem Fehler \type{unknown-want} und dem ersten solchen Commit.
+Die Antwort ist dieselbe für einen Commit, den der Speicher nicht hat, und für einen, den er
+unbenannt hält; sie verrät also nicht, ob ein Objekt existiert.
+
+Dass jeder Anfang des Stroms, der mit einem Commit endet, ein vollständiger Stand ist, folgt aus
+der Reihenfolge, durch Induktion über den Strom.
+Die Eltern eines Commits stehen vor ihm im Strom oder liegen unter einem \type{have}; der
+Empfänger hat sie also vollständig.
+Ein Objekt in den Trees des Commits hat ein Elter am selben Pfad mit derselben ID, oder es steht
+vor dem Commit im Strom, oder die Antwort hat es bei einem früheren Commit des Stroms
+ausgelassen, der selbst vollständig ist.
+Der Vergleich in Schritt 4 ist derselbe, den der Empfänger bei seiner Prüfung anstellt.
+
+Die Kosten: Der Lauf liest die $n$ Commits, die er sendet, und einmal jeden der $m$ Commits unter
+den bekannten \type{have}, also $O(n + m)$ Commits, auch für einen Fetch, der einen einzigen
+Commit bringt.
+Das gilt, wenn jedes \type{want} und jedes \type{have} die Spitze einer Referenz ist oder
+nahe darunter liegt; den anderen Fall nennt der Kasten.
+Erst der ganze Verlauf unter einem \type{have} sagt, welche Commits es erreicht.
+Ein Lauf, der schon am \type{have} selbst umkehrt, würde nach einem Merge den Verlauf des
+hereingeholten Branch bis zur Wurzel noch einmal senden.
+Ein Klon hat kein \type{have} und kostet nur die $n$ Commits.
+Beim Schreiben liest die Antwort jeden gesendeten Commit und seine Eltern noch einmal, dazu die
+neuen Trees und Blobs und die Trees der Eltern an den geänderten Pfaden, wie beim Empfänger.
+Was den Lauf abkürzen könnte, etwa eine Generationsnummer je Commit, ist ein offener Punkt von
+ADR-023.
+
+\startinfobox
+{\bf Grenzfälle der Antwort.}
+\startitemize
+\item Ein Objekt, das der Empfänger auf anderem Weg schon hat, wird noch einmal gesendet, etwa
+ein Blob, zu dessen Inhalt eine Datei zurückkehrt.
+Das kostet Bytes und sonst nichts.
+\item Ein \type{have}, das der Speicher nicht hat, kostet ein Nachschlagen.
+Eines, das er hat und das keine Spitze einer Referenz ist, kostet den Verlauf unter den
+Referenzen, bis es gefunden ist.
+Den ganzen Verlauf unter den Referenzen kosten ein \type{have}, das der Speicher nur unbenannt
+hält, und ein \type{want}, das abgelehnt wird.
+\item Sind alle \type{want} schon unter einem bekannten \type{have}, besteht der Strom aus der
+ersten Zeile allein.
+\item Entfernt ein Purge ein Objekt, das die Antwort gerade senden will, bricht der Strom ab.
+Der Empfänger behält, was ganz ankam, und nimmt den Fetch wieder auf
+(\in{Abschnitt}[sec:fetch-resume]).
+Fehlt ein Commit schon beim Lauf über den Graphen, scheitert die Antwort vor dem ersten Byte.
+Fehlt nur ein Tree eines Elters, sendet sie mehr.
+\stopitemize
+\stopinfobox
+
 \subsection{Push}
 
 \startitemize[n]
@@ -256,7 +335,7 @@ Verzeichnis, scheitert er oder legt es neu an, und kein gespeichertes Objekt geh
 \stopitemize
 \stopinfobox
 
-\subsection{Unterbrochene Übertragung}
+\subsection[sec:fetch-resume]{Unterbrochene Übertragung}
 
 Die Reihenfolge des Stroms gehört zum Format: Vorfahren zuerst, und für jeden Commit seine neuen
 Blobs und Trees vor dem Commit selbst.
@@ -336,6 +415,8 @@ Ein Fehler nennt in der zweiten Zeile seine Art, zum Beispiel \type{error unsupp
 und darunter die Angaben dazu, hier die Zeile \type{spoken} mit den gesprochenen Versionen.
 Diese eine Nachricht hat unter jeder Protokollversion dieselbe Form, damit auch ein Klon einer
 anderen Version sie lesen kann.
+Die weiteren Arten sind \type{malformed} für eine Nachricht, die der Leser ablehnt, und
+\type{unknown-want} für die abgelehnte Fetch-Anfrage (\in{Abschnitt}[sec:fetch-answer]).
 
 Für jede Nachricht gilt die Regel der strengen Leser (\in{Abschnitt}[sec:strict-readers]):
 Der Leser nimmt nur an, was der Schreiber schreibt.

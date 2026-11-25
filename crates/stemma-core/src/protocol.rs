@@ -822,15 +822,20 @@ impl Error for ErrorMessageError {}
 /// first line, then the kind of the error with its facts. The kind decides what the receiver
 /// does; a status code of the transport names the coarse class only.
 ///
-/// This version knows the two kinds that the reading of a message gives. The refusals of a ref
-/// update and of a statement come with the slices that build them, and the refusal of a bound
-/// with the slice that carries an upload over a transport: the bounds themselves are set by
-/// the receiver ([`crate::receive::Bounds`]).
+/// This version knows the two kinds that the reading of a message gives, and the refusal of a
+/// fetch request ([`UnknownWant`](Self::UnknownWant)). The refusals of a ref update and of a
+/// statement come with the slices that build them, and the refusal of a bound with the slice
+/// that carries an upload over a transport: the bounds themselves are set by the receiver
+/// ([`crate::receive::Bounds`]).
 ///
 /// ```text
 /// stemma-protocol <highest version spoken>      stemma-protocol 1
 /// error unsupported-version                     error malformed
 /// spoken <version> <version> ...                reason <one line>
+///
+/// stemma-protocol 1
+/// error unknown-want
+/// want <commit>
 /// ```
 ///
 /// `unsupported-version` is the one message that is read across versions: its form is the same
@@ -845,6 +850,12 @@ pub enum ErrorMessage {
     UnsupportedVersion(Spoken),
     /// The message could not be read. Carries what the reader reported.
     Malformed(Reason),
+    /// A fetch request wants a commit that no branch and no tag of the repository reaches
+    /// (ADR-023).
+    /// Carries the first such commit in the order of the IDs. The answer is the same for a
+    /// commit that the store does not hold and for one that it holds unnamed, so it does not
+    /// say whether an object exists. The ID is a claim, as in the request.
+    UnknownWant(CommitId),
 }
 
 impl ErrorMessage {
@@ -861,6 +872,9 @@ impl ErrorMessage {
             }
             Self::Malformed(reason) => {
                 format!("{}error malformed\nreason {reason}\n", first_line(VERSION))
+            }
+            Self::UnknownWant(commit) => {
+                format!("{}error unknown-want\nwant {commit}\n", first_line(VERSION))
             }
         }
         .into_bytes()
@@ -886,7 +900,7 @@ impl ErrorMessage {
     /// message that is no text is read.
     ///
     /// `malformed` also refuses a reason that is empty or holds a control character or a line or
-    /// paragraph separator.
+    /// paragraph separator, and `unknown-want` an object ID that is not in canonical form.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let (version, rest) = read_version(bytes)?;
         // Under another number only the second line of an `unsupported-version` is known, so
@@ -927,6 +941,12 @@ impl ErrorMessage {
                 lines.end()?;
                 Ok(Self::Malformed(Reason(value.to_owned())))
             }
+            Some((_, "unknown-want")) => {
+                let (line, value) = lines.require("want")?;
+                let commit = parse_commit(line, value)?;
+                lines.end()?;
+                Ok(Self::UnknownWant(commit))
+            }
             Some((line, _)) => Err(malformed(line, Malformed::UnknownError)),
             None => Err(malformed(lines.line, Malformed::Expected("error"))),
         }
@@ -947,6 +967,10 @@ impl fmt::Display for ErrorMessage {
             Self::Malformed(reason) => {
                 write!(f, "the other side could not read the message: {reason}")
             }
+            Self::UnknownWant(commit) => write!(
+                f,
+                "the other side has no branch and no tag that reaches the wanted commit {commit}"
+            ),
         }
     }
 }
@@ -1682,6 +1706,7 @@ pub mod examples {
         example!("objects-empty", ObjectStream),
         example!("error-unsupported-version", Error),
         example!("error-malformed", Error),
+        example!("error-unknown-want", Error),
         example!("ref-update", RefUpdate),
         example!("receipt", Receipt),
     ];
