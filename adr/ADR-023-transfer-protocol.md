@@ -6,8 +6,9 @@ STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
 "The first number is 1") and with the ref update and its receipt (STEMMA-291, ADR-025), and the
 receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
-receiving side"); nothing else of it is implemented yet. The numbers under "Basis" give a
-direction, not a threshold.
+receiving side"), and the answering side of the list of references and of a fetch exists in
+`stemma_core::serve` (STEMMA-288, see "The answering side"); nothing else of it is implemented
+yet. The numbers under "Basis" give a direction, not a threshold.
 
 ## Context
 
@@ -235,6 +236,59 @@ closed only at a commit, so that is fewer than 1024 objects and less than 64 MiB
 every object of the commit at which a threshold is reached, however large that commit is. They
 arrive again with the next fetch.
 
+### The answering side
+
+The answering side is built (STEMMA-288) in `stemma_core::serve`: `Repository::answer_refs` for
+the list of references and `Repository::answer_fetch` for a fetch request, with the type
+`Answering` that joins both to the in-memory `Transport` (ADR-022). Both run on every repository,
+bare or with a working copy, take no lock, keep no state and leave no file.
+
+- **The list.** It names the branches and the tags of the store. The ID of the repository, the
+  keys of the hub and the record entry of each name are not kept by a store; the caller passes
+  them (`ListFacts`), a hub the ID and the entries from its record (`Chain`, ADR-025) and its
+  keys as `HubKeys`, whose ranges were checked when they were built. A reference without a
+  record entry cannot be listed and fails the call (`ListError`). The references are read one
+  after the other, so the list is no snapshot (ADR-025), and a reference is not compared with
+  the record.
+- **`want`.** Every `want` must be reachable from a branch or a tag, the references that the list
+  names, which is what "a reference of the repository" means for a fetch. A remote reference
+  of a clone names nothing that is served. The refusal comes before the first byte of the
+  stream and names the first such commit in the order of the IDs. It is the same for a commit
+  that the store lacks and for one that it holds unnamed, and it costs the same walk for both,
+  so it does not say whether an object exists.
+- **`have`.** A `have` is known if a branch or a tag reaches it. One that the store does not
+  hold is ignored after one lookup. One that the store holds unnamed is ignored too, after the
+  walk below the references did not find it: its history may have gaps, and it would tell the
+  requester that an unnamed object exists.
+- **The commits.** Sent are the commits that a `want` reaches and no known `have` reaches. The
+  walk does not stop at a `have` only: it first collects everything below the known `have`
+  commits, because a `want` can reach a commit below a `have` by a way around it, as after a
+  merge, and would then send the history of the merged branch down to the root again.
+- **The trees and blobs.** For each commit the walk sends the trees and blobs that no tree of a
+  parent holds with the same ID at the same path, the comparison of the connectivity check of
+  the receiver, and no object twice in one stream. An object that the receiver has by another
+  way, such as a blob that returns to an older content, is sent again: too much, never too
+  little.
+- **The order.** Commits stand after their parents, the parents of a merge in the order in which
+  it names them, and the `want` commits in the order of their IDs. Inside a commit a tree stands
+  after what it names. Every beginning of the stream that ends with a commit is then complete
+  for a receiver that has the `have` commits: the parents of the commit stand before it or lie
+  below a `have`, and every object of its trees is held by a parent at the same path, stands
+  before it, or was left out with an earlier commit of the stream, which is complete.
+- **Failures.** A `want` that no reference reaches is the one refusal, the error
+  `unknown-want`. Every other error is a failure of the answering side and no message of the
+  protocol. The commits are walked before the stream begins, so a commit that is missing then
+  fails the call before the first byte. A commit, a tree or a blob that is missing when it is
+  written, as after a purge that ran beside the fetch, cuts the stream off; the receiver keeps
+  what arrived whole and resumes. A parent or a tree of a parent that cannot be read then fails
+  nothing and prunes nothing, as on the receiving side.
+- **The cost.** The walk over the commits reads every commit that it sends, and every commit
+  below the known `have` commits, once, also for a fetch that brings one commit. A `want` or a
+  `have` that is no tip of a reference costs the history below the references on top, until it
+  is found, and all of that history if it is not found: a `want` that is refused, and a `have`
+  that the store holds unnamed. Writing the stream reads each commit that is sent once more, its parents, its new
+  trees and blobs, and the trees of the parents at the changed paths. See the open items.
+
 ### One number covers every message
 
 `stemma-protocol <n>` is the first line of every message itself, not an HTTP header, so it belongs
@@ -317,6 +371,10 @@ stemma-protocol 1                                   the object stream
 stemma-protocol <highest version spoken>            the error
 error unsupported-version
 spoken <version> <version> ...
+
+stemma-protocol 1                                   the refusal of a fetch request
+error unknown-want
+want <commit>
 ```
 
 - **List of references.** A key is an Ed25519 public key in the OpenSSH form without a comment.
@@ -339,8 +397,10 @@ spoken <version> <version> ...
   version that its sender speaks, so a client of another number still learns the list. The
   versions of `spoken` ascend, each once, at least one, and the first line carries the last of
   them. A reason is one line that is not empty and holds no control character and no line or
-  paragraph separator. The refusals of a ref update, of a statement and of the bounds add their
-  kinds with their slices.
+  paragraph separator. `unknown-want` answers a fetch request with a `want` that no branch and
+  no tag of the repository reaches, with one line `want <commit>` for the first such commit in the
+  order of the IDs (STEMMA-288, see "The answering side"). The refusals of a ref update, of a
+  statement and of the bounds add their kinds with their slices.
 - **Ref update and receipt.** The ref update and the record entry that answers it are messages
   of number 1 as well; their lines and rules stand in ADR-025 ("The formats as built").
 - **Sign-in.** The challenge, the signed challenge and the token answer are messages of number
@@ -493,6 +553,12 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       references per check, on a hub once per ref update. A walk that descends from the new tips
       first and asks only at the commits it reaches, or a cache of the commits that are known
       to be reachable, would avoid it; the measurement above says whether it is needed.
+- [ ] The cost of the walk of the answering side: one read of every commit below the known
+      `have` commits per fetch. A generation number per commit, or a cache of the commits below
+      a reference, would let the walk stop early; the measurement above says whether it is
+      needed.
+- [ ] The status code of the error `unknown-want`. It belongs to the slice that carries a fetch
+      over HTTP; the table under "Mapping to HTTP" does not name it yet.
 - [ ] The journal of a fetch outside Unix: a fetch that locks the file of a fetch that ended,
       after a third one made a new journal under the name, runs beside the third and removes
       its journal when it ends, because only the existence of the name is checked there. Both

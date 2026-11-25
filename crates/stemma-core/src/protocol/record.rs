@@ -1708,6 +1708,16 @@ impl HubKeys {
         Ok(Self { current, former })
     }
 
+    /// The current key, which signs every entry outside the ranges of the former keys.
+    pub fn current(&self) -> &PublicKey {
+        &self.current
+    }
+
+    /// The former keys, in the order of their ranges, which share no number.
+    pub fn former(&self) -> &[FormerKey] {
+        &self.former
+    }
+
     /// The key that signed the entry with this number.
     pub fn at(&self, number: u64) -> &PublicKey {
         self.former

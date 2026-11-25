@@ -227,6 +227,7 @@ pub fn protocol(input: &[u8]) {
                 ErrorMessage::Malformed(reason) => {
                     Reason::try_new(reason.as_str()).map(ErrorMessage::Malformed)
                 }
+                ErrorMessage::UnknownWant(commit) => Ok(ErrorMessage::UnknownWant(*commit)),
             };
             assert_eq!(
                 rebuilt.as_ref(),

@@ -2,8 +2,9 @@
 //! through [`MemoryTransport`], a request that the reader refuses is answered with the error of the
 //! protocol, and a side that cannot answer is a failure of the transport.
 //!
-//! The answering operation of the core is not built yet, so the other side of these tests is
-//! [`Hub`], which answers from a bare repository with the least that the messages need.
+//! The other side of these tests is [`Hub`], which answers from a bare repository with the
+//! least that the messages need, so that they test the transport alone. The answering operation
+//! of the core ([`Answering`](crate::serve::Answering)) has its own tests.
 
 use std::cell::Cell;
 use std::collections::BTreeSet;
@@ -86,7 +87,8 @@ fn set_branch(repository: &Repository, branch: &str, commit: &CommitId) {
 }
 
 /// The other side of these tests: a bare repository that answers with its branches and with the
-/// objects of its store. It stands in for the answering operation of the core.
+/// objects of its store. It stands in for the answering operation of the core, which refuses
+/// what this one answers: a `want` that no reference reaches.
 struct Hub<'a> {
     repository: &'a Repository,
 }

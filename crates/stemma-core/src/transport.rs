@@ -206,9 +206,9 @@ impl Error for TransportError {
 /// a request before it asks. A small answer is returned as a value, which the transport encodes;
 /// an object stream is written by this side itself, and the transport passes its bytes on as
 /// they are. The answering operation of the core for `refs` and `fetch` is the implementation
-/// that the tests of `fetch` use, once it is built; the accepting operation follows with the
-/// requests of a push. A test may implement the trait itself to answer what a correct side never
-/// answers.
+/// [`Answering`](crate::serve::Answering), for the tests that fetch from a repository; the
+/// accepting operation follows with the requests of a push. A test may implement the trait
+/// itself to answer what a correct side never answers.
 pub trait OtherSide {
     /// Answers the list of references.
     ///
