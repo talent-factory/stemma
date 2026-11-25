@@ -1642,13 +1642,13 @@ fn a_journal_whose_name_is_gone_or_leads_elsewhere_is_not_the_open_file() {
     let opened = OpenOptions::new().read(true).write(true).open(&path);
     // On Windows the lock of the running fetch does not keep the file from being opened.
     let opened = opened.unwrap();
-    assert!(names_file(&path, &opened));
+    assert!(names_file(&path, &opened).unwrap());
     fetch.finish().unwrap();
-    assert!(!names_file(&path, &opened));
+    assert!(!names_file(&path, &opened).unwrap());
     // A third fetch made a new journal under the name: on Unix the file tells them apart.
     let third = receiver.begin_fetch().unwrap();
-    assert_eq!(names_file(&path, &opened), !cfg!(unix));
-    assert!(names_file(&path, &third.journal.file));
+    assert_eq!(names_file(&path, &opened).unwrap(), !cfg!(unix));
+    assert!(names_file(&path, &third.journal.file).unwrap());
     // The handle that was opened too early is free to lock, and no fetch may use it.
     drop(opened);
     third.finish().unwrap();
@@ -1736,7 +1736,7 @@ fn a_whole_line_that_lacks_only_its_line_feed_is_cut_and_the_fetch_begins() {
 }
 
 #[test]
-fn what_the_sender_delivered_goes_before_a_journal_that_cannot_be_written() {
+fn the_check_of_a_batch_ends_at_the_first_commit_that_is_not_connected() {
     let dir = TempDir::new();
     let sender = clone_in(&dir, "sender");
     let receiver = clone_in(&dir, "receiver");
@@ -1752,7 +1752,6 @@ fn what_the_sender_delivered_goes_before_a_journal_that_cannot_be_written() {
     stream[at] = b'T';
 
     let mut fetch = receiver.begin_fetch().unwrap();
-    fetch.journal.file = File::open(journal_path(&receiver)).unwrap();
     let error = fetch.receive(&stream[..], Bounds::default()).unwrap_err();
     assert!(
         matches!(
@@ -2063,7 +2062,7 @@ fn a_fetch_that_locked_a_journal_whose_name_went_opens_the_journal_again() {
     let mut fetch = receiver.begin_fetch().unwrap();
     assert_eq!(*calls.borrow(), 2);
     // The fetch works on the file under the name, not on the one that lost it.
-    assert!(names_file(&path, &fetch.journal.file));
+    assert!(names_file(&path, &fetch.journal.file).unwrap());
     fetch
         .receive(
             &stream_of_commits(&sender, &[commit])[..],
@@ -2096,7 +2095,7 @@ fn a_fetch_whose_journal_goes_every_time_uses_the_file_that_it_has() {
 
     let fetch = receiver.begin_fetch().unwrap();
     assert_eq!(*calls.borrow(), JOURNAL_ATTEMPTS);
-    assert!(!names_file(&path, &fetch.journal.file));
+    assert!(!names_file(&path, &fetch.journal.file).unwrap());
     drop(hook);
     // The fetch runs without its resumption. Another fetch makes a journal under the name
     // meanwhile: ending the first one leaves it, where the files can be told apart.
@@ -2127,7 +2126,7 @@ fn without_a_lock_of_the_system_two_fetches_run_at_once() {
 
     let first = receiver.begin_fetch().unwrap();
     let second = receiver.begin_fetch().unwrap();
-    assert!(names_file(&journal_path(&receiver), &second.journal.file));
+    assert!(names_file(&journal_path(&receiver), &second.journal.file).unwrap());
     // The one that ends first removes the journal of both, which costs the other its
     // resumption and nothing else.
     first.finish().unwrap();
@@ -2216,4 +2215,66 @@ fn the_answer_of_the_system_to_a_lock_is_read_in_its_three_forms() {
         let error = TryLockError::Error(io::Error::new(kind, "no locks"));
         assert_eq!(lock_of(Err(error)), Lock::Unavailable);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_journal_whose_name_cannot_be_inspected_is_not_reported_as_removed() {
+    let dir = TempDir::new();
+    let receiver = clone_in(&dir, "receiver");
+    let fetch = receiver.begin_fetch().unwrap();
+    // A name below a regular file can be neither there nor gone: the system refuses the look.
+    let blocked = journal_path(&receiver).join("below");
+    let error = names_file(&blocked, &fetch.journal.file).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
+
+    let Fetch { journal, .. } = fetch;
+    let journal = Journal {
+        path: blocked.clone(),
+        ..journal
+    };
+    let error = journal.remove().unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            FetchJournalError::Io { operation: "inspect the journal of the fetch", path, .. }
+                if *path == blocked
+        ),
+        "{error}"
+    );
+    assert!(error.io_error().is_some());
+    // The journal of the fetch stays, and the next fetch reads it.
+    assert!(journal_path(&receiver).exists());
+    receiver.begin_fetch().unwrap().finish().unwrap();
+}
+
+#[test]
+fn what_the_sender_delivered_goes_before_a_journal_that_cannot_be_written() {
+    let dir = TempDir::new();
+    let sender = clone_in(&dir, "sender");
+    let receiver = clone_in(&dir, "receiver");
+    // One batch with a complete commit, whose line the journal cannot take, and one that is
+    // not connected: both fail, and the caller hears of the second.
+    let good = commit_of(&sender, &[("a.txt", "one\n")], vec![]);
+    let bad = commit_of(&sender, &[("a.txt", "two\n")], vec![good]);
+    let mut stream = stream_of_commits(&sender, &[good, bad]);
+    let at = stream
+        .windows(4)
+        .position(|bytes| bytes == b"two\n")
+        .unwrap();
+    stream[at] = b'T';
+
+    let mut fetch = receiver.begin_fetch().unwrap();
+    fetch.journal.file = File::open(journal_path(&receiver)).unwrap();
+    let error = fetch.receive(&stream[..], Bounds::default()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            ReceiveError::Connectivity(ConnectivityError::Missing { id, .. })
+                if *id == blob_id("two\n")
+        ),
+        "{error}"
+    );
+    // The write was tried and failed: the line of the complete commit waits for the next one.
+    assert_eq!(fetch.journal.unrecorded, [good]);
 }

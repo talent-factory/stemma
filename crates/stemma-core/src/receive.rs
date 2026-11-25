@@ -1097,24 +1097,32 @@ fn is_cut_line(tail: &[u8], first: bool) -> bool {
 }
 
 /// Whether `path` still leads to the open `file`: on Unix by the device and the number of the
-/// file, elsewhere by a name that exists. `false` if the name is gone or cannot be inspected.
+/// file, elsewhere by a name that exists. `Ok(false)` if the name is gone.
 ///
 /// Outside Unix the answer is therefore `true` also for a name that leads to another file by
 /// now, which a fetch that began in between made: the race that this check closes on Unix is
 /// only narrowed there (see [`Journal::open`]).
-fn names_file(path: &Path, file: &File) -> bool {
+///
+/// # Errors
+///
+/// Returns the error of the file system if the name or the file cannot be inspected for
+/// another reason than a name that is gone.
+fn names_file(path: &Path, file: &File) -> io::Result<bool> {
+    let named = match fs::symlink_metadata(path) {
+        Ok(named) => named,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        matches!(
-            (fs::symlink_metadata(path), file.metadata()),
-            (Ok(named), Ok(open)) if named.dev() == open.dev() && named.ino() == open.ino()
-        )
+        let open = file.metadata()?;
+        Ok(named.dev() == open.dev() && named.ino() == open.ino())
     }
     #[cfg(not(unix))]
     {
-        let _ = file;
-        fs::symlink_metadata(path).is_ok()
+        let _ = (file, named);
+        Ok(true)
     }
 }
 
@@ -1151,13 +1159,15 @@ impl Journal {
     ///
     /// Outside Unix the check sees only that a name exists. A fetch that locks the file of a
     /// fetch that ended, after a third one made a new journal under the name, runs beside that
-    /// third one there, with the consequences of the next paragraph.
+    /// third one there. The two write different files, so no line is torn: the lines of the
+    /// first are lost with its file, and when it ends it removes the journal of the other. Both
+    /// cost a second transfer and nothing else.
     ///
     /// If the lock cannot be taken for another reason than a fetch that holds it, as on a file
     /// system without locks of files, the journal is used without the lock. Two fetches at once
     /// may then lose lines of each other or remove the journal of the other, which costs a
-    /// second transfer of the commits whose lines are lost, because a recorded commit is checked
-    /// again before it counts. If they tear a line, the reader refuses the journal until the
+    /// second transfer of the commits whose lines are lost and nothing else, because a recorded
+    /// commit is checked again before it counts. If they tear a line, the reader refuses the journal until the
     /// file is removed by hand.
     fn open(root: &Path) -> Result<(Self, Vec<CommitId>), FetchJournalError> {
         let path = root.join(FETCH_JOURNAL);
@@ -1177,7 +1187,9 @@ impl Journal {
             attempts += 1;
             // After the last attempt the file is used as it is: the fetches that end one after
             // the other so fast lose a resumption at most.
-            if names_file(&path, &file) || attempts == JOURNAL_ATTEMPTS {
+            // A name that cannot be inspected is taken as one that leads elsewhere: opening
+            // again reports what is wrong with it, or the file is used as it is.
+            if names_file(&path, &file).unwrap_or(false) || attempts == JOURNAL_ATTEMPTS {
                 break file;
             }
         };
@@ -1309,7 +1321,9 @@ impl Journal {
 
     /// Removes the journal and flushes its directory. A name that does not lead to the file of
     /// this journal any more ([`names_file`]) is left alone: it is gone, or it is the journal of
-    /// another fetch.
+    /// another fetch. Outside Unix the two files cannot be told apart, and the journal of the
+    /// other fetch is removed (see [`open`](Self::open)). A name that cannot be inspected is an
+    /// error, and the journal stays.
     fn remove(self) -> Result<(), FetchJournalError> {
         let Self { path, file, .. } = self;
         let io = |operation: &'static str, at: &Path| {
@@ -1324,10 +1338,10 @@ impl Journal {
         // lock held or the name gone (see `open`), and one that comes after makes a new file.
         // Windows may refuse to remove a file that is open; only there the removal is tried
         // again once the file is closed, without the lock.
-        let mut removed = if names_file(&path, &file) {
-            fault::remove_file(&path)
-        } else {
-            Ok(())
+        let mut removed = match names_file(&path, &file) {
+            Ok(true) => fault::remove_file(&path),
+            Ok(false) => Ok(()),
+            Err(error) => return Err(io("inspect the journal of the fetch", &path)(error)),
         };
         drop(file);
         if cfg!(windows)
@@ -1449,7 +1463,7 @@ impl Fetch<'_> {
                 let mut checked = Ok(());
                 for &commit in commits {
                     // A commit that was complete before needs no line: a reference reaches
-                    // it, or the journal names it already.
+                    // it, or this fetch found it complete already.
                     let found = connectivity
                         .is_complete(commit)
                         .and_then(|known| connectivity.ensure_complete(commit).map(|()| !known));
@@ -1494,8 +1508,8 @@ impl Fetch<'_> {
     ///
     /// # Errors
     ///
-    /// [`FetchJournalError::Io`] if the file cannot be removed or its directory cannot be
-    /// flushed. The fetch itself has happened then, and the next one reads the journal that
+    /// [`FetchJournalError::Io`] if the file cannot be inspected or removed, or its directory
+    /// cannot be flushed. The fetch itself has happened then, and the next one reads the journal that
     /// stayed.
     pub fn finish(self) -> Result<(), FetchJournalError> {
         self.journal.remove()

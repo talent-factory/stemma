@@ -201,8 +201,8 @@ for the upload on a hub, `Repository::check_connectivity` for the check of a ref
   the order of arrival. A fetch holds a lock of the system on it, so a second fetch in the same
   repository is refused while the first runs. A fetch that ends removes the name of the journal
   while it holds the lock; a lock on a file whose name no longer leads to it does not count, and
-  the journal is opened again, at most 16 times in all, after which the fetch runs without its
-  resumption. The name is compared by the device and the number of the file on Unix and by its
+  the journal is opened again, at most 16 times in all, after which the fetch runs on the file
+  without a name, and its lines are lost with it. The name is compared by the device and the number of the file on Unix and by its
   existence elsewhere, so outside Unix the race is narrowed and not closed (see the open
   items). On a file system without locks of files two fetches run at once: they may lose lines
   of each other or remove the journal of the other, which costs a second transfer of those
@@ -487,8 +487,9 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       first and asks only at the commits it reaches, or a cache of the commits that are known
       to be reachable, would avoid it; the measurement above says whether it is needed.
 - [ ] The journal of a fetch outside Unix: a fetch that locks the file of a fetch that ended,
-      after a third one made a new journal under the name, runs beside the third, because only
-      the existence of the name is checked there. Closing it needs the identity of the file on
+      after a third one made a new journal under the name, runs beside the third and removes
+      its journal when it ends, because only the existence of the name is checked there. Both
+      cost a second transfer. Closing it needs the identity of the file on
       Windows (`GetFileInformationByHandle`), or a journal that is emptied in place of being
       removed, so that its file never changes.
 - [ ] The kind of the error message for a bound that was exceeded (see "Error"). The receiver
