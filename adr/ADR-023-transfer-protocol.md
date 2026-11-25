@@ -4,9 +4,10 @@
 for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-56, STEMMA-273,
 STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
-"The first number is 1"), and the receiving side of an object stream exists in
-`stemma_core::receive` (STEMMA-289, see "The receiving side"); nothing else of it is implemented
-yet. The numbers under "Basis" give a direction, not a threshold.
+"The first number is 1") and with the ref update and its receipt (STEMMA-291, ADR-025), and the
+receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
+receiving side"); nothing else of it is implemented yet. The numbers under "Basis" give a
+direction, not a threshold.
 
 ## Context
 
@@ -338,6 +339,8 @@ spoken <version> <version> ...
   them. A reason is one line that is not empty and holds no control character and no line or
   paragraph separator. The refusals of a ref update, of a statement and of the bounds add their
   kinds with their slices.
+- **Ref update and receipt.** The ref update and the record entry that answers it are messages
+  of number 1 as well; their lines and rules stand in ADR-025 ("The formats as built").
 
 Example messages are checked in under `crates/stemma-core/protocol-examples/` and are reachable
 as `stemma_core::protocol::examples`, so a hub reads them through its dependency (ADR-022). They

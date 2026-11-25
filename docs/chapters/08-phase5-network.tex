@@ -26,8 +26,9 @@ Operationen des Kerns wie lokal (ADR-025).
 Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs festgehalten,
 umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository,
 die Schnittstelle für den Transport,
-die Remotes im Layout des Klons mit ihren Remote-Referenzen
-und die empfangende Seite des Objektstroms.
+die Remotes im Layout des Klons mit ihren Remote-Referenzen,
+die empfangende Seite des Objektstroms
+und die Formate des Ref-Updates und der Aufzeichnung.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -316,6 +317,7 @@ Es gibt keine Listen von Fähigkeiten und keine optionalen Felder: Nach der erst
 ist jede Änderung einer Nachricht eine neue Protokollversion.
 Gebaut sind die ersten vier Nachrichten: die Liste der Referenzen, die Fetch-Anfrage, der
 Objektstrom und der Fehler.
+Dazu kommen das Ref-Update und seine Quittung (\in{Abschnitt}[sec:ref-update]).
 Die Liste der Referenzen eines Repositorys mit einem Branch sieht so aus, mit gekürzten Werten:
 
 \starttyping
@@ -499,7 +501,7 @@ Repositorys, die der Hub allein schreibt.
 Ein Eintrag hat zwei Teile und eine Signatur.
 
 \startitemize[n]
-\item Der signierte Text des Akteurs, Byte für Byte wie empfangen.
+\item Das Ref-Update des Akteurs mit seiner Signatur, Byte für Byte wie empfangen.
 \item Die Zeilen des Hubs: eine laufende Nummer, die Zeit des Hubs, der Commit von \type{main},
 dessen Register er verwendet hat, die Commits der Policies, je Referenz die Angabe, ob die
 Bewegung ein Fast-Forward war, die Identität des Akteurs aus dem Register und der Hash des
@@ -522,6 +524,100 @@ nachrechnen.
 Sie hält keinen Commit am Leben: Ein umgeschriebener Verlauf kann den Hub verlassen, und ein
 Eintrag bleibt auch ohne seine Commits lesbar, weil der Hub bei der Annahme festhält, was sich
 später nicht mehr berechnen lässt.
+
+\subsection{Format und Prüfung}
+
+Beide Formate sind gebaut, mit einem Schreiber und einem strengen Leser im Kern (ADR-025).
+Ein Ref-Update, das \type{main} nach einem Merge bewegt und einen Tag setzt, sieht so aus, mit
+gekürzten Werten:
+
+\starttyping
+stemma-protocol 1
+hub https://hub.example
+repository 00112233445566778899aabbccddeeff
+ref heads/main b3:a1a1a1a1... b3:11111111... b3:22222222...
+evidence b3:e1e1e1e1...
+ref tags/v0.2.0 - - b3:22222222...
+evidence -
+key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI...
+signature U1NIU0lHAAAAAQAAADMAAAALc3NoLWVk...
+\stoptyping
+
+Der Akteur signiert die Zeilen von \type{hub} bis \type{key}.
+Eine Zeile \type{ref} nennt den Namen, \type{previous}, \type{old} und \type{new}, die Zeile
+\type{evidence} darunter den Beleg.
+Die Referenzen stehen in der Reihenfolge ihrer Namen, jede einmal und mindestens eine.
+Die Signatur steht auf einer Zeile, in der Form der Zeile \type{cosign} des Registers
+(\in{Kapitel}[chap:phase4]).
+
+Der Eintrag der Aufzeichnung beginnt mit diesem Ref-Update, von der ersten Zeile an, und setzt
+die Zeilen des Hubs darunter:
+
+\starttyping
+number 98
+time 1795000100
+register b3:11111111...
+policy b3:55555555...
+fast-forward heads/main yes
+fast-forward tags/v0.2.0 no
+actor human daniel
+previous b3:a0a0a0a0...
+hub-signature U1NIU0lHAAAAAQAAADMAAAALc3NoLWVk...
+\stoptyping
+
+Der Hash des Eintrags deckt alles vor der Zeile \type{hub-signature}, also auch die Signatur
+des Akteurs.
+Der Hub signiert den Text dieses Hashes als Beweis mit eigenem Typ.
+Der Akteur signiert in einem Eintrag genau einen Teil, das Ref-Update; alles andere ist eine
+Aussage des Hubs unter dessen einer Signatur.
+Eine Quittung beginnt damit Byte für Byte mit der Nachricht, die der Klon gesendet hat.
+
+Der Stand einer Aufzeichnung ist klein: die Nummer und der Hash des letzten Eintrags und je Name
+der Hash seines letzten Eintrags mit dem Commit, den dieser Eintrag hinterlassen hat.
+Ein Ref-Update setzt die Aufzeichnung fort, wenn es ihr Repository nennt und jede Referenz den
+letzten Eintrag ihres Namens als \type{previous} und dessen Commit als \type{old} nennt.
+Diese eine Regel gilt für den Schreiber und für den Leser (\type{Chain}).
+Der Schreiber bekommt vom Aufrufer das Ziel des Eintrags und eine Funktion, die mit dem
+Schlüssel des Hubs signiert; der Kern kennt weder die Datei noch den Schlüssel.
+Jede Ablehnung kommt, bevor das erste Byte geschrieben ist.
+
+Wer die Aufzeichnung liest, prüft vier Dinge:
+
+\startitemize[n,packed]
+\item die Form jedes Eintrags und seine beiden Signaturen, schon beim Lesen;
+\item die Kette des Repositorys: Jeder Eintrag trägt die nächste Nummer und nennt den Hash des
+Eintrags davor;
+\item die Kette jedes Namens, nach der Regel oben;
+\item die Schlüssel: Den Eintrag hat der Schlüssel signiert, den der Hub für diese Nummer führt
+(\in{Abschnitt}[sec:hub-anchor]), und der Schlüssel des Akteurs war im Register des genannten
+Commits ein aktiver Schlüssel dieses Akteurs.
+\stopitemize
+
+Bei $k$ Einträgen mit zusammen $r$ Referenzen und $n$ Namen kostet die Prüfung der Ketten
+$O(k + r \log n)$ Schritte, dazu das Lesen der Bytes und zwei Signaturen je Eintrag.
+Der Stand braucht Speicher für $n$ Namen, und die Prüfung nimmt die Einträge einzeln entgegen.
+
+\startinfobox
+{\bf Grenzfälle der Aufzeichnung.}
+Ein Ref-Update, das nichts bewegt (\type{old} gleich \type{new}), lehnt schon der Leser ab,
+ebenso einen Tag, der von einem Commit auf einen anderen wechselt, und ein \type{old} mit einem
+Commit neben \type{previous -}.
+Ein gelöschter Name bleibt im Stand, ohne Commit: Wer ihn neu anlegt, nennt den Eintrag, der ihn
+gelöscht hat.
+Ein Fast-Forward ist nur eine Bewegung von einem Commit zu einem anderen; Anlegen und Löschen
+tragen \type{no}.
+Fehlt der Commit des Registers im Objektspeicher, einer seiner Trees auf dem Weg zum Register
+oder die Registerdatei selbst, meldet der Leser den Eintrag als nicht mehr prüfbar, nicht als
+beschädigt: Ketten und Signaturen gelten weiter.
+Ein Commit, der vorhanden ist und kein Register enthält, ist dagegen ein Fehler, ebenso ein
+Register, das sich nicht lesen lässt oder an dessen Stelle keine Datei steht, und ein Commit mit
+offenem Konflikt, den \type{main} nie hält (ADR-019).
+Ein Leser, der mit einer Quittung mitten in der Aufzeichnung beginnt, kennt die Namen davor
+nicht und prüft bei jedem Namen erst das zweite Ref-Update gegen das erste.
+Schreiben kann nur, wer die Aufzeichnung vom ersten Eintrag an gelesen hat.
+Trägt ein Eintrag die Nummer des letzten bekannten Eintrags und einen anderen Hash, hat der Hub
+seine Aufzeichnung umgeschrieben; zwei solche Einträge mit der Signatur des Hubs belegen es.
+\stopinfobox
 
 \subsection{Remote-Referenzen}
 

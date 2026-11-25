@@ -1,7 +1,9 @@
 # ADR-026: The key of a hub and the anchors
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 and 2026-11-24 (STEMMA-274)
-and carried into the ADRs by STEMMA-280. Nothing of it is implemented yet.
+and carried into the ADRs by STEMMA-280. Built are the signature of the hub over a record entry,
+the check of a receipt and the keys of a hub by record number (STEMMA-291, ADR-025); the pinning,
+the anchors and the rest are not implemented yet.
 
 ## Context
 

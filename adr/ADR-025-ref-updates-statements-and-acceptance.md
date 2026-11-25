@@ -2,8 +2,10 @@
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 and 2026-11-24 (STEMMA-56
 for the ref update and its record, STEMMA-273 for the enforcement, with the addenda of STEMMA-274,
-STEMMA-276 and STEMMA-278) and carried into the ADRs by STEMMA-280. Nothing of it was measured or
-built. The names of functions are a direction for the slices.
+STEMMA-276 and STEMMA-278) and carried into the ADRs by STEMMA-280. Nothing of it was measured.
+Built are the formats of the ref update and of the record with their writers and strict readers
+(STEMMA-291, see "The formats as built"); the statements and the accepting operation are not. The
+names of functions that are not built yet are a direction for the slices.
 
 ## Context
 
@@ -102,6 +104,111 @@ of ADR-009 gets no file that only the hub knows.
 Rejected: an entry type for refused requests, the record as a root of the removal, a record that
 only the operator reads, a record that travels with every fetch, and a hub that writes the entry
 between two calls of the core.
+
+### The formats as built
+
+Built in STEMMA-291, in `stemma_core::protocol::record`. Both formats are line-oriented text by
+the rules of ADR-023: a line ends with a line feed, and a field is separated by one space. New
+with these formats is that a value that is not there is written `-`.
+
+```text
+stemma-protocol 1                                   the ref update
+hub <address of the hub>
+repository <32 lower-case hexadecimal digits>
+ref <qualified name> <previous> <old> <new>         one or more pairs of `ref` and `evidence`,
+evidence <hash of a statement>                      in the order of the qualified names
+key ssh-ed25519 <base64>
+signature <SSHSIG signature on one line>
+
+<the ref update, from its first line on>            the record entry, and so the receipt
+number <n>
+time <seconds since the Unix epoch>
+register <commit>
+policy <commit>                                     zero or more
+fast-forward <qualified name> <yes or no>           one for each `ref` line, in the same order
+actor <human or agent> <id>
+previous <hash of the entry before, or `-`>
+hub-signature <SSHSIG signature on one line>
+```
+
+- **The payload.** The actor signs the lines from `hub` to `key`, as a proof with the type tag
+  `ref-update`. The first line and the `signature` line are the message around it. The address of
+  the hub is the part of the address of a remote before `/<namespace>/<repository>` (ADR-023), by
+  the same rule of spelling. The references stand in the order of the bytes of their qualified
+  names, each once, at least one. The evidence has the form of an object ID; how the hash of a
+  statement is computed belongs to the slice of the statements.
+- **A move.** A reader and the constructor refuse the same three things: `old` equal to `new`,
+  which includes `-` and `-` (the record holds moves only); a tag with a commit before and after
+  (ADR-008); and an `old` that names a commit while `previous` is `-`, because a name that the
+  hub never saw has no value.
+- **A signature on one line.** A signature is the Base64 body of the armored SSHSIG form without
+  its line breaks, as the `cosign` line of the register writes it. A reader refuses every text
+  that is not what the writer writes for the signature it read.
+- **The entry.** The first part is the ref update byte for byte as received, its first line and
+  the signature of the actor included, so a receipt begins with the message that the client
+  sent. The hash of an entry is the BLAKE3 hash of the line `stemma-record-hash 1` and
+  everything before the `hub-signature` line. It covers the signature of the actor too: a reader
+  checks that signature without the hub, and the hub cannot exchange it afterwards. The hub
+  signs the text of the hash as a proof with the type tag `record-entry`.
+- **The lines of the hub.** The number counts from 1. The first entry of a repository names
+  `previous -`, and no other entry does. The policies stand in the order in which the hub names
+  them. `fast-forward` names each reference of the update again and says `yes` only for a
+  reference that exists before and after the move: a reference that is created or deleted is
+  never a fast-forward. The actor is the identity of the register, `human <id>` or `agent <id>`.
+- **Requirement 5 of the accepting operation.** The entry holds one part that an actor signs, the
+  payload of the ref update. Everything else is a statement of the hub under its one signature.
+
+The readers hold the rule of ADR-005 and check the signatures as well: the signature of the actor
+against the key of the payload, and the signature of the hub against the key that it names. A
+signature of the actor that names another key than the `key` line is refused as such, apart from
+one that names that key and does not verify, so a sender can tell a wrong key from a changed
+payload.
+A value of either type therefore carries signatures that verify.
+
+Whether the keys are the right ones is asked apart: the key of the hub against the key that the
+clone pinned and the former keys with their ranges (ADR-026), and the key of the actor against
+the register of the register commit.
+That last check answers "no longer checkable" where the commit, its tree, a tree on the path of
+the register or the register file itself is gone.
+It refuses where the commit is there and records an open conflict, which `main` never holds
+(ADR-019), where it holds no register, where the register does not hold the key as an active key
+of the actor, and where the register cannot be read: the store fails, the path of the register is
+taken by something that is no file, or the register is not valid.
+A store cannot tell an object that was removed from one that never was there, so "no longer
+checkable" leaves the actor a statement of the hub alone.
+
+The chains have one rule in one place (`Chain`). It holds the number and the hash of the last
+entry, and for every name the hash of its last entry with the commit that this entry left; a
+deleted name stays without a commit. An update continues the record if it names the repository
+of the record and every reference names the last entry of its name as `previous` and the commit
+that it left as `old`. The writer (`Chain::append`) and the reader (`Chain::accept`) both ask
+this question, so an entry that was written past the writer is refused when it is read. The
+writer takes the destination as a byte sink and the signer of the hub as a function from bytes
+to a signature (ADR-026); every refusal comes before the first byte is written. The writer
+flushes and does not sync: the caller makes the destination durable before the receipt leaves
+the hub, and cuts it back to its old length after a failed write.
+
+- A reader that begins in the middle of a record, such as a clone with a receipt, does not know
+  the names of the entries before. It takes the first update of a name as it is and checks the
+  later ones; the chain of the repository is checked from the first entry that it reads. Such a
+  chain reads only: the writer refuses it, because the reader of the whole record checks every
+  name.
+- The chain does not compare the address of the hub in a payload. A hub may move to another
+  address (ADR-026), so one record can name several; that an update names the address under
+  which the hub was called is asked by the accepting operation, which knows that address.
+- An entry that carries the number of the last entry and has another hash is reported as a
+  rewritten record. Two such entries prove the rewrite where the key of the hub for that number
+  signed both (ADR-026).
+- A record is its entries one after the other, as the writer appends them to one destination.
+  An entry ends with its `hub-signature` line, so a reader splits a record there and reads each
+  entry once.
+  The message that carries a range of the record through the protocol comes with its request.
+- The answer to a stale update is typed in the core (every reference that does not match, with
+  the hash of its last entry and its commit); the error message that carries it comes with the
+  accepting operation.
+
+Example messages are checked in beside those of ADR-023 (`ref-update`, `receipt`). Their keys
+come from fixed seeds of the tests, so their signatures are reproducible; nobody may trust them.
 
 ### The evidence is signed statements, and the log records the act
 
