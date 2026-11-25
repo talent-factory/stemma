@@ -34,6 +34,9 @@ pub enum Action {
     Stall,
     /// Reads the request and closes the connection without an answer.
     Close,
+    /// Reads the head of the request alone and holds the connection, so that the body of the
+    /// client fills the buffers of the socket and its writes wait.
+    StallAfterHead,
 }
 
 /// A request as the responder received it.
@@ -177,6 +180,13 @@ fn serve<S: Read + Write>(
     recorded: &Mutex<Vec<Recorded>>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
+    if let Action::StallAfterHead = action {
+        if let Some(head) = read_head(&mut reader) {
+            recorded.lock().unwrap().push(head);
+        }
+        thread::sleep(HOLD);
+        return Ok(());
+    }
     let request = read_request(&mut reader);
     if let Some(request) = request {
         recorded.lock().unwrap().push(request);
@@ -198,12 +208,31 @@ fn serve<S: Read + Write>(
             Ok(())
         }
         Action::Close => Ok(()),
+        Action::StallAfterHead => unreachable!("handled before the request is read"),
     }
 }
 
 /// Reads one request: the head, and a body by `Content-Length` or in chunks. A request that
 /// breaks off is recorded with what arrived of it.
 fn read_request<R: BufRead>(reader: &mut R) -> Option<Recorded> {
+    let mut request = read_head(reader)?;
+    if let Some(length) = request.header("content-length") {
+        let length: usize = length.parse().ok()?;
+        let mut body = vec![0; length];
+        let read = read_up_to(reader, &mut body);
+        body.truncate(read);
+        request.body = body;
+    } else if request
+        .header("transfer-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+    {
+        request.body = read_chunks(reader);
+    }
+    Some(request)
+}
+
+/// Reads the head of a request, and records it with an empty body.
+fn read_head<R: BufRead>(reader: &mut R) -> Option<Recorded> {
     let mut raw_head = String::new();
     loop {
         let mut line = String::new();
@@ -224,26 +253,13 @@ fn read_request<R: BufRead>(reader: &mut R) -> Option<Recorded> {
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
         .collect();
-    let mut request = Recorded {
+    Some(Recorded {
         method,
         path,
         headers,
         body: Vec::new(),
         raw_head,
-    };
-    if let Some(length) = request.header("content-length") {
-        let length: usize = length.parse().ok()?;
-        let mut body = vec![0; length];
-        let read = read_up_to(reader, &mut body);
-        body.truncate(read);
-        request.body = body;
-    } else if request
-        .header("transfer-encoding")
-        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
-    {
-        request.body = read_chunks(reader);
-    }
-    Some(request)
+    })
 }
 
 fn read_up_to<R: Read>(reader: &mut R, buf: &mut [u8]) -> usize {
@@ -305,7 +321,9 @@ fn server_config() -> Arc<rustls::ServerConfig> {
     Arc::new(config)
 }
 
-/// A loopback port without a listener: a connection to it is refused at once.
+/// A loopback port without a listener: a connection to it is refused, at once on Linux and
+/// macOS and after the retries of the connect on Windows (about two seconds). Another test may
+/// bind the port in between, which is rare.
 pub fn unused_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()
@@ -318,4 +336,20 @@ pub fn example(name: &str) -> &'static [u8] {
         .find(|example| example.name == name)
         .unwrap_or_else(|| panic!("no example `{name}`"))
         .bytes
+}
+
+/// Removes the proxy variables from the environment of the test process, so that a connection
+/// with TLS to the responder does not go through a proxy of the machine. Every test that calls
+/// it sets the same state, so tests that run at the same time do not disturb each other.
+pub fn without_proxy() {
+    for name in [
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        std::env::remove_var(name);
+    }
 }

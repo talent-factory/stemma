@@ -94,6 +94,18 @@ impl Status {
     }
 }
 
+/// Whether the values of `WWW-Authenticate` name the scheme `Bearer` in one of their challenges.
+/// A value may hold several challenges, each a scheme and its parameters, separated by commas;
+/// an element that begins with a word without `=` begins a challenge, and that word is its scheme.
+pub(crate) fn names_bearer<'a>(values: impl IntoIterator<Item = &'a str>) -> bool {
+    values.into_iter().any(|value| {
+        value.split(',').any(|element| {
+            let word = element.trim_start().split([' ', '\t']).next().unwrap_or("");
+            !word.contains('=') && word.eq_ignore_ascii_case("bearer")
+        })
+    })
+}
+
 /// A `Retry-After` of a number of seconds: decimal digits alone. The form of a date is not read.
 fn seconds(value: &str) -> Option<Duration> {
     if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
@@ -166,6 +178,28 @@ mod tests {
             let found = Status::classify(code, true, None, None);
             assert_eq!(found, class, "{code}");
             assert_eq!(found.code(), code);
+        }
+    }
+
+    #[test]
+    fn bearer_is_found_in_every_challenge_of_every_value() {
+        for values in [
+            vec!["Bearer"],
+            vec!["bearer"],
+            vec![r#"Bearer realm="hub", error="invalid_token""#],
+            vec![r#"Basic realm="x", Bearer realm="y""#],
+            vec!["Basic realm=x", "Bearer"],
+        ] {
+            assert!(names_bearer(values.iter().copied()), "{values:?}");
+        }
+        for values in [
+            vec![],
+            vec!["Basic"],
+            vec!["Bearerish"],
+            vec![r#"Basic realm="Bearer""#],
+            vec![r#"Basic realm=x, error=Bearer"#],
+        ] {
+            assert!(!names_bearer(values.iter().copied()), "{values:?}");
         }
     }
 

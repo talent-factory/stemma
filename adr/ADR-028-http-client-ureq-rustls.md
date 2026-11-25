@@ -84,19 +84,22 @@ feature `rustls`) and the four exceptions of `deny.toml`.
 
 - **The tree.** `Cargo.lock` gained 24 package names, the count of the research note, and two
   second versions of names that were there: `getrandom` 0.2 and `windows-sys` 0.52, both through
-  `ring`; `cargo deny check` reports them as warnings. Eight of the 24 are the target crates of
-  `windows-sys` 0.52, which are built on Windows only.
+  `ring`; `cargo deny check` reports them as warnings. Nine of the 24 are built on Windows only:
+  `windows-targets` 0.52 and its eight target crates.
 - **The mapping.** The client is `HttpTransport`, which implements `Transport` and maps its
   requests to the paths of ADR-023 below the address of the repository. A request body and the
-  body of an answer are streamed through `Read`. The token travels as `Authorization: Bearer`
+  body of an answer are streamed through `Read`; the token answer of a sign-in is the one body
+  that the transport reads into memory, up to its bound. The token travels as `Authorization: Bearer`
   with every request after the sign-in, except the two requests of a sign-in.
 - **The media types.** ADR-022 leaves it to this slice how the transport tells a message from an
   error message without reading the body. A body of the protocol carries
-  `application/vnd.stemma.message` or `application/vnd.stemma.error`. A message is a 2xx status
-  with the first, an error message a 4xx or 5xx status with the second; a 204 is a message
-  without a body. Every other answer is `TransportError::NoAnswer` with the status in its words:
-  a redirect with its new address, a page of a proxy, a status and a media type that disagree,
-  and a body with a content encoding.
+  `application/vnd.stemma.message` or `application/vnd.stemma.error`. A message is an answer with
+  the status 200 and the first, or with the status 204 and no body; an error message is an answer
+  with a 4xx or 5xx status and the second. Every other answer is `TransportError::NoAnswer` with
+  the status in its words: another 2xx, a redirect with its new address, a page of a proxy, a
+  status and a media type that disagree, a body with a content encoding or with a transfer
+  encoding other than chunks, a body without a length (its end cannot be told from a cut), and an
+  answer that is no HTTP, such as another service behind the port.
 - **The status.** The client keeps the status of the last answer as the coarse class of the
   table of ADR-023 (`Status`: the codes of the table, a 401 with `WWW-Authenticate: Bearer`,
   `Retry-After` in seconds for 429 and 503, and the new address of a 3xx). A command reads it for
@@ -105,17 +108,25 @@ feature `rustls`) and the four exceptions of `deny.toml`.
   that the transport cannot send a second time.
 - **The timeouts.** 30 seconds to resolve the name of the host and again 30 seconds to connect,
   including the TLS handshake, and 60 seconds of idle time for every single read and write
-  (`timeout_per_read`, `timeout_per_write` of `ureq`). No timeout covers a whole request.
+  (`timeout_per_read`, `timeout_per_write` of `ureq`). Through a proxy the name of the host is
+  not resolved by the client; the name of the proxy and the `CONNECT` exchange count to the
+  connection. No timeout covers a whole request.
 - **The CA file.** `ureq` takes either the compiled-in roots or a list of its own, not both. With
   a CA file the certificates of the file are therefore the only roots of that remote, in place of
   the Mozilla roots, not in addition to them. That is what a hub with an own CA needs, and it is
-  stricter: a public CA cannot issue a certificate for that hub. A file that cannot be read or
-  holds no certificate in PEM is a typed error when the transport is made.
-- **Proxies.** A connection with `https://` uses the proxy of the environment (`ALL_PROXY`,
-  `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`) through `CONNECT`, so the proxy sees no token; one with
-  `http://` towards a loopback address uses none.
-- **No token in a log.** `ureq` writes the raw bytes of every request, with the
-  `Authorization` header, at the log level `trace`, and redacts the header at `debug`. The crate
+  stricter: a public CA cannot issue a certificate for that hub. A file that cannot be read,
+  holds no certificate in PEM, or holds a certificate that rustls does not take as a root is a
+  typed error when the transport is made; `ureq` would drop such a certificate without a word.
+  rustls is a direct dependency for this check, in the version that `ureq` brings.
+- **Proxies.** A connection with `https://` uses an HTTP or HTTPS proxy of the environment
+  through `CONNECT`, so the proxy sees no token: the first of `ALL_PROXY`, `HTTPS_PROXY` and
+  `HTTP_PROXY` that is set, unless `NO_PROXY` names the host, read once when the transport is
+  made. A SOCKS proxy in the environment is not used, because `ureq` without its feature
+  `socks-proxy` would connect past it; the connection then goes without a proxy. A connection
+  with `http://` towards a loopback address uses none.
+- **No token in a log.** `ureq` (through `ureq-proto`) writes the raw bytes of every request and
+  answer at the log level `trace`, among them the `Authorization` header and the token answer of
+  a sign-in, and redacts every header but a fixed list at `debug`. The crate
   turns on the features `max_level_debug` and `release_max_level_debug` of `log`, which remove the
   records at `trace` from the whole build; a constant assertion in the crate fails the build if
   the level is raised. No crate of the workspace installs a logger today.
@@ -128,9 +139,11 @@ on a loopback socket, written with the standard library, that answers each reque
 that the test sets and records what the client sent. With a test CA in `tests/data/test-ca` it
 speaks TLS through rustls, which the tree already holds. The tests cover the mapping of every
 status of the table, a status and a media type that disagree, the redirect that is not followed,
-the refused `http://` address, the idle timeout before and inside an answer, a body that ends
-early, a request body that cannot be read, the CA file, and that the token is in no error, no
-`Debug` form, and no log record. The end-to-end tests against a hub stay in stemma-hub
+the refused `http://` address, the idle timeout before and inside an answer and while a request
+body is sent, a body that ends early or has no length, a request body that cannot be read, the
+content encodings, the CA file, and that the token is in no error, no `Debug` form, and no log
+record. Not tested: the timeout to connect, which needs an address that does not answer and is
+not portable, and the reuse of a connection, because every answer of the responder closes it. The end-to-end tests against a hub stay in stemma-hub
 (ADR-022).
 
 ## Open Points

@@ -504,7 +504,8 @@ die Oberfläche im Terminal.
 Er liest keine Nachricht: Der Kern schreibt die Anfrage und liest die Antwort, der Client trägt
 die Bytes und sagt, ob eine Antwort die verlangte Nachricht ist oder ein Fehler an ihrer Stelle.
 TLS ist rustls mit den Wurzelzertifikaten von Mozilla, die im Programm enthalten sind, sodass sich
-der Client auf jeder Plattform gleich verhält und nichts vom System braucht.
+der Client auf jeder Plattform gleich verhält und nichts vom Vertrauensspeicher des Systems
+braucht.
 
 \startitemize[n]
 \item Der Client prüft die Adresse des Remote, bevor er eine Verbindung öffnet.
@@ -514,22 +515,24 @@ der Client auf jeder Plattform gleich verhält und nichts vom System braucht.
 (\in{Tabelle}[tab:hub-requests]).
 Nach einer Anmeldung trägt jede Anfrage das Token als \type{Authorization: Bearer}, ausser den
 zwei Anfragen der Anmeldung selbst.
-Der Rumpf fliesst in beide Richtungen als Strom.
+Der Rumpf fliesst in beide Richtungen als Strom; nur die Antwort mit dem Token liest der Client
+ganz, bis zu ihrer Schranke.
 \item Er ordnet die Antwort nach ihrem Status und ihrem Medientyp ein.
-Ein Status 2xx mit dem Medientyp einer Nachricht (\type{application/vnd.stemma.message}) ist die
-verlangte Nachricht.
+Ein Status 200 mit dem Medientyp einer Nachricht (\type{application/vnd.stemma.message}) ist die
+verlangte Nachricht, ein Status 204 eine Nachricht ohne Rumpf.
 Ein Status 4xx oder 5xx mit dem Medientyp eines Fehlers (\type{application/vnd.stemma.error})
 ist ein Fehler, dessen Art der Kern aus dem Rumpf liest.
-Alles andere ist keine Antwort des Protokolls, etwa die Seite eines Proxys, eine Weiterleitung
-oder ein komprimierter Rumpf, um den der Client nicht gebeten hat; der Fehler nennt den Status.
+Alles andere ist keine Antwort des Protokolls, etwa die Seite eines Proxys, eine Weiterleitung,
+ein komprimierter Rumpf, um den der Client nicht gebeten hat, oder ein Rumpf ohne Länge, dessen
+Ende sich nicht von einem Abbruch unterscheiden lässt; der Fehler nennt den Status.
 \stopitemize
 
-Der Client folgt keiner Weiterleitung und nennt stattdessen die neue Adresse, damit das Token nie
-an einen anderen Host geht.
+Der Client folgt keiner Weiterleitung und nennt stattdessen die neue Adresse, falls die Antwort
+sie nennt, damit das Token nie an einen anderen Host geht.
 Das Token liegt nur im Speicher des Clients: Es steht in keinem Fehler, in keiner Ausgabe zur
 Fehlersuche und in keinem Eintrag eines Logs.
-Für jeden Verbindungsaufbau gilt eine Frist von 30 Sekunden und für jedes einzelne Lesen und
-Schreiben eine Frist von 60 Sekunden ohne Daten.
+Die Auflösung des Namens hat eine Frist von 30 Sekunden, der Aufbau der Verbindung mit TLS noch
+einmal 30 Sekunden, und jedes einzelne Lesen und Schreiben eine Frist von 60 Sekunden ohne Daten.
 Für eine ganze Anfrage gilt keine Frist, sodass ein langer Klon nicht abbricht, solange Bytes
 fliessen.
 Den Status behält der Client als grobe Klasse der letzten Antwort; daraus liest ein Befehl, was

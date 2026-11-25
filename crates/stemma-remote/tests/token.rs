@@ -61,8 +61,12 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         NonZeroU64::new(600).unwrap(),
     )
     .encode();
+    // A token answer that its reader refuses: the token line holds the secret, the lifetime is
+    // no number.
+    let broken = format!("stemma-protocol 1\ntoken {SECRET}\nlifetime soon\n");
     let page: &[u8] = b"<html>Unauthorized</html>";
     let responder = Responder::start(vec![
+        Action::Respond(message(broken.as_bytes())),
         Action::Respond(message(example("challenge"))),
         Action::Respond(message(&token_answer)),
         Action::Respond(message(example("refs"))),
@@ -87,12 +91,20 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
             example("error-malformed"),
         )),
         Action::Respond(message(example("refs"))),
+        Action::Respond(message(example("objects"))),
+        Action::Respond(message(example("receipt"))),
+        Action::Respond(message(example("challenge"))),
     ]);
     let mut transport = HttpTransport::new(&responder.remote(), Timeouts::DEFAULT).unwrap();
     let mut texts = Vec::new();
+    let signed = example("signed-challenge");
+
+    let error = transport.answer_challenge(&mut &signed[..]).unwrap_err();
+    assert!(matches!(error, TransportError::NoAnswer { .. }), "{error}");
+    assert!(!transport.holds_token());
+    texts.push(error_text(&error));
 
     assert!(matches!(transport.challenge().unwrap(), Answer::Message(_)));
-    let signed = example("signed-challenge");
     match transport.answer_challenge(&mut &signed[..]).unwrap() {
         SignedIn::Accepted(lifetime) => assert_eq!(lifetime, Duration::from_secs(600)),
         other => panic!("expected a token, got {other:?}"),
@@ -110,6 +122,18 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
     drop(refused);
     assert!(transport.holds_token());
     assert!(matches!(transport.refs().unwrap(), Answer::Message(_)));
+    assert!(matches!(
+        transport.fetch(&mut &example("fetch")[..]).unwrap(),
+        Answer::Message(_)
+    ));
+    assert!(matches!(
+        transport
+            .ref_update(&mut &example("ref-update")[..])
+            .unwrap(),
+        Answer::Message(_)
+    ));
+    // A challenge while a token is held goes without it as well.
+    assert!(matches!(transport.challenge().unwrap(), Answer::Message(_)));
     texts.push(format!("{transport:?}"));
 
     // The two requests of a sign-in carry no token; every other request after it carries it.
@@ -120,6 +144,7 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         .collect();
     let bearer = format!("Bearer {SECRET}");
     let expected = [
+        ("token", None),
         ("challenge", None),
         ("token", None),
         ("refs", Some(bearer.as_str())),
@@ -128,6 +153,9 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         ("refs", Some(bearer.as_str())),
         ("token", None),
         ("refs", Some(bearer.as_str())),
+        ("fetch", Some(bearer.as_str())),
+        ("refs", Some(bearer.as_str())),
+        ("challenge", None),
     ];
     assert_eq!(authorization.len(), expected.len());
     for ((path, found), (endpoint, wanted)) in authorization.iter().zip(expected) {
@@ -139,7 +167,8 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         assert!(!holds_token(text), "the token is in `{text}`");
     }
     let records = RECORDS.lock().unwrap();
-    // The logger saw the requests of `ureq`, with the header of the token redacted, so the check
+    // The logger saw the requests of `ureq`; the check depends on the form of its records at the
+    // level debug, which an update of `ureq` may change, with the header of the token redacted, so the check
     // below has something to look at.
     assert!(records
         .iter()

@@ -88,24 +88,27 @@ impl Base {
 }
 
 /// The host of the part of an address after the scheme, with its brackets for IPv6 and without
-/// its port. A [`RemoteAddress`] has no `@`, so there is no user part to skip.
+/// its port. A [`RemoteAddress`] has no `@`, so there is no user part to skip. A port that is not
+/// decimal digits, or anything else after the host, leaves the whole authority, which is no
+/// loopback host.
 fn host(rest: &str) -> &str {
     let authority = rest.split('/').next().unwrap_or(rest);
-    if authority.starts_with('[') {
-        // `[::1]:8080`: the host ends with the bracket, and a port may follow. Anything else
-        // after the bracket leaves the whole authority, which is no loopback host.
-        return match authority.find(']') {
-            Some(end)
-                if authority[end + 1..].is_empty() || authority[end + 1..].starts_with(':') =>
-            {
-                &authority[..=end]
+    let split = if authority.starts_with('[') {
+        // `[::1]:8080`: the host ends with the bracket, and a port may follow.
+        authority.find(']').map(|end| authority.split_at(end + 1))
+    } else {
+        authority.find(':').map(|colon| authority.split_at(colon))
+    };
+    match split {
+        None => authority,
+        Some((host, "")) => host,
+        Some((host, port)) => match port.strip_prefix(':') {
+            Some(digits) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+                host
             }
             _ => authority,
-        };
+        },
     }
-    authority
-        .split_once(':')
-        .map_or(authority, |(host, _port)| host)
 }
 
 /// Whether the host is one of the loopback hosts of ADR-028. `localhost` is compared without
@@ -156,6 +159,9 @@ mod tests {
             "http://[::1].hub.example/ns/repo",
             "http://0.0.0.0/ns/repo",
             "http://10.0.0.1:8080/ns/repo",
+            "http://localhost:evil.example/ns/repo",
+            "http://127.0.0.1:/ns/repo",
+            "http://[::1]:x/ns/repo",
         ] {
             assert_eq!(base(address), None, "{address}");
         }

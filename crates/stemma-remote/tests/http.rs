@@ -103,7 +103,7 @@ type Row = (u16, &'static [(&'static str, &'static str)], Status);
 #[test]
 fn every_status_of_the_table_hands_its_error_over_with_its_class() {
     let error = example("error-malformed");
-    let table: [Row; 10] = [
+    let table: [Row; 12] = [
         (400, &[], Status::Malformed),
         (401, &[("WWW-Authenticate", "Bearer")], Status::SignInNeeded),
         (403, &[], Status::Forbidden),
@@ -122,6 +122,9 @@ fn every_status_of_the_table_hands_its_error_over_with_its_class() {
             &[("Retry-After", "30")],
             Status::Busy(Some(Duration::from_secs(30))),
         ),
+        // Outside the table, an error message is still handed over, with the plain code.
+        (401, &[], Status::Other(401)),
+        (502, &[], Status::Other(502)),
     ];
     let actions = table
         .iter()
@@ -215,42 +218,42 @@ fn a_204_is_a_message_without_a_body() {
 
 #[test]
 fn a_redirect_is_not_followed_and_names_its_address() {
-    let refs = example("refs");
+    // The new address lies on the responder itself, so a redirect that were followed would
+    // reach the action that the test queues after the redirects, and be counted.
+    let moved = format!("{REPOSITORY_PATH}/moved");
     let mut actions: Vec<Action> = [301, 302, 303, 307, 308]
         .iter()
-        .map(|code| {
-            Action::Respond(response(
-                *code,
-                &[("Location", "https://elsewhere.example/ns/repo/refs")],
-                b"",
-            ))
-        })
+        .map(|code| Action::Respond(response(*code, &[("Location", moved.as_str())], b"")))
         .collect();
-    // Were a redirect followed, the next connection would answer it.
-    actions.push(Action::Respond(message(refs)));
+    // A 307 resends the body of a POST, and with it the token.
+    actions.push(Action::Respond(response(
+        307,
+        &[("Location", moved.as_str())],
+        b"",
+    )));
+    actions.push(Action::Respond(message(example("refs"))));
     let responder = Responder::start(actions);
     let mut transport = transport(&responder);
     for code in [301, 302, 303, 307, 308] {
         let detail = no_answer(transport.refs());
-        assert!(
-            detail.contains("https://elsewhere.example/ns/repo/refs"),
-            "{code}: {detail}"
-        );
+        assert!(detail.contains(&moved), "{code}: {detail}");
         assert!(detail.contains("not followed"), "{code}: {detail}");
         assert_eq!(
             transport.last_status(),
-            Some(&Status::Redirect(
-                code,
-                Some("https://elsewhere.example/ns/repo/refs".to_owned())
-            ))
+            Some(&Status::Redirect(code, Some(moved.clone())))
         );
     }
+    let detail = no_answer(transport.fetch(&mut &example("fetch")[..]));
+    assert!(detail.contains("status 307"), "{detail}");
     // One request per redirect, and none to the new address.
-    let requests = responder.requests();
-    assert_eq!(requests.len(), 5);
-    assert!(requests
-        .iter()
-        .all(|request| request.path == format!("{REPOSITORY_PATH}/refs")));
+    let paths: Vec<String> = responder
+        .requests()
+        .into_iter()
+        .map(|request| request.path)
+        .collect();
+    let mut expected = vec![format!("{REPOSITORY_PATH}/refs"); 5];
+    expected.push(format!("{REPOSITORY_PATH}/fetch"));
+    assert_eq!(paths, expected);
 }
 
 #[test]
@@ -349,14 +352,20 @@ fn a_body_that_stops_ends_after_the_idle_time_with_an_error_of_its_reader() {
 
 #[test]
 fn the_idle_time_counts_per_read_and_not_for_the_whole_answer() {
-    // The client waits 300 ms per read; the answer begins at once and every read is quick, so
-    // a body that takes longer than the idle time as a whole still arrives.
+    // The answer begins at once and every read finds bytes, so a body whose reading takes more
+    // than twice the idle time as a whole still arrives.
+    let idle = Duration::from_millis(500);
     let body = vec![b'y'; 4 * 1024 * 1024];
     let responder = Responder::start(vec![Action::Respond(message(&body))]);
-    let mut transport = HttpTransport::new(&responder.remote(), short()).unwrap();
+    let mut transport = HttpTransport::new(
+        &responder.remote(),
+        Timeouts::new(Duration::from_secs(5), idle),
+    )
+    .unwrap();
     let Answer::Message(mut reader) = transport.refs().unwrap() else {
         panic!("expected a message");
     };
+    let start = Instant::now();
     let mut read = Vec::new();
     let mut buf = [0; 64 * 1024];
     loop {
@@ -366,9 +375,26 @@ fn the_idle_time_counts_per_read_and_not_for_the_whole_answer() {
         }
         read.extend_from_slice(&buf[..n]);
         // Time between the reads of the application does not count.
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(read.len(), body.len());
+    assert!(start.elapsed() > 2 * idle, "{:?}", start.elapsed());
+}
+
+#[test]
+fn a_request_body_that_the_other_side_does_not_read_ends_after_the_idle_time() {
+    let responder = Responder::start(vec![Action::StallAfterHead]);
+    let mut transport = HttpTransport::new(&responder.remote(), short()).unwrap();
+    // More than the buffers of the sockets hold on every platform.
+    let mut body = io::repeat(b'a').take(64 * 1024 * 1024);
+    let start = Instant::now();
+    match transport.fetch(&mut body) {
+        Err(TransportError::Carrier(error)) => {
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
+        }
+        other => panic!("expected a timeout, got {other:?}"),
+    }
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 
 #[test]
@@ -431,4 +457,69 @@ fn a_body_dropped_before_its_end_allows_the_next_request() {
     drop(body);
     let (_, body) = read_all(transport.refs().unwrap());
     assert_eq!(body, refs);
+}
+
+#[test]
+fn every_line_and_value_of_content_encoding_is_checked() {
+    let refs = example("refs");
+    let with = |headers: &[(&str, &str)]| {
+        let mut all = vec![("Content-Type", MESSAGE_MEDIA_TYPE)];
+        all.extend_from_slice(headers);
+        Action::Respond(response(200, &all, refs))
+    };
+    let responder = Responder::start(vec![
+        with(&[
+            ("Content-Encoding", "identity"),
+            ("Content-Encoding", "zstd"),
+        ]),
+        with(&[("Content-Encoding", "identity, gzip")]),
+        with(&[("Transfer-Encoding", "gzip")]),
+        with(&[("Content-Encoding", "identity")]),
+    ]);
+    let mut transport = transport(&responder);
+    assert!(no_answer(transport.refs()).contains("zstd"));
+    assert!(no_answer(transport.refs()).contains("gzip"));
+    assert!(no_answer(transport.refs()).contains("transfer encoding `gzip`"));
+    let (is_message, body) = read_all(transport.refs().unwrap());
+    assert!(is_message);
+    assert_eq!(body, refs);
+}
+
+#[test]
+fn a_body_without_a_length_is_no_answer() {
+    // Its end is the close of the connection, which cannot be told from a cut.
+    let mut bytes = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {MESSAGE_MEDIA_TYPE}\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes();
+    bytes.extend_from_slice(example("refs"));
+    let responder = Responder::start(vec![Action::Respond(bytes)]);
+    let detail = no_answer(transport(&responder).refs());
+    assert!(detail.contains("without a length"), "{detail}");
+}
+
+#[test]
+fn a_body_in_chunks_is_a_message() {
+    let refs = example("refs");
+    let mut bytes = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {MESSAGE_MEDIA_TYPE}\r\nTransfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n{:x}\r\n",
+        refs.len()
+    )
+    .into_bytes();
+    bytes.extend_from_slice(refs);
+    bytes.extend_from_slice(b"\r\n0\r\n\r\n");
+    let responder = Responder::start(vec![Action::Respond(bytes)]);
+    let (is_message, body) = read_all(transport(&responder).refs().unwrap());
+    assert!(is_message);
+    assert_eq!(body, refs);
+}
+
+#[test]
+fn another_service_behind_the_port_is_no_answer() {
+    let responder = Responder::start(vec![Action::Respond(b"SSH-2.0-OpenSSH_9.9\r\n".to_vec())]);
+    match transport(&responder).refs() {
+        Err(TransportError::NoAnswer { .. }) => {}
+        other => panic!("expected no answer, got {other:?}"),
+    }
 }

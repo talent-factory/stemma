@@ -13,14 +13,15 @@ use stemma_core::transport::{
 };
 use ureq::config::AutoHeaderValue;
 use ureq::http::{header, HeaderMap, Response};
-use ureq::{Agent, SendBody};
+use ureq::{Agent, Proxy, ProxyProtocol, SendBody};
 
 use crate::address::{Base, Endpoint, Scheme};
-use crate::status::Status;
+use crate::status::{names_bearer, Status};
 use crate::tls;
 
 /// The media type of a message of the protocol, other than an error, in both directions: the
-/// type of the body of a request, and the type that a 2xx answer must carry to be a message.
+/// type of the body of a request, and the type that an answer with the status 200 must carry to
+/// be a message. An answer with the status 204 is a message without a body and needs no type.
 pub const MESSAGE_MEDIA_TYPE: &str = "application/vnd.stemma.message";
 
 /// The media type of an error message of the protocol ([`ErrorMessage`]), which a 4xx or 5xx
@@ -38,7 +39,9 @@ const USER_AGENT: &str = concat!("stemma/", env!("CARGO_PKG_VERSION"));
 #[non_exhaustive]
 pub struct Timeouts {
     /// The longest time to resolve the name of the host, and again the longest time to establish
-    /// the connection, including the handshake of TLS.
+    /// the connection, including the handshake of TLS. Through a proxy, the name of the host is
+    /// not resolved here; the name of the proxy and the `CONNECT` exchange count to the
+    /// connection.
     pub connect: Duration,
     /// The longest time that one read or one write on the connection may wait for the other
     /// side: for the answer to begin, and for every further part of a body in either direction.
@@ -47,7 +50,8 @@ pub struct Timeouts {
 }
 
 impl Timeouts {
-    /// Thirty seconds to connect, and sixty seconds of idle time.
+    /// Thirty seconds to resolve the name, thirty seconds to connect, and sixty seconds of idle
+    /// time.
     pub const DEFAULT: Self = Self {
         connect: Duration::from_secs(30),
         idle: Duration::from_secs(60),
@@ -79,8 +83,8 @@ pub enum ClientError {
         /// The error of the file system.
         error: io::Error,
     },
-    /// The CA file of the remote holds no certificate in PEM, or a PEM section that cannot be
-    /// read.
+    /// The CA file of the remote holds no certificate in PEM, a PEM section that cannot be read,
+    /// or a certificate that rustls does not take as a root.
     CaFileInvalid {
         /// The path of the file.
         path: PathBuf,
@@ -132,9 +136,15 @@ impl Error for ClientError {
 /// The [`Transport`] over HTTP/1.1 to one repository on a hub (ADR-022, ADR-023, ADR-028).
 ///
 /// It is made from the configuration of a remote: its address and its CA file. Making it opens
-/// no connection; every request opens one or reuses one that the last request left open. A
-/// request returns when the head of the answer has arrived, and the body is read by the caller;
-/// a body that ends before its length, or before the last chunk, gives an error of its reader.
+/// no connection; every request opens one or reuses one that an earlier request left open after
+/// its answer was read to the end. A request returns when the head of the answer has arrived,
+/// and the body is read by the caller; a body that ends before its length, or before the last
+/// chunk, gives an error of its reader. An answer whose body has neither a length nor chunks is no
+/// answer, because its end could not be told from a cut.
+///
+/// A request body is sent to its end before the answer is read. A hub that answers early, such
+/// as with 413 for an upload that is too large, and closes the connection, leaves a failure of
+/// the carrier: its error message is lost.
 ///
 /// The token of a sign-in is kept in memory and sent with every request that follows, except
 /// the two requests of a sign-in. The `Debug` form shows the address and whether a token is held,
@@ -161,15 +171,19 @@ impl HttpTransport {
     ///
     /// The address must use `https://`, or `http://` towards `127.0.0.1`, `::1`, or `localhost`.
     /// Without a CA file the roots of trust are the Mozilla roots that are compiled in; with one
-    /// they are the certificates of the file alone. A connection with `https://` uses the proxy
-    /// that the environment names (`ALL_PROXY`, `HTTPS_PROXY`, or `HTTP_PROXY`, and `NO_PROXY`),
-    /// through `CONNECT`, so the proxy sees no token; one with `http://` uses no proxy.
+    /// they are the certificates of the file alone. A connection with `https://` uses an HTTP or
+    /// HTTPS proxy that the environment names, through `CONNECT`, so the proxy sees no token: the
+    /// first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (or their names in lower case) that
+    /// is set, unless `NO_PROXY` names the host. The variables are read here, once. A SOCKS proxy
+    /// in the environment is not used, and the connection goes without a proxy. A connection with
+    /// `http://` uses no proxy.
     ///
     /// # Errors
     ///
     /// [`ClientError::PlainHttp`] for an address with `http://` towards another host, and
     /// [`ClientError::CaFileRead`] or [`ClientError::CaFileInvalid`] for a CA file that cannot be
-    /// read or holds no certificate. The file is read here, once.
+    /// read, holds no certificate, holds a PEM section that cannot be read, or holds a
+    /// certificate that rustls does not take as a root. The file is read here, once.
     pub fn new(remote: &RemoteConfig, timeouts: Timeouts) -> Result<Self, ClientError> {
         let base = Base::new(&remote.address)
             .ok_or_else(|| ClientError::PlainHttp(remote.address.as_str().to_owned()))?;
@@ -188,10 +202,15 @@ impl HttpTransport {
             .timeout_connect(Some(timeouts.connect))
             .timeout_per_read(Some(timeouts.idle))
             .timeout_per_write(Some(timeouts.idle));
-        let builder = match base.scheme() {
-            Scheme::Tls => builder,
-            Scheme::PlainLoopback => builder.proxy(None),
+        let proxy = match base.scheme() {
+            // `ureq` would take a SOCKS proxy and, without its feature `socks-proxy`, connect
+            // past it or fail.
+            Scheme::Tls => Proxy::try_from_env().filter(|proxy| {
+                matches!(proxy.protocol(), ProxyProtocol::Http | ProxyProtocol::Https)
+            }),
+            Scheme::PlainLoopback => None,
         };
+        let builder = builder.proxy(proxy);
         Ok(Self {
             agent: builder.build().new_agent(),
             base,
@@ -264,7 +283,7 @@ impl HttpTransport {
                 result
             }
         };
-        result.map_err(|error| TransportError::Carrier(carrier(error)))
+        result.map_err(failure)
     }
 
     /// Sorts an answer into a message, an error message, or no answer of the protocol, and keeps
@@ -274,43 +293,82 @@ impl HttpTransport {
         response: Response<ureq::Body>,
     ) -> Result<Answer<'static>, TransportError> {
         let headers = response.headers();
+        let location = headers.get(header::LOCATION).map(lossy);
         let status = Status::classify(
             response.status().as_u16(),
-            is_bearer_challenge(headers),
+            names_bearer(
+                headers
+                    .get_all(header::WWW_AUTHENTICATE)
+                    .iter()
+                    .filter_map(|value| value.to_str().ok()),
+            ),
             text(headers, header::RETRY_AFTER),
-            text(headers, header::LOCATION),
+            location.as_deref(),
         );
-        let encoding = text(headers, header::CONTENT_ENCODING)
-            .filter(|encoding| !encoding.trim().eq_ignore_ascii_case("identity"))
-            .map(str::to_owned);
-        let body = response.into_body();
-        let media = body
-            .mime_type()
-            .map(|media| media.trim().to_ascii_lowercase());
         self.last_status = Some(status.clone());
-        if let Some(encoding) = encoding {
-            return Err(TransportError::NoAnswer {
-                detail: format!(
-                    "{status}, with the content encoding `{}`, which the client did not ask for",
-                    encoding.escape_debug()
-                ),
-            });
+        let no_answer = |detail: String| Err(TransportError::NoAnswer { detail });
+        // Every value of every line must be `identity`; a value that is not text is no
+        // `identity` either.
+        if let Some(encoding) = headers
+            .get_all(header::CONTENT_ENCODING)
+            .iter()
+            .map(lossy)
+            .find(|value| {
+                !value
+                    .split(',')
+                    .all(|part| part.trim().eq_ignore_ascii_case("identity"))
+            })
+        {
+            return no_answer(format!(
+                "{status}, with the content encoding `{}`, which the client did not ask for",
+                encoding.escape_debug()
+            ));
         }
-        let reader = || -> Body<'static> { Box::new(BufReader::new(Stream(body.into_reader()))) };
-        match (&status, media.as_deref()) {
-            (Status::Success(204), _) => Ok(Answer::Message(Box::new(io::empty()))),
-            (Status::Success(_), Some(MESSAGE_MEDIA_TYPE)) => Ok(Answer::Message(reader())),
-            (status, Some(ERROR_MEDIA_TYPE)) if status.is_error() => Ok(Answer::Error(reader())),
-            (status, media) => Err(TransportError::NoAnswer {
-                detail: match media {
-                    Some(media) => format!(
-                        "{status}, with a body of the media type `{}`",
-                        media.escape_debug()
-                    ),
-                    None => format!("{status}, with a body without a media type"),
-                },
-            }),
+        let mut chunked = false;
+        for value in headers.get_all(header::TRANSFER_ENCODING).iter().map(lossy) {
+            for part in value.split(',').map(str::trim) {
+                if part.eq_ignore_ascii_case("chunked") {
+                    chunked = true;
+                } else {
+                    return no_answer(format!(
+                        "{status}, with the transfer encoding `{}`",
+                        part.escape_debug()
+                    ));
+                }
+            }
         }
+        if status == Status::Success(204) {
+            return Ok(Answer::Message(Box::new(io::empty())));
+        }
+        let media = headers.get(header::CONTENT_TYPE).map(|value| {
+            let value = lossy(value);
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        });
+        let case: fn(Body<'static>) -> Answer<'static> = match (&status, media.as_deref()) {
+            (Status::Success(200), Some(MESSAGE_MEDIA_TYPE)) => Answer::Message,
+            (status, Some(ERROR_MEDIA_TYPE)) if status.is_error() => Answer::Error,
+            (status, Some(media)) => {
+                return no_answer(format!(
+                    "{status}, with a body of the media type `{}`",
+                    media.escape_debug()
+                ))
+            }
+            (status, None) => {
+                return no_answer(format!("{status}, with a body without a media type"))
+            }
+        };
+        if !chunked && !headers.contains_key(header::CONTENT_LENGTH) {
+            return no_answer(format!(
+                "{status}, with a body without a length, whose end cannot be told from a cut"
+            ));
+        }
+        let body = response.into_body();
+        Ok(case(Box::new(BufReader::new(Stream(body.into_reader())))))
     }
 
     /// Sends a request and sorts its answer.
@@ -384,24 +442,28 @@ fn text(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
-/// Whether a `WWW-Authenticate` header of the answer names the scheme `Bearer`.
-fn is_bearer_challenge(headers: &HeaderMap) -> bool {
-    headers
-        .get_all(header::WWW_AUTHENTICATE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .any(|value| {
-            let scheme = value.trim_start().split([' ', ',']).next().unwrap_or("");
-            scheme.eq_ignore_ascii_case("bearer")
-        })
+/// The text of a header value, with a byte that is no visible ASCII replaced, for a message and a
+/// comparison.
+fn lossy(value: &header::HeaderValue) -> String {
+    String::from_utf8_lossy(value.as_bytes()).into_owned()
 }
 
-/// The error of the carrier as an error of I/O, with the kind `TimedOut` for a timeout.
-fn carrier(error: ureq::Error) -> io::Error {
+/// Why a request failed in `ureq`: a failure of the carrier, or no answer of the protocol when
+/// something answered that is no HTTP answer of the other side, such as another service behind
+/// the port, a head that is too large, or a proxy that refused the tunnel.
+fn failure(error: ureq::Error) -> TransportError {
     match error {
-        ureq::Error::Io(error) => error,
-        ureq::Error::Timeout(_) => io::Error::new(io::ErrorKind::TimedOut, error),
-        other => io::Error::other(other),
+        ureq::Error::Io(error) => TransportError::Carrier(error),
+        ureq::Error::Timeout(_) => {
+            TransportError::Carrier(io::Error::new(io::ErrorKind::TimedOut, error))
+        }
+        ureq::Error::Protocol(_)
+        | ureq::Error::LargeResponseHeader(..)
+        | ureq::Error::ConnectProxyFailed(_)
+        | ureq::Error::BodyStalled => TransportError::NoAnswer {
+            detail: error.to_string(),
+        },
+        other => TransportError::Carrier(io::Error::other(other)),
     }
 }
 

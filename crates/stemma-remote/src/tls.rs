@@ -4,6 +4,8 @@
 use std::fs;
 use std::path::Path;
 
+use rustls::pki_types::CertificateDer;
+use rustls::RootCertStore;
 use ureq::tls::{Certificate, PemItem, RootCerts, TlsConfig, TlsProvider};
 
 use crate::client::ClientError;
@@ -21,30 +23,35 @@ pub(crate) fn config(ca_file: Option<&Path>) -> Result<TlsConfig, ClientError> {
         .build())
 }
 
-/// The certificates of a CA file in PEM, at least one. A private key in the file is skipped.
+/// The certificates of a CA file in PEM: at least one, and each one a certificate that rustls
+/// takes as a root. A private key and a section of another kind in the file are skipped;
+/// `ureq` would otherwise drop a certificate that rustls does not take without a word, and the
+/// handshake would fail as if the hub were at fault.
 fn certificates(path: &Path) -> Result<Vec<Certificate<'static>>, ClientError> {
+    let invalid = |detail: String| ClientError::CaFileInvalid {
+        path: path.to_owned(),
+        detail,
+    };
     let bytes = fs::read(path).map_err(|error| ClientError::CaFileRead {
         path: path.to_owned(),
         error,
     })?;
     let mut certificates = Vec::new();
     for item in ureq::tls::parse_pem(&bytes) {
-        match item {
-            Ok(PemItem::Certificate(certificate)) => certificates.push(certificate),
-            Ok(_) => {}
-            Err(error) => {
-                return Err(ClientError::CaFileInvalid {
-                    path: path.to_owned(),
-                    detail: error.to_string(),
-                })
-            }
+        match item.map_err(|error| invalid(error.to_string()))? {
+            PemItem::Certificate(certificate) => certificates.push(certificate),
+            _ => continue,
         }
+        let number = certificates.len();
+        let der = CertificateDer::from(certificates[number - 1].der().to_vec());
+        RootCertStore::empty().add(der).map_err(|error| {
+            invalid(format!(
+                "certificate {number} of the file cannot be used: {error}"
+            ))
+        })?;
     }
     if certificates.is_empty() {
-        return Err(ClientError::CaFileInvalid {
-            path: path.to_owned(),
-            detail: "the file holds no certificate in PEM".to_owned(),
-        });
+        return Err(invalid("the file holds no certificate in PEM".to_owned()));
     }
     Ok(certificates)
 }

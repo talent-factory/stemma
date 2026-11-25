@@ -8,10 +8,11 @@ use std::io::Read;
 
 use stemma_core::transport::{Answer, Transport, TransportError};
 use stemma_remote::{ClientError, HttpTransport, Timeouts};
-use support::{example, message, remote, test_ca, Action, Responder};
+use support::{example, message, remote, test_ca, without_proxy, Action, Responder};
 
 #[test]
 fn the_ca_file_of_the_remote_lets_the_client_trust_the_hub() {
+    without_proxy();
     let refs = example("refs");
     let responder = Responder::start_tls(vec![Action::Respond(message(refs))]);
     assert!(responder.address().starts_with("https://127.0.0.1:"));
@@ -27,6 +28,7 @@ fn the_ca_file_of_the_remote_lets_the_client_trust_the_hub() {
 
 #[test]
 fn without_the_ca_file_the_certificate_of_an_own_ca_is_refused() {
+    without_proxy();
     let responder = Responder::start_tls(vec![Action::Close]);
     let mut transport = HttpTransport::new(&responder.remote(), Timeouts::DEFAULT).unwrap();
     match transport.refs() {
@@ -43,13 +45,23 @@ fn without_the_ca_file_the_certificate_of_an_own_ca_is_refused() {
 }
 
 #[test]
-fn a_ca_file_replaces_the_compiled_in_roots() {
-    // The server certificate is signed by the test CA; as a CA file of its own it is no root
-    // that signed it, so the connection is refused.
+fn a_ca_file_without_the_issuing_ca_is_refused() {
+    // The server certificate as the CA file: it is not the CA that signed it, so no root of the
+    // remote vouches for the hub. That the file replaces the compiled-in roots, and does not add
+    // to them, follows from `RootCerts` of `ureq`, which is one choice.
+    without_proxy();
     let responder = Responder::start_tls(vec![Action::Close]);
     let config = remote(responder.address(), Some(&test_ca().join("server.pem")));
     let mut transport = HttpTransport::new(&config, Timeouts::DEFAULT).unwrap();
-    assert!(matches!(transport.refs(), Err(TransportError::Carrier(_))));
+    match transport.refs() {
+        Err(TransportError::Carrier(error)) => {
+            assert!(
+                error.to_string().to_lowercase().contains("certificate"),
+                "{error}"
+            );
+        }
+        other => panic!("expected a failure of the carrier, got {other:?}"),
+    };
 }
 
 #[test]
@@ -70,6 +82,23 @@ fn a_ca_file_that_cannot_be_read_or_holds_no_certificate_is_refused() {
     fs::write(&empty, b"no certificate here\n").unwrap();
     let key_only = dir.join("key-only.pem");
     fs::copy(test_ca().join("server-key.pem"), &key_only).unwrap();
+    // A section of a certificate whose bytes are no certificate.
+    let not_der = dir.join("not-der.pem");
+    fs::write(
+        &not_der,
+        b"-----BEGIN CERTIFICATE-----\nAAECAwQFBgcICQoLDA0ODw==\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    let error = HttpTransport::new(
+        &remote("https://hub.example/ns/repo", Some(&not_der)),
+        Timeouts::DEFAULT,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, ClientError::CaFileInvalid { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("certificate 1"), "{error}");
     for path in [&empty, &key_only] {
         let error = HttpTransport::new(
             &remote("https://hub.example/ns/repo", Some(path)),
