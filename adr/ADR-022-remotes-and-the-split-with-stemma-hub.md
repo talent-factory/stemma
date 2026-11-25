@@ -130,9 +130,10 @@ dependency.
   writers. The other side is a trait of two methods (`OtherSide`) that take the values of the
   protocol: it returns a small answer as a value, and it writes an object stream itself, which
   the transport passes on unread. Its implementation is the answering operation of the core
-  once that is built (STEMMA-288), and the accepting operation follows with the requests of a
-  push; until then the tests of the transport answer from a bare repository themselves. A test
-  may also implement the trait to answer what a correct side never answers.
+  (`stemma_core::serve::Answering`, STEMMA-288, ADR-023), and the accepting operation follows
+  with the requests of a push. The tests of the transport itself still answer from a stand-in
+  of their own, so that they test the carrier alone. A test may also implement the trait to
+  answer what a correct side never answers.
 - The end-to-end tests with real HTTP live in stemma-hub and use `stemma-remote` and the CLI of
   the pinned commit.
 - A scheduled job of the hub builds and tests against the tip of stemma `main` instead of the
