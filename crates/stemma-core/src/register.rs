@@ -1058,7 +1058,8 @@ impl Register {
     ///
     /// [`ModeError::Missing`] if the commit, its tree, a tree on the path of the register, or the
     /// register file is not in the store, [`ModeError::Store`] if an object cannot be read,
-    /// [`ModeError::NotRegisterFile`] if the path of the register is taken by something else, and
+    /// [`ModeError::NotRegisterFile`] if a directory stands where the register file belongs or a
+    /// file where its directory belongs (the kind of the object decides, not the mode), and
     /// [`ModeError::Parse`] for a register that is not valid.
     pub fn at_commit(
         store: &dyn ObjectStore,

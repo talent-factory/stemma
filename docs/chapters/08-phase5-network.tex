@@ -526,8 +526,8 @@ Fehlt der Commit des Registers im Objektspeicher, einer seiner Trees auf dem Weg
 oder die Registerdatei selbst, meldet der Leser den Eintrag als nicht mehr prüfbar, nicht als
 beschädigt: Ketten und Signaturen gelten weiter.
 Ein Commit, der vorhanden ist und kein Register enthält, ist dagegen ein Fehler, ebenso ein
-Register, das sich nicht lesen lässt, und ein Commit mit offenem Konflikt, den \type{main} nie
-hält (ADR-019).
+Register, das sich nicht lesen lässt oder an dessen Stelle keine Datei steht, und ein Commit mit
+offenem Konflikt, den \type{main} nie hält (ADR-019).
 Ein Leser, der mit einer Quittung mitten in der Aufzeichnung beginnt, kennt die Namen davor
 nicht und prüft bei jedem Namen erst das zweite Ref-Update gegen das erste.
 Schreiben kann nur, wer die Aufzeichnung vom ersten Eintrag an gelesen hat.

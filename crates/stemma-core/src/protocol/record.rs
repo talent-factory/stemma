@@ -862,8 +862,8 @@ impl RecordEntry {
     /// [`StandingError::Conflict`] if the commit is there and records an open conflict, which
     /// `main` never holds (ADR-019), [`StandingError::NoRegister`] if it holds no register,
     /// [`StandingError::NotActive`] if its register does not hold the key as an active key of
-    /// the actor, and [`StandingError::Unreadable`] if the store fails or the register cannot be
-    /// read.
+    /// the actor, and [`StandingError::Unreadable`] if the store fails, the path of the register
+    /// is taken by something that is no file, or the register is not valid.
     pub fn standing(&self, store: &dyn ObjectStore) -> Result<Standing, StandingError> {
         // A commit with a list of trees has no one tree to read a register from, and it never
         // was a tip of `main`: the entry names a commit that the hub cannot have used.
@@ -1095,7 +1095,8 @@ pub enum StandingError {
     /// The register of the commit does not hold the key of the update as an active key of the
     /// actor that the hub names.
     NotActive,
-    /// The store failed, or the register of the commit cannot be read.
+    /// The store failed, the path of the register in the commit is taken by something that is
+    /// no file, or the register is not valid.
     Unreadable(ModeError),
 }
 
