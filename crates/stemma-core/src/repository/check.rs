@@ -112,7 +112,9 @@ impl Repository {
     /// [`is_bare`](crate::repository::Repository::is_bare).
     pub fn checks(&self) -> Result<Vec<Check>, CheckError> {
         self.require_oplog("read the checks")?;
-        Ok(self.evidence()?.checks)
+        // No register: a check is listed as it is, and the rules that count it ask for the
+        // signature.
+        Ok(self.evidence(None)?.checks)
     }
 
     /// Every check that an enforcing repository accepts: all of them in the open mode
@@ -176,7 +178,7 @@ impl Repository {
         register: Option<&Register>,
     ) -> Result<Vec<Check>, CheckError> {
         self.require_oplog("read the checks")?;
-        let evidence = self.evidence()?;
+        let evidence = self.evidence(register)?;
         let pull = evidence
             .pulls
             .iter()
@@ -284,11 +286,17 @@ impl Repository {
     }
 }
 
-/// Whether the statement of a check proves its writer: always in the open mode (`register` is
-/// `None`), and in an enforcing repository if the register accepts the signature for the
-/// writer and the number of the entry that names the statement.
+/// Whether a check counts as far as the proof of its writer goes: always in the open mode
+/// (`register` is `None`), and in an enforcing repository if the register accepts the signature
+/// of its statement for the writer and the number of the entry that names the statement.
+///
+/// One check counts there without a signature: a failing run that stands in for a statement
+/// that cannot be read ([`Check::is_stand_in`]). Whether that statement was signed cannot be
+/// told any more, and a failure can pause `main` while its loss must not clear a red tip. A
+/// passing run never stands in, so nothing that helps a change counts without its signature.
 fn has_proof(register: Option<&Register>, check: &Check) -> bool {
-    proof_of(register, check.writer(), check.number(), check.statement()).is_ok()
+    check.is_stand_in()
+        || proof_of(register, check.writer(), check.number(), check.statement()).is_ok()
 }
 
 /// Why an operation on the evidence of a check fails.
@@ -584,10 +592,16 @@ mod tests {
                 &AllowAll,
             )
             .unwrap();
-        let number = repository
-            .open_pull(&feature, &human("mia"), vec![], None, None, None, &AllowAll)
-            .unwrap()
-            .number();
+        // Mia signs the opening, so the pull request counts in both modes.
+        let number = by_hand::open(
+            &repository,
+            &human("mia"),
+            &feature,
+            head,
+            None,
+            Some(&Seeded::new(3)),
+        )
+        .number();
         Fixture {
             repository,
             tip,
@@ -1084,8 +1098,9 @@ mod tests {
             .map(|check| (check.number(), check.passed()))
             .collect();
         assert_eq!(listed, [(failed.number(), false)]);
-        // It carries no signature: it counts in the open mode and not in an enforcing one,
-        // where a failure without the signature of its writer must not pause `main`.
+        // It carries no signature and counts as a failure in both modes all the same: whether
+        // the lost statement was signed cannot be told, and its loss must not clear a red tip.
+        assert!(f.repository.checks().unwrap()[0].is_stand_in());
         let proven = |register| -> Vec<u64> {
             f.repository
                 .proven_checks(register)
@@ -1095,7 +1110,12 @@ mod tests {
                 .collect()
         };
         assert_eq!(proven(None), [failed.number()]);
-        assert!(proven(Some(&register)).is_empty());
+        assert_eq!(proven(Some(&register)), [failed.number()]);
+        // A failure that was made without a signature is no stand-in, and it does not count
+        // in an enforcing repository: anyone can write the entry of a run.
+        let unsigned = record(&f, "ana", None, CheckResult::Fail);
+        assert_eq!(proven(None), [failed.number(), unsigned.number()]);
+        assert_eq!(proven(Some(&register)), [failed.number()]);
         assert!(counted(&f, RiskLevel::Zero, None).is_empty());
     }
 

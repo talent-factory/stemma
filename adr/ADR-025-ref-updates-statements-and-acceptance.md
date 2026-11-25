@@ -328,8 +328,10 @@ owner-override   branch <name>
   know, whatever follows the end of a pull request, an opening that is placed a second time,
   and an opening whose opener is one of its reviewers. It lists every approval and every
   check as it is, and where the statement of a closing or of a failing run cannot be read, a
-  clone places it from the lines of its entry, because what only holds a change back must not
-  vanish with a file. Which approvals and checks count is
+  clone places it from the lines of its entry, because what says something against a change
+  must not vanish with a file; a failing run that is placed so counts in an enforcing
+  repository too (ADR-011). An enforcing clone places an opening only if its register accepts
+  the signature for the opener. Which approvals and checks count is
   decided by the rules of phase 4, unchanged, which now ask the register for the signature of
   the statement.
 
@@ -502,10 +504,11 @@ revocation on `main` takes the effect from the statements of a key.
       (`repository -`), so they count locally only. Which remote gives a statement its ID, and
       whether a statement made before the first push is signed again, belongs to the slice that
       submits statements.
-- [ ] An opening and a closing are not counted against the register by the fold of a clone,
-      so one without a signature makes or ends a pull request in an enforcing repository too.
-      `op verify` reports a signature that the register does not accept and counts the
-      unsigned ones, and a hub checks every statement when it is submitted.
+- [x] An opening counts in an enforcing clone only with a signature that the register accepts
+      for its opener: the clone asks before it places the opening, so the fold stays one
+      function without a register (STEMMA-290, ADR-011). A closing is placed whatever its
+      signature, because it can only end a pull request; `op verify` reports one that the
+      register does not accept, and a hub checks every statement when it is submitted.
 - [ ] How commands name a pull request for people (a prefix of the hash, a running number in the
       lines of the hub). It belongs to the command surface.
 - [ ] A policy that names the writers of checks. Possible later without a break, because it only

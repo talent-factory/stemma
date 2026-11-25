@@ -14,11 +14,12 @@
 //!
 //! - In a clone the entry of the operation log that names the hash of the statement places it
 //!   (ADR-011): the number and the time are those of the entry, and the actor is its actor. In
-//!   an enforcing repository the signature of an approval and of a check must be one of a key
-//!   of that actor, which the rules that count them ask against the register. Nothing asks
-//!   that for an opening and a closing after they are written: the fold takes no register, and
-//!   `op verify` reports a signature that the register does not accept. In the open mode the
-//!   actor is a claim, as the whole entry is (ADR-003).
+//!   an enforcing repository the signature of a statement must be one of a key of that actor.
+//!   The clone asks the register for an opening before it places it, so the fold never sees
+//!   one that the register does not accept, and the rules that count an approval and a check
+//!   ask the register for theirs. A closing is placed whatever its signature, because it can
+//!   only end a pull request. In the open mode the actor is a claim, as the whole entry is
+//!   (ADR-003).
 //! - On a hub the lines that the hub adds to a statement it keeps place it: its running number,
 //!   its time, and the actor that the register names for the key.
 //!
@@ -52,6 +53,7 @@ pub struct Placed {
     actor: Actor,
     hash: StatementHash,
     statement: Statement,
+    stand_in: bool,
 }
 
 impl Placed {
@@ -63,7 +65,26 @@ impl Placed {
             actor,
             hash: statement.hash(),
             statement,
+            stand_in: false,
         }
+    }
+
+    /// Places a statement that stands in for one that the holder names and cannot read: it is
+    /// made from what the holder recorded about the act, and it carries no signature. A clone
+    /// makes one for a closing and for a failing run, which say something against a change, so
+    /// that the loss of a file takes nothing of it away (ADR-011). Whoever counts the evidence
+    /// can tell it from a statement that was made without a signature
+    /// ([`is_stand_in`](Self::is_stand_in)).
+    pub fn stand_in(number: u64, time: i64, actor: Actor, statement: Statement) -> Self {
+        Self {
+            stand_in: true,
+            ..Self::new(number, time, actor, statement)
+        }
+    }
+
+    /// Whether the statement stands in for one that the holder could not read.
+    pub fn is_stand_in(&self) -> bool {
+        self.stand_in
     }
 
     /// The number in the order of the holder: the number of the entry of the log in a clone.

@@ -42,6 +42,7 @@ pub struct Check {
     base: Option<CommitId>,
     result: CheckResult,
     statement: Statement,
+    stand_in: bool,
 }
 
 impl Check {
@@ -55,7 +56,16 @@ impl Check {
             base: checked.base(),
             result: checked.result(),
             statement: placed.statement().clone(),
+            stand_in: placed.is_stand_in(),
         }
+    }
+
+    /// Whether the check stands in for one whose statement the holder could not read
+    /// ([`Placed::stand_in`]). Only a failing run does. Its statement carries no signature, and
+    /// it counts as a failure all the same, also where a register is asked: the loss of a file
+    /// must not take a red tip away.
+    pub fn is_stand_in(&self) -> bool {
+        self.stand_in
     }
 
     /// The number of the check in the order of the holder: in a clone the number of the entry

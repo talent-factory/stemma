@@ -566,7 +566,7 @@ fn every_operation_that_needs_the_operation_log_is_refused_before_it_asks_or_wri
         error in LeaseError::Refs(error)
     );
     // The pull requests.
-    assert_refused!(lacks, repository.pull_requests(), error in PullError::Refs(error));
+    assert_refused!(lacks, repository.pull_requests(None), error in PullError::Refs(error));
     assert_refused!(
         lacks,
         repository.open_pull(&feature, &actor, vec![], None, None, None, &deny),
@@ -579,7 +579,7 @@ fn every_operation_that_needs_the_operation_log_is_refused_before_it_asks_or_wri
     );
     assert_refused!(
         lacks,
-        repository.record_pull_merge(1, &actor, commit, &deny),
+        repository.record_pull_merge(1, &actor, commit, None, &deny),
         error in PullError::Refs(error)
     );
     assert_refused!(

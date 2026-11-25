@@ -2788,8 +2788,8 @@ Checked 14 signed statements: each is valid, and every entry that names
 (Der Befehl schreibt die Zeile ohne Umbruch.)
 Je eine weitere Zeile nennt die Zahl der Erklärungen, die kein Eintrag nennt
 (\type{N of them are named by no entry and count for nothing.}), und in einem durchsetzenden
-Repository die Zahl der Einträge, deren Erklärung keine Signatur trägt; eine Genehmigung und
-ein Ergebnis einer Prüfung unter ihnen zählen nicht.
+Repository die Zahl der Einträge, deren Erklärung keine Signatur trägt; eine Öffnung, eine
+Genehmigung und ein Ergebnis einer Prüfung unter ihnen zählen nicht.
 Beides ist kein Fehler: Die erste hinterlässt ein Abbruch zwischen Erklärung und Eintrag oder
 ein Purge, die zweite ein Repository, das vom offenen in den durchsetzenden Modus wechselte.
 Eine Genehmigung, deren Schlüssel seither ausgemustert oder widerrufen wurde, ist ungültig und
@@ -3185,6 +3185,9 @@ zählt, bewegt \type{main} in einem Schritt und schreibt \type{pr-merge}. Hat \t
 fehlenden Eintrag \type{pr-merge}. Das Gate prüft die Genehmigungen nicht; \type{pr list} zeigt
 ihre Zahl.
 \type{list} liest nur und schreibt nichts.
+In einem durchsetzenden Repository gilt eine Öffnung nur mit einer Signatur, die das Register
+für ihren Öffner annimmt; ein Pull Request, der im offenen Modus geöffnet wurde, erscheint dort
+nicht mehr und wird neu geöffnet.
 
 Das Gate bewegt nur den Branch.
 Danach zieht \type{merge} den Worktree nach, der \type{main} ausgecheckt hat,

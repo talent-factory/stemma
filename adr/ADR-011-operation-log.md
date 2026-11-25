@@ -676,18 +676,24 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     the number of the entry (`Register::verify_statement`): the recount of the approvals, the
     rule table of the checks, and the bounds of the gate (ADR-019). A key counts as for the
     proofs before: a retired key for what stands before its retirement, a revoked key never
-    for an approval and for every other kind only before its revocation. An opening and a
-    closing are not counted against the register by the fold, as an opening had no proof
-    before either: one without a signature makes or ends its pull request in an enforcing
-    repository too. `op verify` reports a signature that the register does not accept and
-    counts the unsigned ones.
+    for an approval and for every other kind only before its revocation. An opening
+    is asked too, before it is placed: in an enforcing repository an opening without a
+    signature, or with the signature of a key that is not the opener's or no longer counts for
+    the number of the entry, makes no pull request. A pull request that was opened while the
+    repository was in the open mode is therefore opened again. A closing is the one statement
+    that nobody asks the register for: it can only end a pull request, so it stays whoever
+    wrote it. `op verify` reports a signature that the register does not accept, for every
+    kind, and counts the unsigned ones.
   - **What only holds a change back stays.** An entry whose statement is missing, damaged, or
     says something else places nothing, with one exception: a closing and a failing run are
-    placed from the lines of their entry, without a signature. Losing a file of the set
-    therefore never opens a pull request again, and in the open mode never takes a red tip
-    away. In an enforcing repository a failing run without a signature does not count, as
-    one without its proof did not (ADR-019); losing the statement of a signed failure takes
-    the red tip away there, which `op verify` reports and the gate does not.
+    placed from the lines of their entry, as a stand-in without a signature. Losing a file of
+    the set therefore never opens a pull request again and never takes a red tip away, in
+    either mode. In an enforcing repository a failing run counts only with the signature of
+    its writer (ADR-019), and the stand-in is the one exception: whether the lost statement
+    was signed cannot be told, and clearing the red tip is the worse mistake. Only who can
+    write the files of the repository makes a stand-in, and such a writer could delete the
+    statement of a real failure as well. A failing run that was made without a signature is
+    no stand-in and does not count there. `op verify` reports the entry of a stand-in.
   - **The order of writing.** The statement is signed before the lock of the references is
     taken, because a key with a passphrase may ask a person, and the register is asked for the
     signature before anything is written: every refusal comes before the first write. Under
@@ -706,7 +712,7 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     kind, that says what its lines say. In an enforcing repository the signature of that
     statement is one of a key of the actor of the entry that counts for the number of the
     entry. Three things are no damage: a statement that no entry names, an unsigned statement
-    in an enforcing repository (an approval and a check result do not count there), and an
+    in an enforcing repository (an opening, an approval, and a check result do not count there), and an
     approval of a key that was retired
     or revoked since (it is void, which the recount shows).
   - **Purge.** The entries are replaced by stubs as before (above). The purge does not touch

@@ -142,7 +142,11 @@ impl Repository {
         };
         let n = policy.reservation_after();
         let mut candidates = Vec::new();
-        for other in self.pull_requests()?.iter().filter(|pull| pull.is_open()) {
+        for other in self
+            .pull_requests(register)?
+            .iter()
+            .filter(|pull| pull.is_open())
+        {
             let own = other.number() == subject.pull.number();
             let runs = if own { &checks } else { &proven };
             let held = |runs: &[Check]| {

@@ -868,7 +868,9 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
 fn pr_list(args: PrListArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
-    let pulls = repository.pull_requests().map_err(pull_error)?;
+    let pulls = repository
+        .pull_requests(register.as_ref())
+        .map_err(pull_error)?;
     let mut text = String::new();
     for pull in &pulls {
         let state = match pull.state() {

@@ -1175,12 +1175,12 @@ mod tests {
             .with_statement(closing)
             .unwrap();
         repository.oplog().append_pull(&close).unwrap();
-        assert_eq!(repository.pull_requests().unwrap().len(), 1);
+        assert_eq!(repository.pull_requests(None).unwrap().len(), 1);
         let purged = apply(&repository);
         assert!(purged.plan().entries().contains(&number));
         assert_purged(&dir, &repository, &purged);
         // The closing names no commit and stays; without its opening it tells of nothing.
-        assert!(repository.pull_requests().unwrap().is_empty());
+        assert!(repository.pull_requests(None).unwrap().is_empty());
         let entries = repository
             .oplog()
             .verify()

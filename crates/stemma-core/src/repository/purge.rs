@@ -413,7 +413,12 @@ impl Repository {
         // The question is asked by the name of the pull request, the hash of its opening, and
         // not by the number of the entry: an opening that the log names twice is one pull
         // request.
-        let pulls = self.evidence_of(&log).map_err(statements_unreadable)?.pulls;
+        // No register is asked: an opening that an enforcing repository does not count is kept
+        // as well while its pull request has not ended.
+        let pulls = self
+            .evidence_of(&log, None)
+            .map_err(statements_unreadable)?
+            .pulls;
         for entry in &replaced {
             let opening = entry
                 .pull()
@@ -1640,7 +1645,7 @@ mod tests {
             panic!("one statement")
         };
         std::fs::remove_file(set.path_of(&hash)).unwrap();
-        assert!(repository.pull_requests().unwrap().is_empty());
+        assert!(repository.pull_requests(None).unwrap().is_empty());
         let error = repository
             .plan_purge(secret(), &actor(), &AllowAll)
             .unwrap_err();
@@ -1664,7 +1669,7 @@ mod tests {
             } else {
                 // A closing is a statement that names the pull request by its hash.
                 use crate::protocol::statement::{Body, Closing, Statement};
-                let id = repository.pull_requests().unwrap()[0].id();
+                let id = repository.pull_requests(None).unwrap()[0].id();
                 let closing = Statement::unsigned(Body::Closing(Closing::new(None, id)));
                 let hash = repository.statement_set().put(&closing).unwrap();
                 PullEntry::close(2, actor(), number)

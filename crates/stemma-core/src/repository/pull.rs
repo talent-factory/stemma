@@ -45,6 +45,12 @@ impl Repository {
     /// The pull requests that the statements tell of, in the order of their openings (see
     /// [`evidence::fold`](crate::evidence::fold)).
     ///
+    /// `register` is the register of an enforcing repository: an opening makes a pull request
+    /// there only with a signature that the register accepts for its opener, so one that was
+    /// written by hand without it, or opened while the repository was in the open mode, is not
+    /// among them. `None` is the open mode, where the opener is a claim and every opening that
+    /// the log places counts.
+    ///
     /// A pull request that was opened under a repository format before 16 is not among them:
     /// its entries name no statement, so they are no evidence (ADR-011). Open it again.
     ///
@@ -56,9 +62,12 @@ impl Repository {
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
     /// [`is_bare`](crate::repository::Repository::is_bare).
-    pub fn pull_requests(&self) -> Result<Vec<PullRequest>, PullError> {
+    pub fn pull_requests(
+        &self,
+        register: Option<&Register>,
+    ) -> Result<Vec<PullRequest>, PullError> {
         self.require_oplog("read the pull requests")?;
-        Ok(self.evidence()?.pulls)
+        Ok(self.evidence(register)?.pulls)
     }
 
     /// The write owner of `branch` opens a pull request that would merge it into `main`.
@@ -155,7 +164,7 @@ impl Repository {
                 });
             }
         }
-        let pulls = self.evidence()?.pulls;
+        let pulls = self.evidence(register)?.pulls;
         if let Some(open) = pull::open_for(&pulls, branch) {
             return Err(PullError::AlreadyOpen {
                 branch: branch.clone(),
@@ -233,14 +242,14 @@ impl Repository {
         };
         // The name of the pull request does not change, so the statement can be made before
         // the lock; whether it is still open is asked again under it.
-        let pulls = self.evidence()?.pulls;
+        let pulls = self.evidence(register)?.pulls;
         let pull = open_pull_of(&pulls, number)?;
         may_close(pull)?;
         let id = pull.id();
         let closing = Body::Closing(Closing::new(None, id));
         let statement = make_statement(closing, actor, register, signer)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
-        let pulls = self.evidence()?.pulls;
+        let pulls = self.evidence(register)?.pulls;
         may_close(open_pull_of(&pulls, number)?)?;
         let entry = PullEntry::close(now(), actor.clone(), number)?;
         let hash = self.statement_set().put(&statement)?;
@@ -251,6 +260,7 @@ impl Repository {
     /// the record of the merge, not the merge: it moves no pointer, checks no approval, and runs
     /// no gate. The merge gate calls it after it moved `main` (ADR-019). It makes no statement:
     /// "merged" is a fact of whoever holds the statements (ADR-025), in a clone this entry.
+    /// `register` says which openings count, as in [`pull_requests`](Self::pull_requests).
     ///
     /// # Errors
     ///
@@ -266,13 +276,14 @@ impl Repository {
         number: u64,
         actor: &Actor,
         commit: CommitId,
+        register: Option<&Register>,
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         self.require_oplog("record the merge of a pull request")?;
         let allowed =
             self.allowed_for_pull(PR_MERGE, &format!("pull {number}"), actor, authorizer)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
-        self.record_pull_merge_locked(&lock, number, actor, commit)
+        self.record_pull_merge_locked(&lock, number, actor, commit, register)
     }
 
     /// The body of [`record_pull_merge`](Self::record_pull_merge) for a caller that holds the lock
@@ -284,8 +295,9 @@ impl Repository {
         number: u64,
         actor: &Actor,
         commit: CommitId,
+        register: Option<&Register>,
     ) -> Result<Entry, PullError> {
-        let pulls = self.evidence()?.pulls;
+        let pulls = self.evidence(register)?.pulls;
         open_pull_of(&pulls, number)?;
         self.ensure_commit(commit)?;
         let entry = PullEntry::merge(now(), actor.clone(), number, commit)?;
@@ -342,7 +354,7 @@ impl Repository {
             return Err(PullError::SignatureRequired);
         }
         let (signed_head, statement) = {
-            let pulls = self.evidence()?.pulls;
+            let pulls = self.evidence(register)?.pulls;
             let pull = open_pull_of(&pulls, number)?;
             let head = self.branch_head(pull.branch())?;
             let approval = Body::Approval(statement::Approval::new(None, pull.id(), head));
@@ -351,7 +363,7 @@ impl Repository {
         let allowed =
             self.allowed_for_pull(PR_APPROVE, &format!("pull {number}"), actor, authorizer)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
-        let pulls = self.evidence()?.pulls;
+        let pulls = self.evidence(register)?.pulls;
         let pull = open_pull_of(&pulls, number)?;
         let head = self.branch_head(pull.branch())?;
         if signed_head != head {
@@ -393,7 +405,7 @@ impl Repository {
         register: Option<&Register>,
     ) -> Result<Recount, PullError> {
         self.require_oplog("read the pull requests")?;
-        let evidence = self.evidence()?;
+        let evidence = self.evidence(register)?;
         let pull = evidence
             .pulls
             .iter()
@@ -933,7 +945,7 @@ mod tests {
         assert_eq!(pull.kind(), PullKind::Open);
         assert_eq!(pull.commit(), Some(&start));
         assert_eq!(format(&dir), "stemma-repository 16\n");
-        let pulls = repository.pull_requests().unwrap();
+        let pulls = repository.pull_requests(None).unwrap();
         assert_eq!(pulls.len(), 1);
         assert_eq!(pulls[0].number(), entry.number());
         assert!(pulls[0].is_open());
@@ -968,7 +980,7 @@ mod tests {
         push_commit(&repository, &daniel());
         let second = open().unwrap();
         assert!(second.number() > first.number());
-        let pulls = repository.pull_requests().unwrap();
+        let pulls = repository.pull_requests(None).unwrap();
         assert_eq!(pulls.len(), 2);
         assert_ne!(pulls[0].id(), pulls[1].id());
         assert_eq!(pulls[0].id(), first.statement().unwrap());
@@ -1016,7 +1028,7 @@ mod tests {
             Err(PullError::Denied { .. })
         ));
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
-        assert!(repository.pull_requests().unwrap().is_empty());
+        assert!(repository.pull_requests(None).unwrap().is_empty());
     }
 
     #[test]
@@ -1152,7 +1164,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(closed.pull().unwrap().pull(), Some(number));
-        let pulls = repository.pull_requests().unwrap();
+        let pulls = repository.pull_requests(None).unwrap();
         assert!(matches!(pulls[0].state(), PullState::Closed { by, .. } if by == &daniel()));
         // A closed pull request cannot be closed, merged, or found under another number.
         assert!(matches!(
@@ -1175,21 +1187,21 @@ mod tests {
             .number();
         let absent = CommitId::new(Blob::new("not stored").id().object_id());
         assert!(matches!(
-            repository.record_pull_merge(number, &daniel(), absent, &AllowAll),
+            repository.record_pull_merge(number, &daniel(), absent, None, &AllowAll),
             Err(PullError::NoSuchCommit { .. })
         ));
         let entry = repository
-            .record_pull_merge(number, &daniel(), start, &AllowAll)
+            .record_pull_merge(number, &daniel(), start, None, &AllowAll)
             .unwrap();
         assert_eq!(entry.pull().unwrap().commit(), Some(&start));
-        let pulls = repository.pull_requests().unwrap();
+        let pulls = repository.pull_requests(None).unwrap();
         assert!(matches!(
             pulls[0].state(),
             PullState::Merged { commit, .. } if commit == &start
         ));
         for error in [
             repository
-                .record_pull_merge(number, &daniel(), start, &AllowAll)
+                .record_pull_merge(number, &daniel(), start, None, &AllowAll)
                 .unwrap_err(),
             repository
                 .close_pull(number, &daniel(), None, None, &AllowAll)
@@ -1255,7 +1267,7 @@ mod tests {
             .unwrap()
             .number();
         let error = repository
-            .record_pull_merge(number, &daniel(), id, &AllowAll)
+            .record_pull_merge(number, &daniel(), id, None, &AllowAll)
             .unwrap_err();
         assert!(matches!(error, PullError::NoSuchCommit { .. }), "{error:?}");
     }
@@ -1274,7 +1286,7 @@ mod tests {
             Err(PullError::Denied { .. })
         ));
         assert!(matches!(
-            repository.record_pull_merge(number, &daniel(), start, &DenyAll),
+            repository.record_pull_merge(number, &daniel(), start, None, &DenyAll),
             Err(PullError::Denied { .. })
         ));
         assert!(matches!(
@@ -1282,7 +1294,7 @@ mod tests {
             Err(PullError::NotAllowedToClose { .. })
         ));
         assert!(matches!(
-            repository.record_pull_merge(number + 9, &daniel(), start, &AllowAll),
+            repository.record_pull_merge(number + 9, &daniel(), start, None, &AllowAll),
             Err(PullError::NoSuchPull { .. })
         ));
         assert_eq!(repository.oplog().entries().unwrap().len(), before);
@@ -1406,7 +1418,7 @@ mod tests {
         assert_eq!(recount.void()[0].1, pull::NotCounted::Repeat);
         // No proof files in open mode, and the pull request stays open.
         assert_eq!(proof_files(&dir), 0);
-        assert!(repository.pull_requests().unwrap()[0].is_open());
+        assert!(repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1810,7 +1822,7 @@ mod tests {
             .unwrap()
             .number();
         repository
-            .record_pull_merge(number, &daniel(), start, &AllowAll)
+            .record_pull_merge(number, &daniel(), start, None, &AllowAll)
             .unwrap();
         assert!(matches!(
             repository.recount_approvals(number, None),
@@ -1904,7 +1916,7 @@ mod tests {
         assert_eq!(recount.count(), 1);
         assert_eq!(recount.counted()[0].statement(), &statement);
         // The approval names the pull request by the hash of its opening, not by its number.
-        let pulls = repository.pull_requests().unwrap();
+        let pulls = repository.pull_requests(None).unwrap();
         assert_eq!(recount.counted()[0].pull(), pulls[0].id());
         // The log, the statements, and the register hold together.
         let entries = repository.oplog().verify().unwrap();
@@ -1980,7 +1992,7 @@ mod tests {
         // the current head it places nothing, and `op verify` reports the difference.
         let head = repository.refs().branch(&feature()).unwrap().unwrap();
         let other_head = CommitId::new(Blob::new("x").id().object_id());
-        let pull = repository.pull_requests().unwrap()[0].id();
+        let pull = repository.pull_requests(None).unwrap()[0].id();
         let other = by_hand::statement(
             Body::Approval(statement::Approval::new(None, pull, other_head)),
             Some(&Seeded::new(2)),
@@ -2313,7 +2325,7 @@ mod tests {
         assert!(matches!(error, PullError::HeadMoved { .. }), "{error:?}");
         // The only new entry is the commit that moved the head.
         assert_eq!(repository.oplog().entries().unwrap().len(), before + 1);
-        assert!(repository.evidence().unwrap().approvals.is_empty());
+        assert!(repository.evidence(None).unwrap().approvals.is_empty());
         assert_eq!(proof_files(&dir), 0);
         // A new try on the new head counts.
         repository
@@ -2486,7 +2498,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(statement.key(), Some(&key(1)));
-        let pulls = repository.pull_requests().unwrap();
+        let pulls = repository.pull_requests(None).unwrap();
         assert!(
             matches!(pulls[0].state(), PullState::Closed { entry: closed, .. } if *closed == entry.number())
         );
@@ -2591,7 +2603,7 @@ mod tests {
                 None => std::fs::remove_file(&path).unwrap(),
                 Some(text) => std::fs::write(&path, text).unwrap(),
             }
-            let pulls = repository.pull_requests().unwrap();
+            let pulls = repository.pull_requests(None).unwrap();
             assert!(
                 matches!(pulls[0].state(), PullState::Closed { entry, .. } if *entry == closed.number()),
                 "{damage:?}: {pulls:?}"
@@ -2610,7 +2622,7 @@ mod tests {
         // it, so the same opening is refused and nothing is written.
         let lost = repository
             .statement_set()
-            .path_of(&repository.pull_requests().unwrap()[0].id());
+            .path_of(&repository.pull_requests(None).unwrap()[0].id());
         let kept = std::fs::read(&lost).unwrap();
         std::fs::remove_file(&lost).unwrap();
         let before = written(&repository);
@@ -2635,7 +2647,7 @@ mod tests {
                 .path_of(&opening.statement().unwrap()),
         )
         .unwrap();
-        assert!(repository.pull_requests().unwrap().is_empty());
+        assert!(repository.pull_requests(None).unwrap().is_empty());
     }
 
     #[test]
@@ -2706,6 +2718,124 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn an_opening_counts_in_an_enforcing_repository_only_with_a_signature_of_its_opener() {
+        let dir = TempDir::new();
+        let (repository, register) = enforcing(&dir);
+        let head = repository.refs().branch(&feature()).unwrap().unwrap();
+        // Written past the writer: an opening without a signature, as a repository that left
+        // the open mode holds one, and an opening of Daniel that the key of Mia signed.
+        let unsigned = by_hand::open(&repository, &daniel(), &feature(), head, None, None);
+        let foreign = by_hand::open(
+            &repository,
+            &daniel(),
+            &feature(),
+            head,
+            None,
+            Some(&Seeded::new(2)),
+        );
+        // The open mode asks no register and knows both; an enforcing repository knows none.
+        let numbers = |register: Option<&Register>| -> Vec<u64> {
+            repository
+                .pull_requests(register)
+                .unwrap()
+                .iter()
+                .map(PullRequest::number)
+                .collect()
+        };
+        assert_eq!(numbers(None), [unsigned.number(), foreign.number()]);
+        assert!(numbers(Some(&register)).is_empty());
+        // So nothing can be approved, counted, or merged for them.
+        for number in [unsigned.number(), foreign.number()] {
+            assert!(matches!(
+                repository.approve_pull(
+                    number,
+                    &mia(),
+                    Some(&register),
+                    Some(&Seeded::new(2)),
+                    &AllowAll
+                ),
+                Err(PullError::NoSuchPull { .. })
+            ));
+            assert!(matches!(
+                repository.recount_approvals(number, Some(&register)),
+                Err(PullError::NoSuchPull { .. })
+            ));
+            assert!(matches!(
+                repository.record_pull_merge(number, &daniel(), head, Some(&register), &AllowAll),
+                Err(PullError::NoSuchPull { .. })
+            ));
+        }
+        // The branch is free for an opening of its write owner, which counts.
+        push_commit(&repository, &daniel());
+        let signed = open_signed(&repository, &register).unwrap();
+        assert_eq!(numbers(Some(&register)), [signed.number()]);
+        // `op verify` calls the foreign key damage and counts the opening without a signature.
+        let entries = repository.oplog().verify().unwrap();
+        let error = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                StatementCheckError::Proof { number, error: ProofError::KeyNotOfActor }
+                    if number == foreign.number()
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_opening_stays_when_its_key_is_retired_later_and_goes_when_it_was_retired_before() {
+        let dir = TempDir::new();
+        let (repository, mut register) = enforcing(&dir);
+        // Ana opens by hand: the register holds one owner, whose key cannot be retired.
+        let head = repository.refs().branch(&feature()).unwrap().unwrap();
+        let opened = by_hand::open(
+            &repository,
+            &ana(),
+            &feature(),
+            head,
+            None,
+            Some(&Seeded::new(3)),
+        );
+        let count = |register: &Register| repository.pull_requests(Some(register)).unwrap().len();
+        assert_eq!(count(&register), 1);
+        let mut later = register.clone();
+        later
+            .retire(&Identity::of(&ana()), &key(3), opened.number() + 1)
+            .unwrap();
+        assert_eq!(count(&later), 1, "the opening stands before the retirement");
+        register
+            .retire(&Identity::of(&ana()), &key(3), opened.number())
+            .unwrap();
+        assert_eq!(
+            count(&register),
+            0,
+            "the key signed nothing from this entry on"
+        );
+    }
+
+    #[test]
+    fn a_closing_ends_its_pull_request_whatever_its_signature() {
+        let dir = TempDir::new();
+        let (repository, register) = enforcing(&dir);
+        let number = open_signed(&repository, &register).unwrap().number();
+        // A closing can only hold a change back, so it stays whoever wrote it: here without a
+        // signature, written past the writer. `op verify` counts it.
+        let closed = by_hand::close(&repository, &mia(), number, None);
+        let pulls = repository.pull_requests(Some(&register)).unwrap();
+        assert!(
+            matches!(pulls[0].state(), PullState::Closed { entry, .. } if *entry == closed.number()),
+            "{pulls:?}"
+        );
+        let entries = repository.oplog().verify().unwrap();
+        let verified = repository
+            .verify_statements(&entries, Some(&register))
+            .unwrap();
+        assert_eq!(verified.unsigned, 1);
     }
 
     #[test]

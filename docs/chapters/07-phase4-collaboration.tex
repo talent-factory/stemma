@@ -311,7 +311,8 @@ Ein Eintrag, dessen Erklärung fehlt, beschädigt ist oder etwas anderes sagt al
 ordnet nichts ein, und was er belegen sollte, zählt nicht; \type{op verify} meldet ihn.
 Ausgenommen ist, was eine Änderung nur aufhält: Ein Schliessen und ein fehlgeschlagener Lauf
 gelten dann aus den Zeilen ihres Eintrags, ohne Signatur.
-Der Verlust einer Datei öffnet so keinen Pull Request wieder.
+Der Verlust einer Datei öffnet so keinen Pull Request wieder und nimmt keine rote Spitze weg,
+auch nicht in einem durchsetzenden Repository.
 Die Kosten sind linear in der Zahl der Einträge, dazu kommt das Lesen einer Datei je Erklärung.
 
 \startinfobox
@@ -319,9 +320,11 @@ Die Kosten sind linear in der Zahl der Einträge, dazu kommt das Lesen einer Dat
 \startitemize
 \item Im offenen Modus gibt es keinen Schlüssel. Die Erklärung trägt dann \type{key -} und
 \type{signature -} und beweist nichts; sie zählt nur dort, wo kein Register gefragt wird.
-In einem durchsetzenden Repository zählen eine Freigabe und ein Prüfergebnis ohne Signatur nicht.
-Eine Eröffnung und ein Schliessen prüft die Funktion dagegen nie gegen das Register; das meldet
-\type{op verify}, und auf einem Hub prüft es der Hub beim Einreichen.
+In einem durchsetzenden Repository zählen eine Eröffnung, eine Freigabe und ein Prüfergebnis nur
+mit einer Signatur, die das Register für den Akteur des Eintrags annimmt.
+Ein Pull Request, der im offenen Modus eröffnet wurde, wird dort also neu eröffnet.
+Ein Schliessen gilt mit jeder Signatur und auch ohne, denn es kann einen Pull Request nur
+beenden; \type{op verify} meldet eines, das das Register nicht annimmt.
 \item Ein Repository einer älteren Format-Version bleibt lesbar. Seine Einträge eines Pull
 Requests und einer Prüfung stehen weiter in der Hash-Kette, und \type{op verify} prüft ihre
 Beweisdateien wie bisher. Sie nennen aber keine Erklärung und sind kein Beleg mehr: Ein Pull
@@ -565,6 +568,9 @@ Der Schreiber signiert die Erklärung mit einem Schlüssel, den das Register fü
 und das Register prüft sie beim Lesen für den Akteur und die Nummer des Eintrags.
 Eine unsignierte Erklärung und eine Signatur mit dem Schlüssel eines anderen Akteurs lassen
 das Ergebnis nicht zählen.
+Ausgenommen ist ein fehlgeschlagener Lauf, dessen Erklärung verloren oder beschädigt ist: Er
+gilt aus den Zeilen seines Eintrags weiter, weil sich nicht mehr sagen lässt, ob sie signiert
+war, und eine rote Spitze nicht mit einer Datei verschwinden darf.
 
 \subsection{Konflikte}
 
@@ -1310,7 +1316,8 @@ In einem durchsetzenden Repository muss ihr Schlüssel ausserdem dem Akteur des 
 und für dessen Nummer zählen.
 Kein Schaden sind eine Erklärung, die kein Eintrag nennt, und eine unsignierte Erklärung in einem
 durchsetzenden Repository; der Befehl nennt ihre Zahl.
-Die erste zählt nicht, und von den zweiten zählen Freigaben und Prüfergebnisse nicht.
+Die erste zählt nicht, und von den zweiten zählen Eröffnungen, Freigaben und Prüfergebnisse
+nicht.
 Eine Freigabe, deren Schlüssel seither ausgemustert oder widerrufen wurde, gilt als ungültig,
 nicht als Schaden des
 Logs, und \type{op verify} lässt sie durch.
