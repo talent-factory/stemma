@@ -145,8 +145,12 @@ fn written(example_name: &str) -> Vec<u8> {
         "error-malformed" => {
             ErrorMessage::from(&FetchRequest::parse(b"stemma-protocol 1\n").unwrap_err()).encode()
         }
+        "error-unknown-want" => ErrorMessage::UnknownWant(example_commit()).encode(),
         "ref-update" => record::tests::example_update().encode(),
         "receipt" => record::tests::example_receipt().encode(),
+        "challenge" => sign_in::tests::example_challenge().encode(),
+        "signed-challenge" => sign_in::tests::example_signed().encode(),
+        "token" => sign_in::tests::example_token_answer().encode(),
         "error-stale" => refusal::tests::example_stale().encode(),
         "error-refused" => refusal::tests::example_refused().encode(),
         "error-refused-update" => refusal::tests::example_refused_update().encode(),
@@ -165,6 +169,13 @@ fn round_trips(message: Message, bytes: &[u8]) -> bool {
         Message::Error => ErrorMessage::parse(bytes).is_ok_and(|m| m.encode() == bytes),
         Message::RefUpdate => record::RefUpdate::parse(bytes).is_ok_and(|m| m.encode() == bytes),
         Message::Receipt => record::RecordEntry::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::Challenge => sign_in::Challenge::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::SignedChallenge => {
+            sign_in::SignedChallenge::parse(bytes).is_ok_and(|m| m.encode() == bytes)
+        }
+        Message::TokenAnswer => {
+            sign_in::TokenAnswer::parse(bytes).is_ok_and(|m| m.encode() == bytes)
+        }
     }
 }
 
@@ -201,6 +212,9 @@ fn every_example_is_refused_by_the_readers_of_the_other_messages() {
         Message::Error,
         Message::RefUpdate,
         Message::Receipt,
+        Message::Challenge,
+        Message::SignedChallenge,
+        Message::TokenAnswer,
     ];
     for example in examples::ALL {
         for other in all {
@@ -284,7 +298,17 @@ fn the_error_messages_have_this_text() {
         malformed.encode(),
         b"stemma-protocol 1\nerror malformed\nreason line 2: the line is cut off\n"
     );
-    for message in [unsupported, malformed] {
+    let unknown_want = ErrorMessage::UnknownWant(commit(0x22));
+    assert_eq!(
+        unknown_want.encode(),
+        format!(
+            "stemma-protocol 1\nerror unknown-want\nwant {}\n",
+            id_text(0x22)
+        )
+        .into_bytes()
+    );
+    assert!(unknown_want.to_string().contains(&id_text(0x22)));
+    for message in [unsupported, malformed, unknown_want] {
         assert_eq!(ErrorMessage::parse(&message.encode()).unwrap(), message);
     }
 }
@@ -513,6 +537,30 @@ fn an_error_message_refuses_everything_else() {
     assert_eq!(
         refused("stemma-protocol 1\nerror malformed\nreason x"),
         at(3, Malformed::CutOff)
+    );
+    assert_eq!(
+        refused("stemma-protocol 1\nerror unknown-want\n"),
+        at(3, Malformed::Expected("want"))
+    );
+    assert_eq!(
+        refused("stemma-protocol 1\nerror unknown-want\nreason x\n"),
+        at(3, Malformed::Expected("want"))
+    );
+    assert!(matches!(
+        refused("stemma-protocol 1\nerror unknown-want\nwant x\n"),
+        ParseError::InvalidObjectId { line: 3, .. }
+    ));
+    let want = format!("want {}\n", id_text(0x22));
+    assert_eq!(
+        refused(&format!(
+            "stemma-protocol 1\nerror unknown-want\n{want}{want}"
+        )),
+        at(4, Malformed::Unexpected)
+    );
+    // The kind is read under the number of this version only.
+    assert_eq!(
+        refused(&format!("stemma-protocol 2\nerror unknown-want\n{want}")),
+        ParseError::UnsupportedVersion { found: 2 }
     );
 }
 

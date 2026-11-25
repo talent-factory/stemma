@@ -1,7 +1,10 @@
 # ADR-024: Authentication towards a hub
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-23 (STEMMA-271) and carried
-into the ADRs by STEMMA-280. Nothing of it is implemented yet.
+into the ADRs by STEMMA-280. The three messages of the sign-in, its type of proof, the check of a
+signed challenge against a register, and the step of the sign-in in `Transport` are built
+(STEMMA-294, see "The sign-in as built"); the hub, its nonce and its token, the accounts, and the
+carriage of the token over HTTP are not.
 
 ## Context
 
@@ -74,6 +77,65 @@ key with a passphrase or on a hardware token asks every time), and a token of th
 provider for every request (a second credential per agent, a mapping from subject to account, a
 stored token, and a hub that depends on the provider for every request).
 
+### The sign-in as built
+
+Built in STEMMA-294, in `stemma_core::protocol::sign_in`. The three messages are line-oriented
+text by the rules of ADR-023:
+
+```text
+stemma-protocol 1                                   the challenge
+hub <address of the hub>
+nonce <32 to 128 lower-case hexadecimal digits>
+
+stemma-protocol 1                                   the signed challenge
+hub <address of the hub>
+nonce <the nonce of the challenge>
+key ssh-ed25519 <base64>
+signature <SSHSIG signature on one line>
+
+stemma-protocol 1                                   the token answer
+token <token>
+lifetime <seconds>
+```
+
+- **Challenge.** The hub names the address under which the client calls it, in the form of the
+  ref update (ADR-025): the part of the address of a remote before the namespace, kept as it is
+  and compared byte for byte. The nonce is 16 to 64 bytes of the hub. A client reads nothing from
+  it.
+- **Signed challenge.** The answer of the client repeats the address and the nonce, because the
+  hub keeps no state between the two requests, and adds the public key and the signature. The
+  lines from `hub` to `key` are the payload. The signature is a proof of the type `challenge`:
+  the signed bytes begin with the header `stemma-proof`, `challenge`, `1` (ADR-020), so the
+  signature verifies as no log entry, approval, sponsorship, ref update or record entry, and none
+  of those verifies as a sign-in. The reader checks the signature for the key of the message, as
+  the reader of a ref update does.
+- **Token answer.** The token is what an `Authorization: Bearer` header carries (ADR-023): at
+  least one letter, digit, `-`, `.`, `_`, `~`, `+` or `/`, then any number of `=`. Its content is
+  the hub's. The lifetime is in seconds, from 1, and counts from the answer.
+
+The rules that the core holds:
+
+- **The client signs only for the address that it calls.** A client signs through
+  `Challenge::answer`. It takes the address that the client calls and refuses a challenge that
+  names another one before the signer is asked, so nothing is signed for it and a hardware token
+  is not touched. The procedure of the sign-in (`stemma_core::transport::sign_in`) signs in no
+  other way.
+- **The hub checks the address, the nonce and the register.** `SignedChallenge::check` refuses a
+  challenge that was signed for another address than that of the hub, and one whose nonce the
+  hub does not accept. The core cannot judge a nonce, because the hub alone knows its secret and
+  its clock; the check therefore takes the judgement of the hub as an argument, so that it
+  cannot be left out. `SignedChallenge::actor` also asks a register and returns the identity
+  whose entry holds the key as an active key; an unknown, a retired and a revoked key are
+  refused alike, because none of them signs anything new. The three are judged in this order.
+- **The token shows in no output.** The type of the token has no `Display` form, its `Debug`
+  form does not show it, and no error of a reader quotes it. The core writes it to no file and to
+  no log. The token answer is the one message that holds a secret; it is read by the transport,
+  which keeps the token in memory and hands the caller the lifetime alone (ADR-022).
+
+The address in the challenge is redundant to the address that the client calls. It is there so
+that a client that reaches a hub under a name that the hub does not know as its own learns that
+from a typed error before it signs, and not from a refusal without a reason.
+
 ### An agent has no account
 
 An agent is a register entry only. It acts in every repository whose register names it and
@@ -142,5 +204,15 @@ the low ones only.
 
 ## Open items
 
+- [ ] The kind of error message that answers a refused sign-in: a signed challenge for another
+      address, a nonce that the hub does not accept, or a key that the register and the accounts
+      do not know. The core refuses with a typed error (`Refused`); the message on the wire
+      comes with the slice that builds the answering side of a hub, and it decides whether the
+      three cases are told apart to the sender.
+- [ ] The bound of a client for the answers of a sign-in is 64 KiB for the challenge and for an
+      error (`MAX_SIGN_IN_MESSAGE`). The token answer is read by the transport, and the slice
+      of the HTTP transport sets its bound.
+- [ ] The token is not wiped from memory when the transport is dropped. It lives for minutes,
+      and a process that reads the memory of the command reads the key file as well (ADR-003).
 - [ ] The steps by which an account is created and a key is bound through the identity provider.
       It belongs to stemma-hub.
