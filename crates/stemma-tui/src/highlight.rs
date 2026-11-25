@@ -321,9 +321,10 @@ mod tests {
     fn a_block_comment_is_coloured_on_every_line() {
         let text = lines("/* one\ntwo\nthree */\nlet x = 1;\n");
         let found = FileHighlights::of("a.rs", &text, &[]).unwrap();
-        for line in 0..3 {
+        // The slice, unlike `take(3)`, fails when a line of the comment is missing.
+        for (line, ranges) in found.old[..3].iter().enumerate() {
             assert!(
-                found.old[line]
+                ranges
                     .iter()
                     .any(|(_, category)| *category == Category::Comment),
                 "line {line}"
