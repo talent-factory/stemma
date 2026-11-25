@@ -163,9 +163,9 @@ against the key of the payload, and the signature of the hub against the key tha
 value of either type therefore carries signatures that verify. Whether the keys are the right
 ones is asked apart: the key of the hub against the key that the clone pinned and the former keys
 with their ranges (ADR-026), and the key of the actor against the register of the register
-commit. That last check answers "no longer checkable" where the commit, its tree or a tree on
-the path of the register is gone, and refuses only where the register is there and does not hold
-the key as an active key of the actor.
+commit. That last check answers "no longer checkable" where the commit, its tree, a tree on the
+path of the register or the register file itself is gone. It refuses where the register is there
+and does not hold the key as an active key of the actor, and where it cannot be read.
 
 The chains have one rule in one place (`Chain`). It holds the number and the hash of the last
 entry, and for every name the hash of its last entry with the commit that this entry left; a
@@ -178,12 +178,18 @@ to a signature (ADR-026); every refusal comes before the first byte is written.
 
 - A reader that begins in the middle of a record, such as a clone with a receipt, does not know
   the names of the entries before. It takes the first update of a name as it is and checks the
-  later ones; the chain of the repository is checked from its first entry on.
+  later ones; the chain of the repository is checked from the first entry that it reads. Such a
+  chain reads only: the writer refuses it, because the reader of the whole record checks every
+  name.
+- The chain does not compare the address of the hub in a payload. A hub may move to another
+  address (ADR-026), so one record can name several; that an update names the address under
+  which the hub was called is asked by the accepting operation, which knows that address.
 - An entry that carries the number of the last entry and has another hash is reported as a
   rewritten record. Two such entries prove the rewrite where the key of the hub for that number
   signed both (ADR-026).
 - A record is its entries one after the other, as the writer appends them to one destination.
-  The message that carries a range of the record through the protocol comes with its request.
+  An entry ends with its `hub-signature` line, so a reader splits a record there and reads each
+  entry once. The message that carries a range of the record through the protocol comes with its request.
 - The answer to a stale update is typed in the core (every reference that does not match, with
   the hash of its last entry and its commit); the error message that carries it comes with the
   accepting operation.

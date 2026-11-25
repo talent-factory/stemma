@@ -66,7 +66,7 @@ use std::str::FromStr;
 
 use super::{
     first_line, malformed, parse_commit, parse_key, parse_positive, FormerKey, Lines, Malformed,
-    ParseError, QualifiedName, RecordHash, RefList, RepositoryId, VERSION,
+    ParseError, QualifiedName, RecordHash, RefListError, RepositoryId, VERSION,
 };
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError};
 use crate::refs::RefKind;
@@ -176,7 +176,8 @@ impl Error for RecordProblem {}
 /// `/<namespace>/<repository>` (ADR-023). The payload of a ref update names it, so that another
 /// hub cannot pass the update on (ADR-026). It is kept as it was given and is not normalised, by
 /// the rule of [`RemoteAddress`](crate::remote::RemoteAddress): no query, no fragment, no `@`,
-/// and no `/` at its end, so one hub has one spelling.
+/// and no `/` at its end. The case of the host and a default port are not folded, so the client
+/// and the hub must spell the address alike, byte for byte.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HubAddress(String);
 
@@ -519,9 +520,9 @@ impl RefUpdate {
     /// `signature` line.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let mut lines = Lines::open(bytes)?;
-        let (update, line) = read_update(&mut lines)?;
+        let update = read_update(&mut lines)?;
         lines.end()?;
-        update.verified(line)
+        update.verified()
     }
 
     /// Reads the form of the message without checking the signature, for the fuzz target: a
@@ -529,15 +530,34 @@ impl RefUpdate {
     #[cfg(any(test, fuzzing))]
     pub(crate) fn parse_unverified(bytes: &[u8]) -> Result<Self, ParseError> {
         let mut lines = Lines::open(bytes)?;
-        let (update, _) = read_update(&mut lines)?;
+        let update = read_update(&mut lines)?;
         lines.end()?;
-        Ok(update)
+        Ok(update.unchecked())
+    }
+}
+
+/// A ref update as its lines were read, with the line of its signature. The signature is not
+/// checked yet, so this is no [`RefUpdate`].
+struct UnverifiedUpdate {
+    payload: RefUpdatePayload,
+    signature: Signature,
+    line: usize,
+}
+
+impl UnverifiedUpdate {
+    /// The update, if its signature verifies.
+    fn verified(self) -> Result<RefUpdate, ParseError> {
+        RefUpdate::try_new(self.payload, self.signature)
+            .map_err(|_| problem(self.line, RecordProblem::ActorSignature))
     }
 
-    /// The update, if its signature verifies. `line` is the line of the signature.
-    fn verified(self, line: usize) -> Result<Self, ParseError> {
-        Self::try_new(self.payload, self.signature)
-            .map_err(|_| problem(line, RecordProblem::ActorSignature))
+    /// The update without the check of its signature: for an entry whose reader checks it
+    /// before it returns ([`read_entry`]), and for the fuzz target.
+    fn unchecked(self) -> RefUpdate {
+        RefUpdate {
+            payload: self.payload,
+            signature: self.signature,
+        }
     }
 }
 
@@ -568,9 +588,9 @@ fn parse_signature(line: usize, text: &str) -> Result<Signature, ParseError> {
     signature_from_line(text).ok_or(problem(line, RecordProblem::SignatureForm))
 }
 
-/// Reads the lines of a ref update after the first line, from `hub` to `signature`, and returns
-/// the update with the line of its signature. The signature is not checked.
-fn read_update(lines: &mut Lines<'_>) -> Result<(RefUpdate, usize), ParseError> {
+/// Reads the lines of a ref update after the first line, from `hub` to `signature`. The
+/// signature is not checked.
+fn read_update(lines: &mut Lines<'_>) -> Result<UnverifiedUpdate, ParseError> {
     let (line, value) = lines.require("hub")?;
     let hub = HubAddress::try_new(value).map_err(|reason| problem(line, reason))?;
     let (line, value) = lines.require("repository")?;
@@ -613,7 +633,11 @@ fn read_update(lines: &mut Lines<'_>) -> Result<(RefUpdate, usize), ParseError> 
         moves,
         key,
     };
-    Ok((RefUpdate { payload, signature }, line))
+    Ok(UnverifiedUpdate {
+        payload,
+        signature,
+        line,
+    })
 }
 
 /// What a hub states about a ref update that it accepts (ADR-025), without what the record
@@ -774,17 +798,14 @@ impl RecordEntry {
     /// ([`RecordProblem::ActorSignature`]) or of the hub ([`RecordProblem::HubSignature`]) that
     /// does not verify, in this order.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let (entry, rest) = read_entry(bytes, true)?;
-        debug_assert!(rest.is_empty(), "a single entry was read to its end");
-        Ok(entry)
+        read_entry(bytes)
     }
 
     /// Reads the form of one entry without checking the signatures, for the fuzz target (see
     /// [`RefUpdate::parse_unverified`]).
     #[cfg(any(test, fuzzing))]
     pub(crate) fn parse_unverified(bytes: &[u8]) -> Result<Self, ParseError> {
-        let (entry, _) = read_entry_form(bytes, true)?;
-        Ok(entry.0)
+        Ok(read_entry_form(bytes)?.0)
     }
 
     /// Checks a receipt (ADR-025): the entry holds the update as it was sent, signature
@@ -813,8 +834,8 @@ impl RecordEntry {
     /// update is an active key of the actor in the register of that commit.
     ///
     /// The record keeps no commit alive (ADR-025), so the commit may be gone. An entry whose
-    /// register commit, its tree, or a tree on the path of the register is not in the store is
-    /// [`Standing::NoLongerCheckable`]; that is no damage.
+    /// register commit, its tree, a tree on the path of the register, or the register file
+    /// itself is not in the store is [`Standing::NoLongerCheckable`]; that is no damage.
     ///
     /// # Errors
     ///
@@ -861,11 +882,12 @@ fn verify_hub(hash: RecordHash, signature: &Signature) -> Result<(), VerifyError
 /// An entry whose signatures are not checked yet, with the lines of its two signatures.
 struct Unverified(RecordEntry, usize, usize);
 
-/// Reads the form of one entry from the start of `bytes` and returns it with the bytes after it.
-/// With `alone`, anything after the entry is refused.
-fn read_entry_form(bytes: &[u8], alone: bool) -> Result<(Unverified, &[u8]), ParseError> {
+/// Reads the form of one entry, which is all of `bytes`.
+fn read_entry_form(bytes: &[u8]) -> Result<Unverified, ParseError> {
     let mut lines = Lines::open(bytes)?;
-    let (update, actor_line) = read_update(&mut lines)?;
+    let update = read_update(&mut lines)?;
+    let actor_line = update.line;
+    let update = update.unchecked();
     let (line, value) = lines.require("number")?;
     let number: u64 = parse_positive(value).ok_or(malformed(line, Malformed::Number))?;
     let (line, value) = lines.require("time")?;
@@ -902,9 +924,7 @@ fn read_entry_form(bytes: &[u8], alone: bool) -> Result<(Unverified, &[u8]), Par
     }
     let (hub_line, value) = lines.require("hub-signature")?;
     let signature = parse_signature(hub_line, value)?;
-    if alone {
-        lines.end()?;
-    }
+    lines.end()?;
     let entry = RecordEntry {
         update,
         number,
@@ -916,18 +936,36 @@ fn read_entry_form(bytes: &[u8], alone: bool) -> Result<(Unverified, &[u8]), Par
         previous,
         signature,
     };
-    let rest = &bytes[bytes.len() - lines.rest.len()..];
-    Ok((Unverified(entry, actor_line, hub_line), rest))
+    Ok(Unverified(entry, actor_line, hub_line))
 }
 
-/// Reads one entry from the start of `bytes`, checks its signatures, and returns it with the
-/// bytes after it.
-fn read_entry(bytes: &[u8], alone: bool) -> Result<(RecordEntry, &[u8]), ParseError> {
-    let (Unverified(entry, actor_line, hub_line), rest) = read_entry_form(bytes, alone)?;
-    entry.update.clone().verified(actor_line)?;
+/// Reads one entry, which is all of `bytes`, and checks its signatures.
+fn read_entry(bytes: &[u8]) -> Result<RecordEntry, ParseError> {
+    let Unverified(entry, actor_line, hub_line) = read_entry_form(bytes)?;
+    let RefUpdate { payload, signature } = &entry.update;
+    RefUpdate::try_new(payload.clone(), signature.clone())
+        .map_err(|_| problem(actor_line, RecordProblem::ActorSignature))?;
     verify_hub(entry.hash(), &entry.signature)
         .map_err(|_| problem(hub_line, RecordProblem::HubSignature))?;
-    Ok((entry, rest))
+    Ok(entry)
+}
+
+/// The length of the first entry of a record: up to the line feed of the first `hub-signature`
+/// line, or all of `bytes` if there is none. Only the last line of an entry begins with that
+/// keyword, and no value holds a line feed, so the split is where the writer ended the entry.
+fn first_entry_len(bytes: &[u8]) -> usize {
+    const LAST_LINE: &[u8] = b"\nhub-signature ";
+    bytes
+        .windows(LAST_LINE.len())
+        .position(|window| window == LAST_LINE)
+        .and_then(|start| {
+            let value = start + LAST_LINE.len();
+            bytes[value..]
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map(|end| value + end + 1)
+        })
+        .unwrap_or(bytes.len())
 }
 
 /// Why an entry of a record is refused by [`read_record`].
@@ -959,17 +997,21 @@ impl Error for RecordParseError {
 /// it, with both signatures checked. An empty input is an empty record.
 ///
 /// The reader checks each entry on its own. That the entries follow one another is the question
-/// of [`Chain::accept`] and [`Chain::verify`].
+/// of [`Chain::accept`] and [`Chain::verify`]. An entry ends with its `hub-signature` line, so
+/// each entry is read once and the time is linear in the input; the whole record is held in
+/// memory, and a caller that must not hold it reads entry by entry with [`RecordEntry::parse`].
 ///
 /// # Errors
 ///
 /// [`RecordParseError`] with the position of the first entry that
-/// [`RecordEntry::parse`] refuses, which includes an entry that is cut off.
+/// [`RecordEntry::parse`] refuses, which includes an entry that is cut off. What follows the
+/// last `hub-signature` line is read as one more entry.
 pub fn read_record(bytes: &[u8]) -> Result<Vec<RecordEntry>, RecordParseError> {
     let mut entries = Vec::new();
     let mut rest = bytes;
     while !rest.is_empty() {
-        let (entry, after) = read_entry(rest, false).map_err(|error| RecordParseError {
+        let (first, after) = rest.split_at(first_entry_len(rest));
+        let entry = read_entry(first).map_err(|error| RecordParseError {
             entry: entries.len() + 1,
             error,
         })?;
@@ -1006,7 +1048,8 @@ pub enum Standing {
     /// The register commit is in the store, and its register holds the key of the update as an
     /// active key of the actor.
     Checked,
-    /// The register commit or a part of it is no longer in the store, so nothing can be said.
+    /// The register commit, a tree on the way to its register, or the register file is no longer
+    /// in the store, so nothing can be said.
     /// The chains and the signatures of the entry hold all the same.
     NoLongerCheckable,
 }
@@ -1133,6 +1176,9 @@ pub enum ChainError {
     Stale(Stale),
     /// The record holds the largest number that an entry can carry.
     Full,
+    /// The chain began in the middle of the record ([`Chain::after`]), so it does not know the
+    /// last entry of every name, and no entry is written by it.
+    NotWhole,
 }
 
 impl fmt::Display for ChainError {
@@ -1156,6 +1202,9 @@ impl fmt::Display for ChainError {
             ),
             Self::Stale(stale) => stale.fmt(f),
             Self::Full => f.write_str("the record holds the largest number of an entry"),
+            Self::NotWhole => f.write_str(
+                "the record was not read from its first entry, so no entry is written by it",
+            ),
         }
     }
 }
@@ -1200,7 +1249,11 @@ impl Chain {
     /// that begins in the middle, such as a clone that holds a receipt (ADR-026). The names of
     /// the entries before are not known: the first update of a name that is read from here on
     /// is taken as it is, and only the later ones are checked against it. The chain of the
-    /// repository is checked from the first entry on.
+    /// repository is checked from the first entry that is read on. Such a chain reads only:
+    /// [`append`](Self::append) refuses it.
+    ///
+    /// With the number 0 there is no entry before: the hash is not used, and the chain is that
+    /// of [`new`](Self::new).
     pub fn after(repository: RepositoryId, number: u64, hash: RecordHash) -> Self {
         Self {
             repository,
@@ -1247,18 +1300,17 @@ impl Chain {
     /// first entry. In a chain that began in the middle ([`after`](Self::after)) such a name is
     /// not checked.
     ///
+    /// The address of the hub in the payload is not compared: a hub may move to another
+    /// address (ADR-026), so one record can name several. That an update names the address under
+    /// which the hub was called is asked by the accepting operation, which knows that address.
+    ///
     /// # Errors
     ///
     /// [`ChainError::Repository`] for another repository, and [`ChainError::Stale`] with every
     /// reference that does not match and its state in the record.
     pub fn check(&self, update: &RefUpdate) -> Result<(), ChainError> {
+        self.same_repository(update)?;
         let payload = update.payload();
-        if payload.repository != self.repository {
-            return Err(ChainError::Repository {
-                expected: self.repository,
-                found: payload.repository,
-            });
-        }
         let stale: Vec<StaleReference> = payload
             .moves
             .iter()
@@ -1281,6 +1333,19 @@ impl Chain {
             Ok(())
         } else {
             Err(ChainError::Stale(Stale(stale)))
+        }
+    }
+
+    /// Whether the update names the repository of the record.
+    fn same_repository(&self, update: &RefUpdate) -> Result<(), ChainError> {
+        let found = update.payload.repository;
+        if found == self.repository {
+            Ok(())
+        } else {
+            Err(ChainError::Repository {
+                expected: self.repository,
+                found,
+            })
         }
     }
 
@@ -1322,8 +1387,10 @@ impl Chain {
     ///
     /// # Errors
     ///
-    /// [`WriteError::Chain`] if the update does not continue the record ([`check`](Self::check))
-    /// or the record is full, [`WriteError::FastForward`] if `acceptance` names a fast-forward
+    /// [`WriteError::Chain`] if the chain began in the middle of the record
+    /// ([`after`](Self::after), [`ChainError::NotWhole`]): the reader of the whole record checks
+    /// every name, so the writer must know every name too. The same if the update does not
+    /// continue the record ([`check`](Self::check)) or the record is full, [`WriteError::FastForward`] if `acceptance` names a fast-forward
     /// for a reference that the update does not list or that it creates or deletes,
     /// [`WriteError::Sign`] with the error of the signer, [`WriteError::Signature`] if the
     /// signature that it returns does not verify for the key that it names and the hash of the
@@ -1335,6 +1402,9 @@ impl Chain {
         signer: &dyn Signer,
         destination: &mut dyn Write,
     ) -> Result<RecordEntry, WriteError> {
+        if !self.whole {
+            return Err(WriteError::Chain(ChainError::NotWhole));
+        }
         self.check(&update).map_err(WriteError::Chain)?;
         let number = self.next_number().map_err(WriteError::Chain)?;
         let moves = &update.payload.moves;
@@ -1386,12 +1456,23 @@ impl Chain {
     ///
     /// # Errors
     ///
+    /// [`ChainError::Repository`] for an entry of another repository, then
     /// [`ChainError::Rewritten`] if the entry carries the number of the last entry and has
-    /// another hash, [`ChainError::Number`] for any other number that is not the next one, which
-    /// includes the last entry read twice, [`ChainError::Previous`] if `previous` is not the
-    /// hash of the last entry, and the errors of [`check`](Self::check). The chain does not move
-    /// on an error.
+    /// another hash, [`ChainError::Full`] if the last entry carries the largest number, so that
+    /// no entry can follow it, [`ChainError::Number`] for any other number that is not the next
+    /// one, which includes the last entry read twice, [`ChainError::Previous`] if `previous` is
+    /// not the hash of the last entry, and [`ChainError::Stale`] from [`check`](Self::check).
+    /// The chain does not move on an error.
     pub fn accept(&mut self, entry: &RecordEntry) -> Result<(), ChainError> {
+        self.continues(entry)?;
+        self.advance(entry);
+        Ok(())
+    }
+
+    /// Whether an entry is the next link of the chain, by the rules of [`accept`](Self::accept).
+    fn continues(&self, entry: &RecordEntry) -> Result<(), ChainError> {
+        // An entry of another repository says nothing about this record, so it is no rewrite.
+        self.same_repository(&entry.update)?;
         if entry.number == self.last && self.tip.is_some_and(|tip| tip != entry.hash()) {
             return Err(ChainError::Rewritten {
                 number: entry.number,
@@ -1409,9 +1490,7 @@ impl Chain {
                 number: entry.number,
             });
         }
-        self.check(&entry.update)?;
-        self.advance(entry);
-        Ok(())
+        self.check(&entry.update)
     }
 
     /// Reads entries into the chain and checks everything that a reader of a record checks
@@ -1426,8 +1505,9 @@ impl Chain {
     ///
     /// # Errors
     ///
-    /// [`RecordError`] for the first entry that fails, with its number. The chain has moved
-    /// past the entries before it.
+    /// [`RecordError`] for the first entry that fails, with its number: first for the key of
+    /// the hub, then for the chains, then for the actor. The chain has moved past the entries
+    /// before it and not past the entry that failed.
     pub fn verify(
         &mut self,
         entries: &[RecordEntry],
@@ -1440,12 +1520,13 @@ impl Chain {
             if !keys.signed(entry) {
                 return Err(RecordError::HubKey { number });
             }
-            self.accept(entry).map_err(RecordError::Chain)?;
+            self.continues(entry).map_err(RecordError::Chain)?;
             match entry.standing(store) {
                 Ok(Standing::Checked) => {}
                 Ok(Standing::NoLongerCheckable) => unchecked.push(number),
                 Err(source) => return Err(RecordError::Standing { number, source }),
             }
+            self.advance(entry);
         }
         Ok(unchecked)
     }
@@ -1556,16 +1637,24 @@ pub struct HubKeys {
 }
 
 impl HubKeys {
-    /// The keys of a hub. A number in the range of a former key was signed by that key, by the
-    /// first such key if several ranges hold it, and every other number by the current key.
-    pub fn new(current: PublicKey, former: Vec<FormerKey>) -> Self {
-        Self { current, former }
-    }
-
-    /// The keys that a list of references names. The caller has compared the current key with
-    /// the key that the clone pinned.
-    pub fn of(list: &RefList) -> Self {
-        Self::new(list.key().clone(), list.former().to_vec())
+    /// The keys of a hub: the current key, which the caller trusts (a clone passes the key that
+    /// it pinned, not the key that a list of references names), and the former keys. A number
+    /// in the range of a former key was signed by that key, and every other number by the
+    /// current key.
+    ///
+    /// # Errors
+    ///
+    /// [`RefListError::OverlappingRanges`] if two former keys share a record number, by the rule
+    /// of [`RefList::try_new`](super::RefList::try_new).
+    pub fn try_new(current: PublicKey, mut former: Vec<FormerKey>) -> Result<Self, RefListError> {
+        former.sort_by_key(FormerKey::first);
+        if let Some(pair) = former
+            .windows(2)
+            .find(|pair| pair[1].first() <= pair[0].last())
+        {
+            return Err(RefListError::OverlappingRanges(pair[1].first()));
+        }
+        Ok(Self { current, former })
     }
 
     /// The key that signed the entry with this number.

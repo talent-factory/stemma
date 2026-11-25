@@ -76,6 +76,19 @@ impl Write for Full {
     }
 }
 
+/// A destination that takes every byte and cannot flush.
+struct Unflushed;
+
+impl Write for Unflushed {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Err(io::Error::other("cannot flush"))
+    }
+}
+
 /// The key of the actor of these tests.
 fn daniel() -> Seeded {
     Seeded::new(1)
@@ -87,7 +100,7 @@ fn hub() -> Seeded {
 }
 
 fn keys() -> HubKeys {
-    HubKeys::new(hub().public(), Vec::new())
+    HubKeys::try_new(hub().public(), Vec::new()).unwrap()
 }
 
 /// The text of an ID whose bytes are all `byte`.
@@ -214,14 +227,13 @@ pub(crate) fn example_update() -> RefUpdate {
 /// The entry of the checked-in example `receipt`: the receipt of [`example_update`], entry 98
 /// of its repository.
 pub(crate) fn example_receipt() -> RecordEntry {
-    Chain::after(repository(), 97, entry_hash(0xa0))
-        .append(
-            example_update(),
-            acceptance(&["heads/main"]),
-            &hub(),
-            &mut Vec::new(),
-        )
-        .unwrap()
+    // The writer begins at the first entry of a record, so the lines of entry 98 are set here.
+    let lines = hub_lines(
+        98,
+        Some(entry_hash(0xa0)),
+        &[("heads/main", "yes"), ("tags/v0.2.0", "no")],
+    );
+    RecordEntry::parse(&forged(&example_update(), &lines, &hub())).unwrap()
 }
 
 #[test]
@@ -367,6 +379,15 @@ fn a_b_a_does_not_make_an_old_update_count_again() {
     let entry = forged(&to_b, &hub_lines(4, chain.tip(), &[(main, "yes")]), &hub());
     let entry = RecordEntry::parse(&entry).expect("the form and the signatures are right");
     assert_eq!(chain.accept(&entry), Err(expected));
+    // So does the reader of the whole record, with the forged entry at its end.
+    let mut whole = read_record(&record).unwrap();
+    whole.push(entry);
+    let mut reader = Chain::new(repository());
+    assert!(matches!(
+        reader.verify(&whole, &keys(), &TempDir::new().store()),
+        Err(RecordError::Chain(ChainError::Stale(_)))
+    ));
+    assert_eq!(reader.last_number(), 3);
 
     // A reader of the whole record comes to the same state as the writer.
     let mut read = Chain::new(repository());
@@ -452,6 +473,21 @@ fn two_entries_with_one_number_and_different_hashes_are_detected() {
         )
         .unwrap();
     assert!(!keys().rewritten(&one, &foreign));
+    assert!(!keys().rewritten(&foreign, &one));
+    // Two entries of one record carry two numbers.
+    let mut chain = Chain::new(repository());
+    let mut record = Vec::new();
+    let first = append(
+        &mut chain,
+        &mut record,
+        update(vec![moved(main, None, None, Some(commit(1)))]),
+    );
+    let second = append(
+        &mut chain,
+        &mut record,
+        update(vec![moved("heads/b", None, None, Some(commit(1)))]),
+    );
+    assert!(!keys().rewritten(&first, &second));
     // Entries of two repositories share their numbers.
     let elsewhere: RepositoryId = "ffeeddccbbaa99887766554433221100".parse().unwrap();
     let there = Chain::new(elsewhere)
@@ -477,6 +513,14 @@ fn two_entries_with_one_number_and_different_hashes_are_detected() {
             .to_string(),
         "two different record entries carry the number 1: the record was rewritten"
     );
+    // An entry of another repository with that number says nothing about this record.
+    assert_eq!(
+        chain.accept(&there),
+        Err(ChainError::Repository {
+            expected: repository(),
+            found: elsewhere
+        })
+    );
     // Its own entry, read again, is not the next one.
     assert_eq!(
         chain.accept(&one),
@@ -489,19 +533,34 @@ fn two_entries_with_one_number_and_different_hashes_are_detected() {
 
 /// Stores a commit whose tree holds this register, or no register, and returns it.
 fn register_commit(store: &FsObjectStore, register: Option<&Register>) -> CommitId {
-    let file = Blob::new("content\n");
-    store.put_blob(&file).unwrap();
-    let mut entries = vec![TreeEntry::file("a.txt", FileMode::File, file.id()).unwrap()];
-    if let Some(register) = register {
+    let Some(register) = register else {
+        return commit_of(store, Vec::new());
+    };
+    register_tree(store, |store| {
         let blob = Blob::new(register.encode());
         store.put_blob(&blob).unwrap();
-        let directory = Tree::try_new(vec![
-            TreeEntry::file("register", FileMode::File, blob.id()).unwrap()
-        ])
-        .unwrap();
-        store.put_tree(&directory).unwrap();
-        entries.push(TreeEntry::directory(".stemma-actors", directory.id()).unwrap());
-    }
+        TreeEntry::file("register", FileMode::File, blob.id()).unwrap()
+    })
+}
+
+/// Stores a commit whose directory `.stemma-actors` holds the entry that `entry` makes.
+fn register_tree(
+    store: &FsObjectStore,
+    entry: impl FnOnce(&FsObjectStore) -> TreeEntry,
+) -> CommitId {
+    let directory = Tree::try_new(vec![entry(store)]).unwrap();
+    store.put_tree(&directory).unwrap();
+    commit_of(
+        store,
+        vec![TreeEntry::directory(".stemma-actors", directory.id()).unwrap()],
+    )
+}
+
+/// Stores a commit with a file and these further entries of its tree.
+fn commit_of(store: &FsObjectStore, mut entries: Vec<TreeEntry>) -> CommitId {
+    let file = Blob::new("content\n");
+    store.put_blob(&file).unwrap();
+    entries.push(TreeEntry::file("a.txt", FileMode::File, file.id()).unwrap());
     let tree = Tree::try_new(entries).unwrap();
     store.put_tree(&tree).unwrap();
     let commit = Commit::try_new(
@@ -602,9 +661,8 @@ fn an_actor_that_the_register_does_not_hold_does_not_stand() {
     let error = entries[0].standing(&store).unwrap_err();
     assert!(matches!(error, StandingError::NotActive), "{error}");
     check_rejection(&error);
-    let refused = Chain::new(repository())
-        .verify(&entries, &keys(), &store)
-        .unwrap_err();
+    let mut chain = Chain::new(repository());
+    let refused = chain.verify(&entries, &keys(), &store).unwrap_err();
     assert!(matches!(
         refused,
         RecordError::Standing {
@@ -613,6 +671,11 @@ fn an_actor_that_the_register_does_not_hold_does_not_stand() {
         }
     ));
     check_rejection(&refused);
+    assert_eq!(
+        chain,
+        Chain::new(repository()),
+        "the chain did not move past the refused entry"
+    );
 
     // The register holds the actor with another key.
     let other_key = Register::with_owner(daniel_id.clone(), Seeded::new(7).public()).unwrap();
@@ -634,6 +697,47 @@ fn an_actor_that_the_register_does_not_hold_does_not_stand() {
         Err(StandingError::NotActive)
     ));
 
+    // A register that cannot be read is damage, not "no longer checkable".
+    let garbage = register_tree(&store, |store| {
+        let blob = Blob::new("no register\n");
+        store.put_blob(&blob).unwrap();
+        TreeEntry::file("register", FileMode::File, blob.id()).unwrap()
+    });
+    let entries = record_at(garbage);
+    let error = entries[0].standing(&store).unwrap_err();
+    assert!(
+        matches!(error, StandingError::Unreadable(ModeError::Parse(_))),
+        "{error}"
+    );
+    check_rejection(&error);
+    let refused = Chain::new(repository())
+        .verify(&entries, &keys(), &store)
+        .unwrap_err();
+    assert!(matches!(refused, RecordError::Standing { number: 1, .. }));
+    check_rejection(&refused);
+    let directory = register_tree(&store, |store| {
+        let file = Blob::new("x\n");
+        store.put_blob(&file).unwrap();
+        let inner = Tree::try_new(vec![
+            TreeEntry::file("x", FileMode::File, file.id()).unwrap()
+        ])
+        .unwrap();
+        store.put_tree(&inner).unwrap();
+        TreeEntry::directory("register", inner.id()).unwrap()
+    });
+    assert!(matches!(
+        record_at(directory)[0].standing(&store),
+        Err(StandingError::Unreadable(ModeError::NotRegisterFile))
+    ));
+    // A register file that is gone from the store is no longer checkable, as a commit is.
+    let missing = register_tree(&store, |_| {
+        TreeEntry::file("register", FileMode::File, Blob::new("gone\n").id()).unwrap()
+    });
+    assert_eq!(
+        record_at(missing)[0].standing(&store).unwrap(),
+        Standing::NoLongerCheckable
+    );
+
     // The commit is there and holds no register.
     let entries = record_at(register_commit(&store, None));
     let error = entries[0].standing(&store).unwrap_err();
@@ -646,10 +750,11 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
     let store_dir = TempDir::new();
     let entries = record_at(commit(0x11));
     // The key of the hub was another one for the first entry.
-    let former = HubKeys::new(
+    let former = HubKeys::try_new(
         hub().public(),
         vec![FormerKey::try_new(1, 1, Seeded::new(8).public()).unwrap()],
-    );
+    )
+    .unwrap();
     assert_eq!(former.at(1), &Seeded::new(8).public());
     assert_eq!(former.at(2), &hub().public());
     let error = Chain::new(repository())
@@ -661,13 +766,46 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
     );
     check_rejection(&error);
     // With the range of the former key after the record, the current key signed both.
-    let later = HubKeys::new(
+    let later = HubKeys::try_new(
         Seeded::new(8).public(),
         vec![FormerKey::try_new(1, 2, hub().public()).unwrap()],
-    );
+    )
+    .unwrap();
     assert!(Chain::new(repository())
         .verify(&entries, &later, &store_dir.store())
         .is_ok());
+    // The ranges of the former keys share no number, in whatever order they are given.
+    let range = |first, last| FormerKey::try_new(first, last, Seeded::new(8).public()).unwrap();
+    assert_eq!(
+        HubKeys::try_new(hub().public(), vec![range(5, 9), range(1, 5)]),
+        Err(RefListError::OverlappingRanges(5))
+    );
+    let sorted = HubKeys::try_new(hub().public(), vec![range(5, 9), range(1, 4)]).unwrap();
+    assert_eq!(sorted.at(4), &Seeded::new(8).public());
+    assert_eq!(sorted.at(10), &hub().public());
+
+    // A refused entry leaves the chain before it, for each of the three checks.
+    let mut chain = Chain::new(repository());
+    assert!(chain.verify(&entries, &former, &store_dir.store()).is_err());
+    assert_eq!(chain.last_number(), 0);
+    let wrong_second = HubKeys::try_new(
+        hub().public(),
+        vec![FormerKey::try_new(2, 2, Seeded::new(8).public()).unwrap()],
+    )
+    .unwrap();
+    assert!(matches!(
+        chain.verify(&entries, &wrong_second, &store_dir.store()),
+        Err(RecordError::HubKey { number: 2 })
+    ));
+    assert_eq!(chain.last_number(), 1);
+    assert!(matches!(
+        chain.verify(&entries, &keys(), &store_dir.store()),
+        Err(RecordError::Chain(ChainError::Number {
+            expected: 2,
+            found: 1
+        }))
+    ));
+    assert_eq!(chain.last_number(), 1);
 }
 
 #[test]
@@ -1329,13 +1467,21 @@ fn the_reader_of_the_chain_refuses_what_the_writer_does_not_write() {
     assert_eq!(names, ["heads/b", "heads/main"]);
     assert_eq!(stale.references()[1].commit, Some(commit(1)));
 
-    // The largest number has no next one.
-    let mut full = Chain::after(repository(), u64::MAX, first.hash());
+    // A chain that began in the middle reads only: the writer must know every name.
     let update = update(vec![moved("heads/x", None, None, Some(commit(1)))]);
+    let mut record = Vec::new();
+    let refused = partial.append(update.clone(), acceptance(&[]), &hub(), &mut record);
     assert!(matches!(
-        full.append(update, acceptance(&[]), &hub(), &mut record),
-        Err(WriteError::Chain(ChainError::Full))
+        refused,
+        Err(WriteError::Chain(ChainError::NotWhole))
     ));
+    assert!(record.is_empty());
+    check_rejection(&ChainError::NotWhole);
+    // The largest number has no next one.
+    let full = Chain::after(repository(), u64::MAX, first.hash());
+    let lines = hub_lines(5, Some(first.hash()), &[("heads/x", "no")]);
+    let entry = RecordEntry::parse(&forged(&update, &lines, &hub())).unwrap();
+    assert_eq!(full.clone().accept(&entry), Err(ChainError::Full));
 }
 
 #[test]
@@ -1367,6 +1513,17 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
         );
         check_rejection(&error);
     }
+    // A deletion is no fast-forward either, for the writer and for the reader.
+    let deletion = || update(vec![moved(main, Some(first.hash()), Some(commit(1)), None)]);
+    let error = chain
+        .append(deletion(), acceptance(&[main]), &hub(), &mut record)
+        .unwrap_err();
+    assert!(matches!(error, WriteError::FastForward(_)), "{error}");
+    let lines = hub_lines(2, Some(first.hash()), &[(main, "yes")]);
+    assert_eq!(
+        RecordEntry::parse(&forged(&deletion(), &lines, &hub())),
+        Err(problem(12, RecordProblem::FastForward))
+    );
     // A signer that fails, and one that signs something else.
     let error = chain
         .append(next(), acceptance(&[main]), &Broken, &mut record)
@@ -1394,6 +1551,12 @@ fn the_writer_refuses_before_it_writes_and_leaves_the_chain_where_it_was() {
     );
     assert!(error.io_error().is_some());
     check_rejection(&error);
+    assert_eq!(chain, before.0);
+    // So does a destination that takes the bytes and cannot flush them.
+    let error = chain
+        .append(next(), acceptance(&[main]), &hub(), &mut Unflushed)
+        .unwrap_err();
+    assert!(matches!(error, WriteError::Io(_)), "{error}");
     assert_eq!(chain, before.0);
     let second = chain
         .append(next(), acceptance(&[main]), &hub(), &mut record)

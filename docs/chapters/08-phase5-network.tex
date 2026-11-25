@@ -509,8 +509,9 @@ Eintrags davor;
 Commits ein aktiver Schlüssel dieses Akteurs.
 \stopitemize
 
-Bei $k$ Einträgen mit zusammen $r$ Referenzen und $n$ Namen kostet das $O(k + r \log n)$
-Schritte und Speicher für $n$ Namen; der Leser hält nie mehr als den Stand und einen Eintrag.
+Bei $k$ Einträgen mit zusammen $r$ Referenzen und $n$ Namen kostet die Prüfung der Ketten
+$O(k + r \log n)$ Schritte, dazu das Lesen der Bytes und zwei Signaturen je Eintrag.
+Der Stand braucht Speicher für $n$ Namen, und die Prüfung nimmt die Einträge einzeln entgegen.
 
 \startinfobox
 {\bf Grenzfälle der Aufzeichnung.}
@@ -521,10 +522,13 @@ Ein gelöschter Name bleibt im Stand, ohne Commit: Wer ihn neu anlegt, nennt den
 gelöscht hat.
 Ein Fast-Forward ist nur eine Bewegung von einem Commit zu einem anderen; Anlegen und Löschen
 tragen \type{no}.
-Fehlt der Commit des Registers im Objektspeicher, meldet der Leser den Eintrag als nicht mehr
-prüfbar, nicht als beschädigt: Ketten und Signaturen gelten weiter.
+Fehlt der Commit des Registers im Objektspeicher, einer seiner Trees auf dem Weg zum Register
+oder die Registerdatei selbst, meldet der Leser den Eintrag als nicht mehr prüfbar, nicht als
+beschädigt: Ketten und Signaturen gelten weiter.
+Ein Register, das vorhanden ist und sich nicht lesen lässt, ist dagegen ein Fehler.
 Ein Leser, der mit einer Quittung mitten in der Aufzeichnung beginnt, kennt die Namen davor
 nicht und prüft bei jedem Namen erst das zweite Ref-Update gegen das erste.
+Schreiben kann nur, wer die Aufzeichnung vom ersten Eintrag an gelesen hat.
 Trägt ein Eintrag die Nummer des letzten bekannten Eintrags und einen anderen Hash, hat der Hub
 seine Aufzeichnung umgeschrieben; zwei solche Einträge mit der Signatur des Hubs belegen es.
 \stopinfobox
