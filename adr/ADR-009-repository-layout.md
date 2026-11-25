@@ -30,6 +30,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `format`, `HEAD`, `working-copy` (ADR-010), `objects/` (ADR-007),
   `oplog/` and `oplog-tip` (ADR-011),
   `leases/` (one file per branch with a lease, made by the first lease; ADR-004, ADR-011),
+  `statements/` (the signed statements, one file per statement, made by the first one; ADR-025,
+  see "The layout in Phase 5"),
   `refs/heads/`, `refs/tags/` (made by the first tag, ADR-008), `refs/remotes/` (the remote
   references, ADR-008) and `remotes/` (the configuration of the remotes, one file per remote; see
   "The layout in Phase 5"), `refs.lock` (while a command
@@ -124,16 +126,28 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 15, the version of the bare repository
-  (STEMMA-284, see "A bare repository"), and `open` reads the versions 2 to 15.
+  supports: `init` and `init_bare` write version 16, the version of the signed statements
+  (STEMMA-290, see "The layout in Phase 5"), and `open` reads the versions 2 to 16.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
   `lease-override` and the directory `leases/`; ADR-004, ADR-011), before the pull requests (8, the
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
   entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
-  (11), before the former owner of a worktree (12), before the remotes (13), or before the bare
-  repository (14) rises to 15 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  (11), before the former owner of a worktree (12), before the remotes (13), before the bare
+  repository (14), or before the signed statements (15) rises to 16 with its next entry or purge
+  (ADR-014, ADR-011, ADR-010).
+  Version 16 adds the directory `statements/` and changes four entries of the log: `pr-open`,
+  `pr-close`, and `pr-approve` end with a line that names a statement, and `check` has its
+  version 2 with that line (ADR-011). A program that knows only version 15 would call such an
+  entry damage, so it has to refuse the repository. A repository of an older version is read as
+  it is, and nothing in it is rewritten: its entries of a pull request and of a check stay
+  entries of the chain, and `op verify` still checks their proof files, but they name no
+  statement and are no evidence any more. The evidence has one form (ADR-025), so a pull
+  request that was open under an older version is opened again, and a check is recorded again.
+  Converting the old entries was rejected: a statement is signed by the key of its actor, which
+  a migration does not hold, and a second, unsigned form of old evidence beside the statements
+  is what ADR-025 rules out.
   Version 14 adds files and changes none (the configuration of the remotes and the remote
   references, STEMMA-285): a program that knows only version 13 would not count a remote
   reference as a root, and its purge could remove what the reference names, so it has to refuse
@@ -176,8 +190,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
 - **The directory is created if it does not exist** *(confirmed)*, as `git init` does.
 
 - **The layout in Phase 5** *(decided in STEMMA-56, STEMMA-269, STEMMA-270, STEMMA-272,
-  STEMMA-273 and STEMMA-274; the first two items are implemented in STEMMA-285, the others not
-  yet)*. A clone that knows a remote gets new files in
+  STEMMA-273 and STEMMA-274; the first two items are implemented in STEMMA-285, the set of
+  statements in STEMMA-290, the journal of a fetch in STEMMA-289, the others not yet)*. A clone that knows a remote gets new files in
   `.stemma/`. Each slice that adds one raises `stemma-repository` by the rule above; the names and
   the strict forms are set by the slices.
   - The configuration of remotes: per remote its address, the ID of the repository on the hub
@@ -210,7 +224,26 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   - The ID of the log: random, created by `init` and `clone`; an existing repository gets it when
     it is first needed (ADR-026).
   - The set of statements: the signed statements that the clone made and those that a fetch
-    brought (ADR-025).
+    brought (ADR-025). It is the directory `statements/` *(STEMMA-290)*, in the metadata
+    directory that every worktree shares, and it comes with version 16 of the format. Each
+    statement is one file. Its name is the 64 lowercase hexadecimal digits of the hash of the
+    statement, and its content is the message of the statement as the protocol writes it
+    (ADR-025, "The statements as built"), at most 64 KiB. A reader refuses a file that the strict
+    reader of a statement refuses, a signature that does not verify included, a file whose
+    content has another hash than its name, and a name that is no hash, except one that starts
+    with a dot. A statement is written to a temporary file in `tmp/`, flushed, and renamed into
+    the set, under the lock of the references, and before the entry of the log that names it;
+    a statement that the set holds already is left as it is, so a writer that stopped between
+    the statement and its entry runs again. Nothing replaces or removes a statement.
+    The set has no order. A statement counts in a clone only through the entry of the log that
+    names its hash, which gives it a number, a time, and an actor (ADR-011); a statement that no
+    entry names is no damage and counts for nothing. A stop between the statement and its entry
+    leaves one, and so does a purge that replaces the entry by a stub (ADR-014): the purge does
+    not touch the set, and what becomes of such a statement is an open item of ADR-025. The
+    statements that a fetch brings are placed by the `fetch` entry, with its slice.
+    The core has one type for the set (`StatementSet`), which takes its directory and its
+    scratch directory from the caller, so a hub keeps its set beside the bare repository with
+    the same code (see "A bare repository").
   - The journal of a running fetch, which records the commits that arrived completely, as
     `purge-pending` does for a purge (ADR-023): the file `fetch-pending` (STEMMA-289). It lies
     in the metadata directory that the worktrees share, and a fetch holds a lock of the system
@@ -242,11 +275,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     (`OpenError::MalformedBareMarker`, exit code 5 by ADR-018), because it must not decide either
     way. A linked worktree is refused as well if the directory that the worktrees share holds
     the marker.
-  - **The version.** A bare repository is written in version 15 of the format. A program that
+  - **The version.** The bare repository came with version 15 of the format, and `init_bare`
+    writes the current version, as `init` does. A program that
     knows only version 14 refuses it with the unsupported version and does not report the missing
-    `HEAD` and log as damage. The files of a repository with a working copy do not change; it
-    rises to 15 with its next entry or purge, as for every version. `open_bare` reads what
-    `init_bare` writes: the marker beside a version before 15 is damage
+    `HEAD` and log as damage. The files of a repository with a working copy did not change with
+    version 15; it rises with its next entry or purge, as for every version. `open_bare` reads
+    what an `init_bare` can have written: the marker beside a version before 15 is damage
     (`OpenError::BareFormat`).
   - **How it is created and opened.** `Repository::init_bare(path, actor, authorizer)` asks the
     authorizer for `init` with the directory as the target, as `init` does. `path` must not

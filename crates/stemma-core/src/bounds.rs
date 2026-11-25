@@ -52,7 +52,7 @@ impl Verification {
 /// Reads the verification of `main` from the runs without a base (the runs on a tip). `main` is
 /// the first-parent history, the tip first. A run on a commit that is not in it says nothing about
 /// `main` and is left out. The caller passes only the runs that count (in an enforcing repository
-/// those with a proof of the writer).
+/// those whose statement the writer signed).
 pub fn verification(checks: &[Check], main: &[CommitId]) -> Verification {
     let position = |check: &Check| main.iter().position(|commit| commit == check.commit());
     let runs: Vec<(usize, bool)> = checks
@@ -259,8 +259,9 @@ pub fn bisect<T, E>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::check::checks;
-    use crate::oplog::{Chain, CheckEntry, CheckResult, Entry, Record};
+    use crate::evidence::{fold, Placed};
+    use crate::oplog::CheckResult;
+    use crate::protocol::statement::{Body, Checked, Statement};
     use crate::Actor;
 
     fn id(byte: u8) -> CommitId {
@@ -278,16 +279,16 @@ mod tests {
 
     fn log(runs: &[(i64, u8, Option<u8>, CheckResult)]) -> Vec<Check> {
         let writer = Actor::human("ana").unwrap();
-        let entries: Vec<Entry> = runs
+        let placed: Vec<Placed> = runs
             .iter()
             .enumerate()
             .map(|(at, (time, commit, base, result))| {
-                let check =
-                    CheckEntry::new(*time, writer.clone(), id(*commit), base.map(id), *result);
-                Entry::linked(at as u64 + 1, Chain::Start, Record::Check(check)).unwrap()
+                let checked = Checked::try_new(None, id(*commit), base.map(id), *result).unwrap();
+                let statement = Statement::unsigned(Body::Check(checked));
+                Placed::new(at as u64 + 1, *time, writer.clone(), statement)
             })
             .collect();
-        checks(&entries)
+        fold(&placed, &[]).checks
     }
 
     use CheckResult::{Fail, Pass};

@@ -1128,6 +1128,13 @@ pub enum ParseError {
         /// The rule.
         reason: record::RecordProblem,
     },
+    /// A rule of a signed statement is broken ([`statement`]).
+    Statement {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: statement::StatementProblem,
+    },
     /// A rule of a message of the sign-in is broken ([`sign_in`]).
     SignIn {
         /// Number of the line.
@@ -1161,6 +1168,7 @@ impl fmt::Display for ParseError {
                 write!(f, "line {line}: invalid hash of a record entry: {source}")
             }
             Self::Record { line, reason } => write!(f, "line {line}: {reason}"),
+            Self::Statement { line, reason } => write!(f, "line {line}: {reason}"),
             Self::SignIn { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
@@ -1181,6 +1189,7 @@ impl Error for ParseError {
             | Self::UnsupportedVersion { .. }
             | Self::Malformed { .. }
             | Self::Record { .. }
+            | Self::Statement { .. }
             | Self::SignIn { .. } => None,
         }
     }
@@ -1684,6 +1693,8 @@ pub mod examples {
         RefUpdate,
         /// A receipt, which is one record entry ([`RecordEntry`](super::record::RecordEntry)).
         Receipt,
+        /// A signed statement ([`Statement`](super::statement::Statement)), of any kind.
+        Statement,
         /// The challenge of a sign-in ([`Challenge`](super::sign_in::Challenge)).
         Challenge,
         /// The answer of a client to a challenge
@@ -1728,6 +1739,12 @@ pub mod examples {
         example!("error-unknown-want", Error),
         example!("ref-update", RefUpdate),
         example!("receipt", Receipt),
+        example!("statement-pr-opening", Statement),
+        example!("statement-pr-approval", Statement),
+        example!("statement-check-result", Statement),
+        example!("statement-pr-closing", Statement),
+        example!("statement-owner-override", Statement),
+        example!("statement-unsigned", Statement),
         example!("challenge", Challenge),
         example!("signed-challenge", SignedChallenge),
         example!("token", TokenAnswer),
@@ -1735,6 +1752,9 @@ pub mod examples {
 }
 
 pub mod record;
+
+// The signed statements of ADR-025 (STEMMA-290).
+pub mod statement;
 
 pub mod sign_in;
 

@@ -523,7 +523,7 @@ impl Repository {
         allowed: &crate::Allowed,
     ) -> Result<Result<GateMerge, Retry>, GateError> {
         let objects = self.objects();
-        let pulls = self.pull_requests()?;
+        let pulls = self.pull_requests(register)?;
         let pull = super::pull::open_pull_of(&pulls, number)?;
         let head = self.branch_head(pull.branch())?;
         if head != *pull.head() {
@@ -542,7 +542,7 @@ impl Repository {
         // `pr-merge`. Only the record is missing then.
         let tip_tree = objects.get_commit(&tip)?.map(|commit| commit.tree());
         if tip_tree == Some(*tree) {
-            return self.record_landed(number, head, tip, actor, allowed);
+            return self.record_landed(number, head, tip, actor, register, allowed);
         }
 
         // Step 2: the rule table, at the level of the caller or of the policy of the tip.
@@ -593,7 +593,7 @@ impl Repository {
             Err(RefError::Locked { .. }) => return Ok(Err(Retry::Locked)),
             Err(error) => return Err(error.into()),
         };
-        let pulls = self.pull_requests()?;
+        let pulls = self.pull_requests(register)?;
         let pull = super::pull::open_pull_of(&pulls, number)?;
         if self.branch_head(pull.branch())? != head {
             return Err(GateError::BranchMoved { number });
@@ -616,7 +616,7 @@ impl Repository {
         let record = |moved: Entry| {
             #[cfg(test)]
             pause::after_move();
-            self.record_pull_merge_locked(&lock, number, actor, head)
+            self.record_pull_merge_locked(&lock, number, actor, head, register)
                 .map(|entry| (moved.clone(), entry))
                 .map_err(|source| GateError::PullNotRecorded {
                     moved: Box::new(moved),
@@ -667,6 +667,7 @@ impl Repository {
         head: CommitId,
         tip: CommitId,
         actor: &Actor,
+        register: Option<&Register>,
         allowed: &crate::Allowed,
     ) -> Result<Result<GateMerge, Retry>, GateError> {
         #[cfg(test)]
@@ -676,7 +677,7 @@ impl Repository {
             Err(RefError::Locked { .. }) => return Ok(Err(Retry::Locked)),
             Err(error) => return Err(error.into()),
         };
-        let pulls = self.pull_requests()?;
+        let pulls = self.pull_requests(register)?;
         let pull = super::pull::open_pull_of(&pulls, number)?;
         if self.branch_head(pull.branch())? != head {
             return Err(GateError::BranchMoved { number });
@@ -685,7 +686,7 @@ impl Repository {
         if self.refs().branch(&main)? != Some(tip) {
             return Ok(Err(Retry::Stale));
         }
-        let entry = self.record_pull_merge_locked(&lock, number, actor, head)?;
+        let entry = self.record_pull_merge_locked(&lock, number, actor, head, register)?;
         Ok(Ok(GateMerge {
             commit: tip,
             tip,
@@ -779,9 +780,9 @@ mod tests {
     use crate::object::{Blob, FileMode, TreeId};
     use crate::oplog::{CheckResult, PullKind};
     use crate::pull::PullState;
-    use crate::register::{write_proof, ProofFile};
+    use crate::repository::statements::by_hand;
     use crate::repository::InitOptions;
-    use crate::signature::{self, PayloadKind, PublicKey, SignError, Signature, Signer, NAMESPACE};
+    use crate::signature::{PublicKey, SignError, Signature, Signer, NAMESPACE};
     use crate::testutil::TempDir;
     use crate::{AllowAll, Decision};
     use ssh_key::private::Ed25519Keypair;
@@ -927,17 +928,17 @@ mod tests {
             "mia",
         );
         set_branch(&repository, "feature", None, head);
-        let number = repository
-            .open_pull(
-                &branch("feature"),
-                &human("mia"),
-                vec![],
-                None,
-                None,
-                &AllowAll,
-            )
-            .unwrap()
-            .number();
+        // Mia signs the opening, so the pull request counts in both modes; the tests of the
+        // enforcing mode pass the register to the gate.
+        let number = by_hand::open(
+            &repository,
+            &human("mia"),
+            &branch("feature"),
+            head,
+            None,
+            Some(&Seeded::new(3)),
+        )
+        .number();
         Fixture {
             dir,
             repository,
@@ -955,6 +956,8 @@ mod tests {
                     Some(base),
                     CheckResult::Pass,
                     &human("ana"),
+                    None,
+                    None,
                     &AllowAll,
                 )
                 .unwrap();
@@ -994,8 +997,22 @@ mod tests {
             writer: &str,
         ) -> Entry {
             self.repository
-                .record_check(commit, base, result, &human(writer), &AllowAll)
+                .record_check(commit, base, result, &human(writer), None, None, &AllowAll)
                 .unwrap()
+        }
+
+        /// A result of Ana for `commit` whose statement her key signed, so that it counts in an
+        /// enforcing repository. It is written past the writer, which would ask for the same
+        /// signature.
+        fn proven(&self, commit: CommitId, base: Option<CommitId>, result: CheckResult) -> Entry {
+            by_hand::check(
+                &self.repository,
+                &human("ana"),
+                commit,
+                base,
+                result,
+                Some(&Seeded::new(2)),
+            )
         }
 
         /// The entries that only a landing writes: the move of `main` and the merge record.
@@ -1055,7 +1072,7 @@ mod tests {
             .unwrap();
         assert_eq!(commit.parents(), [f.base]);
         assert_eq!(files_of(&f.repository, merged.commit), ["a.txt", "c.txt"]);
-        let pulls = f.repository.pull_requests().unwrap();
+        let pulls = f.repository.pull_requests(None).unwrap();
         assert!(matches!(pulls[0].state(), PullState::Merged { commit, .. } if *commit == f.head));
         // The entry of the move comes first, then the record of the merge.
         let entries = f.repository.oplog().entries().unwrap();
@@ -1135,7 +1152,7 @@ mod tests {
         );
         assert_eq!(f.main(), landed);
         assert_eq!(f.entries(), before);
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1246,7 +1263,7 @@ mod tests {
             matches!(error, GateError::Contended { attempts, last: Retry::Stale, .. } if attempts == MAX_ATTEMPTS),
             "{error}"
         );
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1342,11 +1359,11 @@ mod tests {
                 let repository = Repository::open(&path).unwrap();
                 if merge {
                     repository
-                        .record_pull_merge(number, &human("daniel"), head, &AllowAll)
+                        .record_pull_merge(number, &human("daniel"), head, None, &AllowAll)
                         .unwrap();
                 } else {
                     repository
-                        .close_pull(number, &human("mia"), None, &AllowAll)
+                        .close_pull(number, &human("mia"), None, None, &AllowAll)
                         .unwrap();
                 }
             });
@@ -1392,7 +1409,7 @@ mod tests {
         assert!(error.to_string().contains("lock"), "{error}");
         assert_eq!(f.main(), f.base);
         assert_eq!(f.entries(), before);
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1413,7 +1430,7 @@ mod tests {
 
         assert!(matches!(error, GateError::Contended { .. }));
         assert_eq!(f.landings(), 0);
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1586,6 +1603,7 @@ mod tests {
                 vec![],
                 None,
                 None,
+                None,
                 &AllowAll,
             )
             .unwrap()
@@ -1699,45 +1717,11 @@ mod tests {
             (policy.reservation_after(), policy.max_unverified()),
             (5, 20)
         );
-        let entry = f.record(f.head, Some(f.main()), CheckResult::Pass, "ana");
-        let signature = signature::sign(
-            &Seeded::new(2),
-            PayloadKind::LogEntry,
-            entry.hash().unwrap().to_string().as_bytes(),
-        )
-        .unwrap();
-        write_proof(
-            &f.repository.metadata_dir(),
-            entry.number(),
-            &ProofFile {
-                actor: human("ana"),
-                signature,
-            },
-        )
-        .unwrap();
+        f.proven(f.head, Some(f.main()), CheckResult::Pass);
 
         let merged = gate_by_policy(&f, &Mode::Enforcing(register)).unwrap();
 
         assert_eq!(f.main(), merged.commit);
-    }
-
-    /// Signs the entry as `ana` and writes the proof, so that it counts in an enforcing repository.
-    fn prove(f: &Fixture, entry: &Entry) {
-        let signature = signature::sign(
-            &Seeded::new(2),
-            PayloadKind::LogEntry,
-            entry.hash().unwrap().to_string().as_bytes(),
-        )
-        .unwrap();
-        write_proof(
-            &f.repository.metadata_dir(),
-            entry.number(),
-            &ProofFile {
-                actor: human("ana"),
-                signature,
-            },
-        )
-        .unwrap();
     }
 
     #[test]
@@ -1785,8 +1769,7 @@ mod tests {
         // has no policy file. Attempt 2 must refuse: nothing falls back to the old policy.
         let f = fixture("zero\n");
         let first = land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
-        let entry = f.record(f.head, Some(first), CheckResult::Pass, "ana");
-        prove(&f, &entry);
+        f.proven(f.head, Some(first), CheckResult::Pass);
         let path = f.path();
         let second = commit_of(
             &f.repository,
@@ -1806,7 +1789,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(f.main(), second);
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1823,7 +1806,7 @@ mod tests {
         let repaired = gate_by_policy(&f, &Mode::Enforcing(register())).unwrap();
 
         assert!(repaired.repaired);
-        assert!(!f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(!f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1858,10 +1841,10 @@ mod tests {
     }
 
     #[test]
-    fn in_an_enforcing_repository_only_a_result_with_a_proof_counts() {
+    fn in_an_enforcing_repository_only_a_signed_result_counts() {
         let f = fixture("zero\n");
         let register = register();
-        let entry = f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
+        f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
         let before = f.entries();
         let gate = || {
             f.repository.merge_gate(
@@ -1877,21 +1860,8 @@ mod tests {
 
         assert!(matches!(refused, GateError::NotChecked { .. }), "{refused}");
         assert_eq!(f.entries(), before);
-        let signature = signature::sign(
-            &Seeded::new(2),
-            PayloadKind::LogEntry,
-            entry.hash().unwrap().to_string().as_bytes(),
-        )
-        .unwrap();
-        write_proof(
-            &f.repository.metadata_dir(),
-            entry.number(),
-            &ProofFile {
-                actor: human("ana"),
-                signature,
-            },
-        )
-        .unwrap();
+        // The same result with a statement that the key of its writer signed counts.
+        f.proven(f.head, Some(f.base), CheckResult::Pass);
         let done = gate().unwrap();
         assert_eq!(f.main(), done.commit);
     }
@@ -1915,7 +1885,7 @@ mod tests {
         assert_eq!(f.main(), ahead, "main did not move");
         assert_eq!(f.entries(), before + 1, "only `pr-merge`");
         assert_eq!(f.landings(), 1);
-        assert!(!f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(!f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1929,7 +1899,7 @@ mod tests {
         );
         set_branch(&f.repository, "main", Some(f.base), ahead);
         f.repository
-            .close_pull(f.number, &human("mia"), None, &AllowAll)
+            .close_pull(f.number, &human("mia"), None, None, &AllowAll)
             .unwrap();
         let before = f.entries();
 
@@ -1972,11 +1942,11 @@ mod tests {
         assert_eq!(f.main(), f.base);
         assert_eq!(f.entries(), before + 1);
         assert_eq!(f.landings(), 1, "the entry of the move, and no `pr-merge`");
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
         drop(denied);
         let done = f.gate(RiskLevel::Zero).unwrap();
         assert_eq!(f.main(), done.commit);
-        assert!(!f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(!f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -1992,7 +1962,7 @@ mod tests {
         drop(denied);
         assert_eq!(f.main(), f.base);
         assert_eq!(f.entries(), before);
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -2010,14 +1980,14 @@ mod tests {
         assert_eq!(moved.change().unwrap().operation().as_str(), OPERATION);
         assert_eq!(f.main(), *commit);
         assert_eq!(f.landings(), 1, "the entry of the move, and no `pr-merge`");
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
 
         let repaired = f.gate(RiskLevel::Zero).unwrap();
 
         assert!(repaired.repaired);
         assert_eq!(f.main(), *commit);
         assert_eq!(f.landings(), 2);
-        assert!(!f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(!f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     /// `main` holds the change of the pull request already, as after a stop before `pr-merge`.
@@ -2054,7 +2024,7 @@ mod tests {
             "only the entry of the other change"
         );
         assert_eq!(f.landings(), 0);
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
     }
 
     #[test]
@@ -2091,7 +2061,7 @@ mod tests {
         };
         assert_eq!(moved.change().unwrap().operation().as_str(), OPERATION);
         assert_eq!(f.main(), *commit, "main moved");
-        assert!(f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(f.repository.pull_requests(None).unwrap()[0].is_open());
         assert_eq!(f.landings(), 1);
 
         let repaired = f.gate(RiskLevel::Zero).unwrap();
@@ -2099,7 +2069,7 @@ mod tests {
         assert!(repaired.repaired);
         assert_eq!(f.main(), *commit, "the repair moves nothing");
         assert_eq!(f.landings(), 2);
-        assert!(!f.repository.pull_requests().unwrap()[0].is_open());
+        assert!(!f.repository.pull_requests(None).unwrap()[0].is_open());
         f.repository.oplog().verify().expect("the chain holds");
     }
 
@@ -2117,7 +2087,7 @@ mod tests {
         }
     }
 
-    /// Writes the entry of a check with the time `time`, which the clock does not give.
+    /// Writes the result of a check with the time `time`, which the clock does not give.
     fn record_at(
         f: &Fixture,
         time: i64,
@@ -2125,14 +2095,13 @@ mod tests {
         base: Option<CommitId>,
         result: CheckResult,
     ) -> Entry {
-        let name = OperationName::try_new("check").unwrap();
-        let allowed = f
-            .repository
-            .authorize(&human("ana"), &AllowAll, &name, "x")
-            .unwrap();
-        let lock = f.repository.refs_store().lock_writer(&allowed).unwrap();
-        let entry = crate::oplog::CheckEntry::new(time, human("ana"), commit, base, result);
-        f.repository.append_check(&lock, &entry).unwrap()
+        by_hand::check_at(
+            &f.repository,
+            &human("ana"),
+            time,
+            (commit, base, result),
+            None,
+        )
     }
 
     /// A branch `name` with one commit on `parent` that holds `files`, and its open pull request,
@@ -2146,18 +2115,15 @@ mod tests {
     ) -> (CommitId, u64) {
         let head = commit_of(&f.repository, parent, files, "mia");
         set_branch(&f.repository, name, None, head);
-        let number = f
-            .repository
-            .open_pull(
-                &branch(name),
-                &human("mia"),
-                vec![],
-                repairs,
-                None,
-                &AllowAll,
-            )
-            .unwrap()
-            .number();
+        let number = by_hand::open(
+            &f.repository,
+            &human("mia"),
+            &branch(name),
+            head,
+            repairs,
+            Some(&Seeded::new(3)),
+        )
+        .number();
         (head, number)
     }
 
@@ -2218,7 +2184,15 @@ mod tests {
         f.check(red);
         let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
         f.repository
-            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                fix,
+                Some(red),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
 
         let error = merge(&f, f.number, RiskLevel::Two).unwrap_err();
@@ -2246,6 +2220,8 @@ mod tests {
                 Some(red),
                 CheckResult::Pass,
                 &human("ana"),
+                None,
+                None,
                 &AllowAll,
             )
             .unwrap();
@@ -2263,7 +2239,15 @@ mod tests {
         let red = red_tip(&f);
         let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(f.base));
         f.repository
-            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                fix,
+                Some(red),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
 
         assert_eq!(
@@ -2295,11 +2279,21 @@ mod tests {
                     Some(next),
                     CheckResult::Pass,
                     &human("ana"),
+                    None,
+                    None,
                     &AllowAll,
                 )
                 .unwrap();
             repository
-                .record_check(next, None, CheckResult::Fail, &human("ana"), &AllowAll)
+                .record_check(
+                    next,
+                    None,
+                    CheckResult::Fail,
+                    &human("ana"),
+                    None,
+                    None,
+                    &AllowAll,
+                )
                 .unwrap();
         });
 
@@ -2315,10 +2309,10 @@ mod tests {
     fn an_unproven_failing_run_does_not_pause_an_enforcing_repository() {
         let f = fixture("zero\n");
         let register = register();
-        let entry = f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
-        prove(&f, &entry);
-        // Anyone can write the entry of a failing run; without a proof it says nothing.
-        let failing = f.record(f.base, None, CheckResult::Fail, "ana");
+        f.proven(f.head, Some(f.base), CheckResult::Pass);
+        // Anyone can write the entry of a failing run; without a signature it says nothing.
+        f.record(f.base, None, CheckResult::Fail, "ana");
+        f.proven(f.base, None, CheckResult::Fail);
         let gate = || {
             f.repository.merge_gate(
                 f.number,
@@ -2329,16 +2323,14 @@ mod tests {
             )
         };
         let before = f.entries();
-        prove(&f, &failing);
         assert!(
             matches!(gate(), Err(GateError::Paused { .. })),
-            "a proven failure pauses"
+            "a signed failure pauses"
         );
         assert_eq!(f.entries(), before);
 
         let other = fixture("zero\n");
-        let entry = other.record(other.head, Some(other.base), CheckResult::Pass, "ana");
-        prove(&other, &entry);
+        other.proven(other.head, Some(other.base), CheckResult::Pass);
         other.record(other.base, None, CheckResult::Fail, "ana");
         let merged = other
             .repository
@@ -2467,7 +2459,15 @@ mod tests {
             Some(red),
         );
         f.repository
-            .record_check(fix, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                fix,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         let merged = f
             .repository
@@ -2501,7 +2501,15 @@ mod tests {
             None,
         );
         f.repository
-            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                z,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         f.record(tip, None, CheckResult::Pass, "ana");
         let before = f.entries();
@@ -2556,7 +2564,15 @@ mod tests {
             None,
         );
         f.repository
-            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                z,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         f.record(tip, None, CheckResult::Pass, "ana");
 
@@ -2586,7 +2602,15 @@ mod tests {
             None,
         );
         f.repository
-            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                z,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         f.record(tip, None, CheckResult::Pass, "ana");
         by_policy(&f, other, &Mode::Open)
@@ -2638,7 +2662,15 @@ mod tests {
             None,
         );
         f.repository
-            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                z,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         f.record(tip, None, CheckResult::Pass, "ana");
 
@@ -2661,7 +2693,15 @@ mod tests {
         ];
         let (z, other) = open_branch(&f, "zfile", tip, &files, None);
         f.repository
-            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                z,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         f.record(tip, None, CheckResult::Pass, "ana");
         let path = f.path();
@@ -2681,24 +2721,26 @@ mod tests {
             );
             set_branch(&repository, "main", Some(tip), next);
             let at = |time, base| {
-                let name = OperationName::try_new("check").unwrap();
-                let allowed = repository
-                    .authorize(&human("ana"), &AllowAll, &name, "x")
-                    .unwrap();
-                let lock = repository.refs_store().lock_writer(&allowed).unwrap();
-                let entry = crate::oplog::CheckEntry::new(
+                by_hand::check_at(
+                    &repository,
+                    &human("ana"),
                     time,
-                    human("ana"),
-                    head,
-                    Some(base),
-                    CheckResult::Pass,
+                    (head, Some(base), CheckResult::Pass),
+                    None,
                 );
-                repository.append_check(&lock, &entry).unwrap();
             };
             at(now() - 100, root);
             at(now(), base);
             repository
-                .record_check(z, Some(next), CheckResult::Pass, &human("ana"), &AllowAll)
+                .record_check(
+                    z,
+                    Some(next),
+                    CheckResult::Pass,
+                    &human("ana"),
+                    None,
+                    None,
+                    &AllowAll,
+                )
                 .unwrap();
         });
 
@@ -2763,7 +2805,15 @@ mod tests {
             None,
         );
         f.repository
-            .record_check(z, Some(tip), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                z,
+                Some(tip),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
         number
     }
@@ -2792,7 +2842,7 @@ mod tests {
         let other = z_change(&f, tip, BOUNDED);
         f.record(tip, None, CheckResult::Pass, "ana");
         f.repository
-            .close_pull(f.number, &human("mia"), None, &AllowAll)
+            .close_pull(f.number, &human("mia"), None, None, &AllowAll)
             .unwrap();
         assert!(by_policy(&f, other, &Mode::Open).is_ok(), "a closed change");
 
@@ -2831,7 +2881,15 @@ mod tests {
             Some(red),
         );
         f.repository
-            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                fix,
+                Some(red),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
 
         let merged = by_policy(&f, repair, &Mode::Open).unwrap();
@@ -2840,33 +2898,32 @@ mod tests {
     }
 
     #[test]
-    fn in_an_enforcing_repository_runs_without_a_proof_make_no_reservation() {
+    fn in_an_enforcing_repository_unsigned_runs_make_no_reservation() {
         for proven in [false, true] {
             let f = fixture("zero\n");
             let register = register();
             let tip = land_policy(&f, BOUNDED);
             let root = f.repository.refs().working_copy().unwrap();
+            let key = Seeded::new(2);
             for (time, base) in [(now() - 100, root), (now(), f.base)] {
-                let entry = record_at(&f, time, f.head, Some(base), CheckResult::Pass);
-                if proven {
-                    prove(&f, &entry);
-                }
+                by_hand::check_at(
+                    &f.repository,
+                    &human("ana"),
+                    time,
+                    (f.head, Some(base), CheckResult::Pass),
+                    proven.then_some(&key as &dyn Signer),
+                );
             }
-            // The result of the other change and the run on the tip carry proofs in both cases.
+            // The result of the other change and the run on the tip are signed in both cases.
             let other = z_change(&f, tip, BOUNDED);
-            let run = f.record(tip, None, CheckResult::Pass, "ana");
-            prove(&f, &run);
-            let entries = f.repository.oplog().entries().unwrap();
-            let z_check = entries
+            f.proven(tip, None, CheckResult::Pass);
+            let pulls = f.repository.pull_requests(None).unwrap();
+            let z = *pulls
                 .iter()
-                .rev()
-                .find(|entry| {
-                    entry
-                        .check()
-                        .is_some_and(|check| *check.commit() != f.head && check.base().is_some())
-                })
-                .unwrap();
-            prove(&f, z_check);
+                .find(|pull| pull.number() == other)
+                .unwrap()
+                .head();
+            f.proven(z, Some(tip), CheckResult::Pass);
 
             let result = by_policy(&f, other, &Mode::Enforcing(register));
 
@@ -2876,8 +2933,184 @@ mod tests {
                     Pause::Reserved { .. }
                 ));
             } else {
-                assert!(result.is_ok(), "no reservation without a proof: {result:?}");
+                assert!(
+                    result.is_ok(),
+                    "no reservation without a signature: {result:?}"
+                );
             }
+        }
+    }
+
+    #[test]
+    fn an_enforcing_gate_does_not_merge_a_pull_request_whose_opening_is_not_signed() {
+        let f = fixture("zero\n");
+        let register = register();
+        // A second branch at the same head, opened by hand without a signature.
+        set_branch(&f.repository, "unsigned", None, f.head);
+        let unsigned = by_hand::open(
+            &f.repository,
+            &human("mia"),
+            &branch("unsigned"),
+            f.head,
+            None,
+            None,
+        )
+        .number();
+        f.proven(f.head, Some(f.base), CheckResult::Pass);
+        let before = (f.entries(), f.main());
+        let error = f
+            .repository
+            .merge_gate(
+                unsigned,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, GateError::Pull(PullError::NoSuchPull { .. })),
+            "{error}"
+        );
+        assert_eq!((f.entries(), f.main()), before);
+        // The open mode knows the opening, and the signed pull request of the fixture lands.
+        assert!(f.repository.pull_requests(None).unwrap().len() == 2);
+        f.repository
+            .merge_gate(
+                f.number,
+                RiskLevel::Two,
+                Some(&register),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stand_in_failure_makes_the_tip_red_and_opens_no_repair() {
+        // Anyone who writes the log can make a stand-in: an entry `check` that names a
+        // statement which is not in the set, under any actor. It keeps a red tip red, and in
+        // an enforcing repository it must not open the exemption of a repair.
+        for signed in [true, false] {
+            let f = fixture("zero\n");
+            let register = register();
+            let red = commit_of(&f.repository, f.base, &[("c.txt", "red\n")], "zoe");
+            set_branch(&f.repository, "main", Some(f.base), red);
+            if signed {
+                f.proven(red, None, CheckResult::Fail);
+            } else {
+                by_hand::check_without_statement(
+                    &f.repository,
+                    &human("ana"),
+                    (red, None, CheckResult::Fail),
+                );
+            }
+            let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
+            f.proven(fix, Some(red), CheckResult::Pass);
+            let gate = |number| {
+                f.repository.merge_gate(
+                    number,
+                    RiskLevel::Two,
+                    Some(&register),
+                    &human("daniel"),
+                    &AllowAll,
+                )
+            };
+            // Every other change of level 2 waits at the red tip in both cases.
+            f.proven(f.head, Some(red), CheckResult::Pass);
+            assert_eq!(
+                paused(gate(f.number).unwrap_err()),
+                Pause::RedTip { red },
+                "signed: {signed}"
+            );
+            if signed {
+                gate(repair).expect("a signed failure opens the repair");
+            } else {
+                assert_eq!(paused(gate(repair).unwrap_err()), Pause::RedTip { red });
+            }
+        }
+    }
+
+    #[test]
+    fn a_closing_without_its_proof_does_not_end_a_reservation() {
+        for proof in [false, true] {
+            let f = fixture("zero\n");
+            let register = register();
+            let tip = land_policy(&f, BOUNDED);
+            let root = f.repository.refs().working_copy().unwrap();
+            for (time, base) in [(now() - 100, root), (now(), f.base)] {
+                by_hand::check_at(
+                    &f.repository,
+                    &human("ana"),
+                    time,
+                    (f.head, Some(base), CheckResult::Pass),
+                    Some(&Seeded::new(2)),
+                );
+            }
+            let other = z_change(&f, tip, BOUNDED);
+            f.proven(tip, None, CheckResult::Pass);
+            let pulls = f.repository.pull_requests(None).unwrap();
+            let z = *pulls
+                .iter()
+                .find(|pull| pull.number() == other)
+                .unwrap()
+                .head();
+            f.proven(z, Some(tip), CheckResult::Pass);
+            // The holder is closed: by hand without a signature, or by its opener with hers.
+            let key = Seeded::new(3);
+            by_hand::close(
+                &f.repository,
+                &human("mia"),
+                f.number,
+                proof.then_some(&key as &dyn Signer),
+            );
+            let pulls = f.repository.pull_requests(Some(&register)).unwrap();
+            let holder = pulls.iter().find(|pull| pull.number() == f.number).unwrap();
+            assert!(!holder.is_open());
+            assert_eq!(holder.ended_without_proof(), !proof);
+
+            let result = by_policy(&f, other, &Mode::Enforcing(register));
+
+            if proof {
+                assert!(result.is_ok(), "the reservation ends: {result:?}");
+            } else {
+                assert!(
+                    matches!(
+                        paused(result.unwrap_err()),
+                        Pause::Reserved { holder, .. } if holder == f.number
+                    ),
+                    "a closing without its proof does not end the reservation"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_red_tip_stays_when_the_statement_of_its_failing_run_is_lost() {
+        for enforcing in [false, true] {
+            let f = fixture("zero\n");
+            let register = register();
+            let mode = enforcing.then_some(&register);
+            f.proven(f.head, Some(f.base), CheckResult::Pass);
+            let failing = f.proven(f.base, None, CheckResult::Fail);
+            let gate = || {
+                f.repository
+                    .merge_gate(f.number, RiskLevel::Two, mode, &human("daniel"), &AllowAll)
+            };
+            assert!(matches!(gate(), Err(GateError::Paused { .. })));
+            // The file goes, and the tip stays red: the failure is read from its entry.
+            let set = f.repository.statement_set();
+            std::fs::remove_file(set.path_of(&failing.statement().unwrap())).unwrap();
+            let before = f.entries();
+            let error = gate().unwrap_err();
+            assert!(
+                matches!(paused(error), Pause::RedTip { red } if red == f.base),
+                "enforcing: {enforcing}"
+            );
+            assert_eq!(f.entries(), before);
+            // `op verify` reports the lost statement.
+            let entries = f.repository.oplog().verify().unwrap();
+            assert!(f.repository.verify_statements(&entries, mode).is_err());
         }
     }
 
@@ -2885,10 +3118,8 @@ mod tests {
     fn an_unproven_pass_does_not_clear_a_red_tip_in_an_enforcing_repository() {
         let f = fixture("zero\n");
         let register = register();
-        let entry = f.record(f.head, Some(f.base), CheckResult::Pass, "ana");
-        prove(&f, &entry);
-        let failing = f.record(f.base, None, CheckResult::Fail, "ana");
-        prove(&f, &failing);
+        f.proven(f.head, Some(f.base), CheckResult::Pass);
+        f.proven(f.base, None, CheckResult::Fail);
         // The pass is only written, never signed.
         f.record(f.base, None, CheckResult::Pass, "ana");
         let before = f.entries();
@@ -2943,7 +3174,15 @@ mod tests {
         f.record(red, None, CheckResult::Fail, "mia");
         let (fix, repair) = open_branch(&f, "fix", red, &[("c.txt", "zero\n")], Some(red));
         f.repository
-            .record_check(fix, Some(red), CheckResult::Pass, &human("ana"), &AllowAll)
+            .record_check(
+                fix,
+                Some(red),
+                CheckResult::Pass,
+                &human("ana"),
+                None,
+                None,
+                &AllowAll,
+            )
             .unwrap();
 
         assert_eq!(
@@ -3001,7 +3240,7 @@ mod tests {
                 .red_window(Some(&register()))
                 .unwrap()
                 .is_empty(),
-            "no proof"
+            "no signature"
         );
     }
 }

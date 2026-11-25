@@ -12,8 +12,8 @@ Dieses Kapitel setzt ADR-002 und ADR-004 um und stützt sich für das Merge-Gate
 \item Lease pro Branch, die jede schreibende Operation erneuert, mit Ablaufzeit.
 \item Owner-Override nur durch einen Menschen mit der Rolle Owner, signiert, mit Begründung und
 Eintrag im Operation Log, ohne Umgehung des Merge-Gates.
-\item Pull Request als Folge von Einträgen im Operation Log, mit Reviewern, Prüfungen und
-Merge-Regeln.
+\item Pull Request mit Reviewern, Prüfungen und Merge-Regeln; seine Belege sind signierte
+Erklärungen, und das Operation Log hält die Handlung fest (ADR-025).
 \item Ein Merge-Gate ohne globale Sperre (ADR-019).
 \item Freigaben mit Akteur, Modellversion, geprüftem Commit und Ergebnis, signiert.
 \item Verbot der Selbstfreigabe.
@@ -180,16 +180,26 @@ Hat sich \type{main} inzwischen bewegt, wiederholt das Gate den Merge und die Re
 auf der neuen Spitze.
 
 Ein Pull Request hat kein Objekt und keine Referenz.
-Er ist die Folge der Einträge \type{pr-open}, \type{pr-close} und \type{pr-merge} im
-Operation Log, und seine Nummer ist die Nummer des Eintrags \type{pr-open}.
-Der Zustand folgt aus dem Log; gespeichert ist er nirgends.
+Seine Belege sind signierte Erklärungen (ADR-025): die Eröffnung, jede Freigabe, jedes
+Prüfergebnis und das Schliessen.
+Das Operation Log hält die Handlung fest.
+Die Einträge \type{pr-open}, \type{pr-close}, \type{pr-approve} und \type{check} nennen den Hash
+der Erklärung, die sie erzeugt haben, und \type{pr-merge} hält den Merge fest, für den es keine
+Erklärung gibt.
+Der Hash der signierten Eröffnung ist der Name des Pull Requests, in jedem Klon und auf einem Hub.
+In einem Log heisst er nach der Nummer seines Eintrags \type{pr-open}, und diese Nummer zeigen
+die Befehle.
+Der Zustand folgt aus den Erklärungen und dem Eintrag des Merges; gespeichert ist er nirgends.
 Ein Pull Request ist \type{open}, solange er weder geschlossen noch gemergt ist,
 \type{closed}, wenn er ohne Merge endete, und \type{merged}, wenn er gemergt wurde.
 \type{closed} und \type{merged} sind endgültig; die nächste Änderung eines Branches ist ein neuer
 Pull Request mit neuer Nummer.
-Ob ein offener Pull Request freigegeben ist, steht nicht im Log, sondern folgt aus den Freigaben
+Dieselbe Eröffnung nimmt der Kern kein zweites Mal an, der nächste Pull Request eines Branches
+braucht also einen neuen Kopf, andere Reviewer oder eine andere Angabe bei \type{repairs}.
+Ob ein offener Pull Request freigegeben ist, ist kein Zustand; es folgt aus den Freigaben
 auf dem aktuellen Kopf (ADR-004, Regel 4).
-Jede Freigabe ist ein eigener Eintrag \type{pr-approve}; er ändert den Zustand nicht.
+Jede Freigabe ist eine eigene Erklärung mit ihrem Eintrag \type{pr-approve}; sie ändert den
+Zustand nicht.
 Die Neuzählung entscheidet, welche Freigaben zählen (siehe unten).
 \in{Abbildung}[fig:pull-request-states] zeigt die Zustände und die Einträge, die zwischen
 ihnen wechseln.
@@ -205,20 +215,25 @@ und die Format-Version des Repositories steigt mit dem ersten von ihnen auf 9. D
 Eintrag oder Purge steigt (ADR-009, ADR-011).
 Der Eintrag \type{check} hebt sie später auf 11,
 und die Art im Stub (siehe unten) auf 12.
+Mit den signierten Erklärungen steigt sie auf 16 (siehe \quotation{Erklärungen und Einträge}).
 Der Eintrag \type{pr-open} nennt den Branch, den Commit an seiner Spitze, die Reviewer und
 optional \type{repairs <commit>}, den roten Commit, den der Pull Request zu beheben erklärt
 (ADR-019).
 \type{pr-close} nennt nur die Nummer; \type{pr-merge} nennt die Nummer und den Kopf, der
 gemergt wurde.
+Bis auf \type{pr-merge} endet jeder dieser Einträge mit der Zeile \type{statement <Hash>}.
 Der Kern prüft unter \type{refs.lock}:
 
 \startitemize
 \item Nur der Schreibinhaber eröffnet: Wo der Branch eine Lease hat, hält der Akteur eine
 gültige.
 \item Ein Branch hat höchstens einen offenen Pull Request, und \type{main} ist nie der Branch.
+\item Eine Eröffnung, die schon einen Pull Request ergeben hat, ergibt keinen zweiten.
 \item Der Eröffner benennt die Reviewer aus dem Register, nie sich selbst und keinen doppelt.
 Im offenen Modus gibt es kein Register und keine Reviewer.
 \item Schliessen darf der Eröffner oder ein Owner.
+\item Wo das Repository ein Register hat, signiert der Eröffner die Eröffnung und der Schliessende
+das Schliessen mit einem aktiven Schlüssel, den das Register für ihn führt.
 \item \type{pr-merge} hält den Merge fest, den das Merge-Gate ausgeführt hat; der Eintrag
 bewegt keinen Zeiger und prüft keine Freigabe.
 \stopitemize
@@ -230,10 +245,109 @@ deshalb lehnt der Purge das ab und nennt die Nummer.
 Wer den Pull Request schliesst oder mergt, kann den Purge danach wiederholen.
 Ersetzte der Purge nur \type{pr-merge} und liesse \type{pr-open} stehen, wäre der Pull Request
 wieder offen; deshalb ersetzt er in diesem Fall auch das \type{pr-open}.
+Die Erklärung eines ersetzten Eintrags rührt der Purge nicht an.
+Sie bleibt in der Menge der Erklärungen liegen und zählt nicht mehr, weil kein Eintrag sie nennt.
+Lässt sich die Erklärung eines \type{pr-open} nicht lesen, weiss der Purge nicht, ob der Pull
+Request offen ist, und lehnt ab, bis sie wiederhergestellt ist; \type{op verify} nennt den
+Schaden.
+
+{\bf Erklärungen und Einträge.}
+Bis zur Format-Version 15 waren die Einträge selbst der Beleg.
+Ein Hub sieht aber keinen Eintrag eines Operation Logs, und die Nummer eines Eintrags gilt nur
+in einem Klon (\in{Abschnitt}[sec:hub-enforcement]).
+Der Beleg hat deshalb eine Form, die ohne das Log gilt: die signierte Erklärung.
+Sie ist ein kurzer Text mit festen Zeilen, den ein strenger Leser liest:
+
+\starttyping
+stemma-protocol 1
+statement pr-approval
+repository -
+pull b3:5c1d…e07a
+commit b3:bb8f…449a
+key ssh-ed25519 AAAAC3…
+signature U1NIU0lH…
+\stoptyping
+
+Die Zeile \type{statement} nennt die Art: \type{pr-opening}, \type{pr-approval},
+\type{check-result}, \type{pr-closing} oder \type{owner-override}.
+Signiert sind die Zeilen von \type{repository} bis \type{key}, und der Typ des Beweises ist
+das Wort der Art (\in{Abschnitt}[sec:signatures]).
+\type{repository} nennt das Repository auf einem Hub; \type{-} steht für eine Erklärung, die
+nur lokal zählt, und so schreibt sie ein Klon heute.
+Eine Erklärung nennt keinen Akteur, keine Nummer und keine Zeit.
+Der Akteur folgt aus dem Schlüssel und dem Register, und Nummer und Zeit gibt ihr, wer sie hält.
+Der Hash einer Erklärung ist der BLAKE3-Hash der Zeile \type{stemma-statement-hash 1} und des
+ganzen Textes samt Signatur.
+
+Der Ablauf ist für alle vier Befehle derselbe:
+
+\startitemize[n]
+\item Der Kern baut die Erklärung und lässt sie signieren, bevor er die Sperre nimmt, denn ein
+Schlüssel mit Passphrase fragt einen Menschen.
+\item Er prüft die Signatur gegen das Register: Der Schlüssel gehört dem Akteur und ist aktiv.
+\item Er nimmt \type{refs.lock} und prüft die Regeln des Befehls noch einmal.
+\item Er legt die Erklärung als Datei \type{.stemma/statements/<Hash>} ab, durch atomares
+Ersetzen.
+\item Er schreibt den Eintrag, der den Hash nennt.
+\stopitemize
+
+Jede Ablehnung kommt vor dem ersten Schreiben.
+Bricht der Befehl zwischen der Erklärung und dem Eintrag ab, liegt eine Erklärung in der Menge,
+die kein Eintrag nennt.
+Sie zählt nicht, und der Befehl lässt sich wiederholen: Eine Ed25519-Signatur ist
+deterministisch, die Wiederholung erzeugt also dieselbe Datei.
+Den Zustand \quotation{Eintrag ohne Beweis}, den es bis zur Version 15 gab, gibt es nicht mehr.
+
+Die Menge der Erklärungen hat keine Ordnung.
+In einem Klon ordnet sie das Log: Der Eintrag, der eine Erklärung nennt, gibt ihr seine Nummer,
+seine Zeit und seinen Akteur.
+Aus den so geordneten Erklärungen und den Einträgen \type{pr-merge} berechnet eine einzige
+Funktion die Pull Requests, die Freigaben und die Prüfergebnisse (\type{evidence::fold}).
+Das Merge-Gate, die Neuzählung und die Schranken lesen ihr Ergebnis, und ein Hub ruft dieselbe
+Funktion für seine Menge auf.
+Die Regeln, welche Freigabe und welches Prüfergebnis zählt, sind dieselben wie zuvor.
+Die Funktion ist tolerant wie jede Lesart der Belege.
+Ein Eintrag, dessen Erklärung fehlt, beschädigt ist oder etwas anderes sagt als seine Zeilen,
+ordnet nichts ein, und was er belegen sollte, zählt nicht; \type{op verify} meldet ihn.
+Ausgenommen ist, was eine Änderung nur aufhält: Ein Schliessen und ein fehlgeschlagener Lauf
+gelten dann aus den Zeilen ihres Eintrags, ohne Signatur.
+Der Verlust einer Datei öffnet so keinen Pull Request wieder und nimmt keine rote Spitze weg,
+auch nicht in einem durchsetzenden Repository.
+Die Kosten sind linear in der Zahl der Einträge, dazu kommt das Lesen einer Datei je Erklärung.
+
+\startinfobox
+{\bf Randfälle der Erklärungen.}
+\startitemize
+\item Im offenen Modus gibt es keinen Schlüssel. Die Erklärung trägt dann \type{key -} und
+\type{signature -} und beweist nichts; sie zählt nur dort, wo kein Register gefragt wird.
+In einem durchsetzenden Repository zählen eine Eröffnung, eine Freigabe und ein Prüfergebnis nur
+mit einer Signatur, die das Register für den Akteur des Eintrags annimmt.
+Ein Pull Request, der im offenen Modus eröffnet wurde, wird dort also neu eröffnet.
+Ein Schliessen gilt mit jeder Signatur und auch ohne, denn es beendet einen Pull Request;
+\type{op verify} meldet eines, das das Register nicht annimmt.
+Ein solches Schliessen und jeder Ersatz aus den Zeilen eines Eintrags darf aber nur strenger
+machen, denn jeder, der das Log schreiben kann, kann ihn erzeugen: Das Gate behält die
+Reservierung des so beendeten Pull Requests, und ein Ersatz für einen fehlgeschlagenen Lauf
+macht seinen Commit nur rot.
+Er verschiebt keine geprüfte Spitze und öffnet keiner Behebung die Ausnahme; eine Behebung wartet,
+bis die Erklärung wiederhergestellt oder ein signierter Lauf geschrieben ist.
+\item Ein Repository einer älteren Format-Version bleibt lesbar. Seine Einträge eines Pull
+Requests und einer Prüfung stehen weiter in der Hash-Kette, und \type{op verify} prüft ihre
+Beweisdateien wie bisher. Sie nennen aber keine Erklärung und sind kein Beleg mehr: Ein Pull
+Request, der unter der alten Version offen war, wird neu eröffnet, eine Prüfung neu geschrieben.
+Umgerechnet wird nichts, denn eine Erklärung signiert nur der Schlüssel ihres Akteurs.
+\item Die Zeilen des Eintrags wiederholen, was die Erklärung sagt, damit \type{op log} ohne die
+Menge lesbar bleibt und ein Purge die Commits eines Eintrags findet. Der Beleg ist die Erklärung.
+\item Die Art \type{owner-override} hat ihr Format, aber noch keinen Eintrag, der sie nennt;
+sie belegt später die Übernahme eines Branches auf einem Hub (ADR-025).
+\stopitemize
+\stopinfobox
 
 {\bf Freigabe.}
-Der Eintrag \type{pr-approve} nennt die Nummer des Pull Requests und den Kopf, den der Reviewer
-geprüft hat.
+Die Erklärung einer Freigabe nennt den Pull Request mit dem Hash seiner Eröffnung und den Kopf,
+den der Reviewer geprüft hat.
+Der Eintrag \type{pr-approve} nennt die Nummer des Pull Requests, denselben Kopf und den Hash der
+Erklärung.
 Die Freigabe ist an diesen Kopf gebunden: Kommt ein Commit auf den Branch, ist der Kopf ein
 anderer, und jede Freigabe des alten zählt nicht mehr.
 Wer den neuen Kopf geprüft hat, gibt ihn neu frei.
@@ -257,14 +371,14 @@ Reviewer.
 Zwei Agenten desselben Sponsors zählen als zwei Freigaben; die strengere Regel für den Schreiber
 eines \type{check} steht in ADR-019.
 \item Wo das Repository ein Register hat, ist die Freigabe signiert: Der Reviewer signiert die
-Nummer und den Kopf mit einem Schlüssel, den das Register für ihn führt.
-Die Signatur wird vor dem Eintrag geprüft; der Beweis ist die Datei
-\type{.stemma/proofs/<Nummer des Eintrags>}.
+Erklärung mit einem aktiven Schlüssel, den das Register für ihn führt.
+Die Signatur wird geprüft, bevor etwas geschrieben wird.
+Sie ist Teil der Erklärung; eine Beweisdatei hat eine Freigabe nicht mehr.
 Im offenen Modus gibt es kein Register und keine Signatur.
 \stopitemize
 
-Der Eintrag steht vor dem Beweis.
-Ein Absturz dazwischen lässt eine Freigabe ohne Beweis zurück, und die zählt nicht:
+Die Erklärung steht vor dem Eintrag.
+Ein Absturz dazwischen lässt eine Erklärung zurück, die kein Eintrag nennt, und die zählt nicht:
 Der Ausfall geht auf die sichere Seite.
 \in{Abbildung}[fig:approval-crash] zeigt die Absturzpunkte der Freigabe.
 
@@ -275,29 +389,29 @@ Der Ausfall geht auf die sichere Seite.
 
 {\bf Neuzählung.}
 Die Neuzählung traut dem Schreiber nicht.
-Sie liest die Einträge und zählt eine Freigabe nur, wenn sie den aktuellen Kopf nennt,
-ihr Reviewer weder Eröffner noch Autor ist, ihr Beweis gegen das Register hält
+Sie liest die Erklärungen und zählt eine Freigabe nur, wenn sie den aktuellen Kopf nennt,
+ihr Reviewer weder Eröffner noch Autor ist, die Signatur ihrer Erklärung gegen das Register hält
 und ihre Identität noch keine andere Freigabe hat, die zählt.
-Ein Eintrag, den jemand von Hand geschrieben hat, besteht also nur, wenn er dieselben Fragen
-besteht wie einer des Kerns.
+Ein Eintrag oder eine Erklärung von fremder Hand besteht also nur, wenn sie dieselben Fragen
+besteht wie eine des Kerns.
 Ein widerrufener Schlüssel macht seine Freigaben ungültig. Bei einem ausgemusterten zählen die
 Freigaben, die vor der Ausmusterung geschrieben wurden; eine Freigabe mit einer späteren
 Nummer zählt nicht (siehe \in{Abschnitt}[sec:register]).
 Die Neuzählung nennt zu jeder Freigabe, die nicht zählt, den Grund.
 
 Die Neuzählung ist eine reine Funktion des Pull Requests, des aktuellen Kopfes, der Schreiber,
-der Freigaben und der Prüfung des Beweises.
+der Freigaben und der Prüfung der Signatur.
 Sie geht die Freigaben des Pull Requests in der Reihenfolge der Einträge durch
 und stellt jeder dieselben Fragen in fester Folge:
-Steht der Eintrag nach der Eröffnung, nennt er den aktuellen Kopf, ist der Reviewer Eröffner oder
-Schreiber, hält der Beweis, und zählt die Identität schon?
+Steht die Freigabe nach der Eröffnung, nennt sie den aktuellen Kopf, ist der Reviewer Eröffner
+oder Schreiber, hält die Signatur, und zählt die Identität schon?
 Die erste Frage, die eine Freigabe nicht besteht, liefert den Grund.
 Die Invariante lautet: Die zählenden Freigaben nennen alle den aktuellen Kopf, kein Reviewer ist
 Eröffner oder Schreiber, und keine Identität kommt zweimal vor.
-Weil sie nur das Log, den Verlauf, das Register des Basis-Commits und die Beweisdateien liest,
+Weil sie nur das Log, den Verlauf, das Register des Basis-Commits und die Erklärungen liest,
 ergibt eine Wiederholung bei gleichem Kopf dasselbe, gleichgültig, wer die Einträge schrieb.
 Die Folge der Fragen legt auch fest, welche Freigabe einer Identität zählt:
-Ein früherer Eintrag mit ungültigem Beweis nimmt dem späteren den Platz nicht,
+Eine frühere Freigabe mit ungültiger Signatur nimmt der späteren den Platz nicht,
 denn nur zählende Freigaben schliessen eine Wiederholung aus.
 Der Kopf ist der Hash des Commits, und der Hash bestimmt den ganzen Verlauf darunter
 (Inhaltsadressierung); eine Freigabe gilt darum für genau diese Änderung.
@@ -426,15 +540,19 @@ die Prüfungen auf dem neuen Merge noch einmal. \stopxcell
 
 Sauber heisst: Der Tree-Merge liefert genau einen Tree (\in{Abschnitt}[sec:tree-merge]).
 
-Das Prüfergebnis steht als Eintrag \type{check} im Operation Log.
-Er nennt in dieser Reihenfolge \type{version 1}, \type{commit <id>}, \type{base <id>} und
-\type{result pass} oder \type{result fail}; ein Lauf ohne Basis schreibt \type{base -}.
-Wie die Einträge des Pull Requests steht er immer in der Hash-Kette, nennt keinen Zeiger und hebt
-die Format-Version des Repositories auf 11.
-Der Kern schreibt ihn unter \type{refs.lock} und lehnt einen Commit ab, den der Store nicht
-als Commit kennt, und eine Basis, die der Commit selbst ist; der Leser lehnt einen solchen Eintrag
-ebenfalls ab.
-Über den Schreiber fragt der Kern nur den Autorisierer nach der Operation \type{check}.
+Das Prüfergebnis ist eine signierte Erklärung der Art \type{check-result}, und der Eintrag
+\type{check} im Operation Log nennt ihren Hash (siehe \quotation{Erklärungen und Einträge}).
+Der Eintrag nennt in dieser Reihenfolge \type{version 2}, \type{commit <id>}, \type{base <id>},
+\type{result pass} oder \type{result fail} und \type{statement <Hash>}; ein Lauf ohne Basis
+schreibt \type{base -}.
+Wie die Einträge des Pull Requests steht er immer in der Hash-Kette und nennt keinen Zeiger.
+Der Eintrag kam mit der Format-Version 11 in der Fassung \type{version 1}, ohne die letzte Zeile;
+ein solcher Eintrag bleibt lesbar und ist seit der Version 16 kein Beleg mehr.
+Der Kern schreibt die Erklärung und den Eintrag unter \type{refs.lock} und lehnt einen Commit ab,
+den der Store nicht als Commit kennt, und eine Basis, die der Commit selbst ist; die Leser lehnen
+beides ebenfalls ab.
+Über den Schreiber fragt der Kern den Autorisierer nach der Operation \type{check} und, wo das
+Repository ein Register hat, das Register nach der Signatur der Erklärung.
 Ob ein Ergebnis zählt, hängt vom Pull Request, seinen Autoren und der Risikostufe ab, und nichts
 davon steht im Eintrag; die Regel gilt deshalb beim Lesen.
 
@@ -451,10 +569,16 @@ stärkere Unabhängigkeit nicht prüfen,
 und zwei Agenten desselben Sponsors zählen als zwei Prüfungen und zwei Freigaben.
 Der Mensch bei den Stufen 2 und 3 bleibt der Anker (ADR-004, ADR-019).
 
-In einem Repository mit Register zählt ein Ergebnis ausserdem nur mit einem Beweis:
-Der Schreiber signiert den Hash des Eintrags mit einem Schlüssel des Registers,
-und die Beweisdatei liegt neben dem Log.
-Ein fehlender oder ungültiger Beweis lässt das Ergebnis nicht zählen.
+In einem Repository mit Register zählt ein Ergebnis ausserdem nur mit einer Signatur:
+Der Schreiber signiert die Erklärung mit einem Schlüssel, den das Register für ihn führt,
+und das Register prüft sie beim Lesen für den Akteur und die Nummer des Eintrags.
+Eine unsignierte Erklärung und eine Signatur mit dem Schlüssel eines anderen Akteurs lassen
+das Ergebnis nicht zählen.
+Ausgenommen ist ein fehlgeschlagener Lauf, dessen Erklärung verloren oder beschädigt ist: Er
+gilt aus den Zeilen seines Eintrags weiter, weil sich nicht mehr sagen lässt, ob sie signiert
+war, und eine rote Spitze nicht mit einer Datei verschwinden darf.
+Er macht seinen Commit aber nur rot und lockert keine Schranke (siehe
+\quotation{Erklärungen und Einträge}).
 
 \subsection{Konflikte}
 
@@ -520,7 +644,8 @@ Es liest die Schranken bei jedem Versuch neu aus dem Log und aus dem Verlauf von
 nach der Regeltabelle und vor dem Commit \type{M}, denn ein Lauf oder eine Reservierung kann
 erscheinen, während das Gate neu beginnt.
 In einem Repository mit Register zählt für die Schranken und für die letzte grüne Spitze nur ein
-Lauf mit Beweis, ein fehlgeschlagener ebenso wie ein erfolgreicher.
+Lauf, dessen Erklärung sein Schreiber signiert hat, ein fehlgeschlagener ebenso wie ein
+erfolgreicher.
 Eine Änderung, die warten muss, endet mit einer Meldung; das Gate schreibt dafür keinen Eintrag,
 keinen Commit \type{M} und bewegt keine Referenz (die Blobs und Trees des Merges können im
 Speicher bleiben, ADR-014).
@@ -643,8 +768,8 @@ ruft es auf.
 Dieser Abschnitt beschreibt, wie der Kern Beweise signiert und prüft.
 Das Verfahren steht in ADR-003 fest: SSHSIG mit Ed25519, und die Wahl der Bibliothek in ADR-020.
 Commits sind nicht signiert.
-Ein Beweis signiert einen Eintrag des Operation Logs, eine Freigabe oder die Mitzeichnung eines
-Sponsors.
+Ein Beweis signiert einen Eintrag des Operation Logs, eine signierte Erklärung oder die
+Mitzeichnung eines Sponsors.
 
 {\bf Was signiert wird.}
 Signiert wird nicht die Nutzlast allein.
@@ -654,21 +779,29 @@ Davor steht eine Kopfzeile mit dem Typ und der Formatversion der Nutzlast (Domä
 stemma-proof\n<Typ>\n<Version>\n<Nutzlast>
 \stoptyping
 
-Der Typ ist \type{log-entry}, \type{approval} oder \type{sponsorship}, die Version heute 1.
+Der Typ ist \type{log-entry}, \type{sponsorship} oder das Wort einer Erklärung
+(\type{pr-opening}, \type{pr-approval}, \type{check-result}, \type{pr-closing},
+\type{owner-override}), die Version heute 1.
+Der Typ \type{approval} gehört zu den Freigaben bis zur Format-Version 15, deren Beweisdateien
+\type{op verify} weiter prüft; Phase 5 fügt die Typen des Ref-Updates und der Aufzeichnung hinzu
+(\in{Abschnitt}[sec:ref-update]).
 Das Präfix, der Typname und die Version in Dezimalschreibweise enthalten keinen Zeilenumbruch,
 also beginnt die Nutzlast eindeutig nach dem dritten.
-Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Eintrag,
-und eine Signatur einer späteren Formatversion nie als Version 1.
+Eine Signatur über eine Freigabe gilt darum nie als Signatur über einen Eintrag oder über das
+Schliessen eines Pull Requests, und eine Signatur einer späteren Formatversion nie als Version 1.
 Der SSHSIG-Namensraum ist für alle Beweise \type{stemma-proof}.
 
 Die Invariante der Domänentrennung lautet: Zwei verschiedene Paare aus Typ und Version ergeben
 für beliebige Nutzlasten verschiedene Bytes.
 Sie folgt aus der Kopfzeile und der eindeutigen Trennung, denn die Kopfzeile unterscheidet sich
 schon vor der Nutzlast.
-Heute überschneiden sich die Nutzlasten ohnehin nicht: Ein Eintrag signiert seinen Hash,
-eine Freigabe die Nummer und den Kopf, die Mitzeichnung des Sponsors (\in{Abschnitt}[sec:register])
-Agent, Rolle und Sponsor.
-Die Kopfzeile schützt vor dem künftigen Typ, dessen Nutzlast zufällig mit einer anderen
+Die Nutzlasten überschneiden sich meist ohnehin nicht: Ein Eintrag signiert seinen Hash,
+eine Erklärung ihre Zeilen von \type{repository} bis \type{key}, die Mitzeichnung des Sponsors
+(\in{Abschnitt}[sec:register]) Agent, Rolle und Sponsor.
+Bei den Erklärungen trägt die Kopfzeile aber die Unterscheidung selbst: Die Zeile, die die Art
+nennt, ist nicht signiert, und wer sie ändert, legt eine Signatur eines anderen Typs vor, die
+nicht hält.
+Sonst schützt die Kopfzeile vor dem künftigen Typ, dessen Nutzlast zufällig mit einer anderen
 übereinstimmt, und vor einem Fehler im Format.
 Typ und Version stehen in den signierten Bytes und nicht im Namensraum.
 Das hat den Vorteil, dass ein neuer Typ keinen neuen Namensraum braucht,
@@ -683,6 +816,9 @@ Signiert wird über eine Schnittstelle (der Trait \type{Signer}).
 Ihre Implementierung ruft \type{ssh-keygen -Y sign} auf, also liest Stemma nie einen privaten
 Schlüssel; liegt der Schlüssel im \type{ssh-agent}, genügt die Datei des öffentlichen.
 Ein privater Schlüssel mit Passphrase braucht ein Terminal, sonst schlägt das Signieren fehl.
+Eine Erklärung nennt ihren öffentlichen Schlüssel, der Kern braucht ihn also vor dem Signieren:
+Er liest ihn aus der Datei \type{<Schlüsseldatei>.pub} oder, wo sie fehlt, aus einer Signatur
+über einen festen Probetext, der kein Beweis ist.
 Geprüft wird im Prozess mit der Bibliothek \type{ssh-key}, ohne Kindprozess und ohne Datei,
 auf jedem Rechner, der den Kern baut.
 Die Prüfung nimmt den Schlüssel, den der Aufrufer wählt.
@@ -1169,14 +1305,29 @@ Der Autorisierer des Registers (\type{RegisterAuthorizer}) lässt im offenen Mod
 und verlangt im durchsetzenden Modus einen verifizierten Akteur, der der Akteur des Aufrufs ist.
 
 {\bf Beweise und \type{op verify}.}
-Der Beweis eines Eintrags ist eine Datei \type{.stemma/proofs/<Nummer>} mit dem Akteur
-und der SSHSIG-Signatur.
-Signiert wird bei den meisten Einträgen der Hash des Eintrags, bei einem Eintrag
-\type{pr-approve} die Nummer des Pull Requests mit dem geprüften Kopf.
-\type{op verify} prüft in einem durchsetzenden Repository jeden Beweis gegen das Register:
+Ein Beweis liegt an einem von zwei Orten.
+Die Eröffnung und das Schliessen eines Pull Requests, eine Freigabe und ein Prüfergebnis tragen
+ihre Signatur in der Erklärung, die der Eintrag nennt.
+Der Beweis eines anderen Eintrags, heute des Owner-Overrides, ist eine Datei
+\type{.stemma/proofs/<Nummer>} mit dem Akteur und der SSHSIG-Signatur über den Hash des Eintrags.
+Bis zur Format-Version 15 lagen dort auch die Beweise der Prüfergebnisse und der Freigaben,
+die letzteren über die Nummer des Pull Requests mit dem geprüften Kopf.
+\type{op verify} prüft in einem durchsetzenden Repository jede Beweisdatei gegen das Register:
 Der Eintrag muss in der Hash-Kette stehen, der Akteur des Beweises der des Eintrags sein,
 und der Schlüssel muss zum Akteur gehören und für diese Nummer zählen.
-Eine Freigabe, deren Schlüssel seither widerrufen wurde, gilt als ungültig, nicht als Schaden des
+Die Erklärungen prüft der Befehl in beiden Modi.
+Jede Datei der Menge muss eine Erklärung unter dem Namen ihres Hashes sein, mit einer Signatur,
+die für ihren Schlüssel hält.
+Jeder Eintrag, der eine Erklärung nennt, muss eine nennen, die in der Menge liegt, seiner Art
+entspricht und sagt, was seine Zeilen sagen.
+In einem durchsetzenden Repository muss ihr Schlüssel ausserdem dem Akteur des Eintrags gehören
+und für dessen Nummer zählen.
+Kein Schaden sind eine Erklärung, die kein Eintrag nennt, und eine unsignierte Erklärung in einem
+durchsetzenden Repository; der Befehl nennt ihre Zahl.
+Die erste zählt nicht, und von den zweiten zählen Eröffnungen, Freigaben und Prüfergebnisse
+nicht.
+Eine Freigabe, deren Schlüssel seither ausgemustert oder widerrufen wurde, gilt als ungültig,
+nicht als Schaden des
 Logs, und \type{op verify} lässt sie durch.
 Ersetzt ein Purge einen Eintrag durch einen Stub, bleibt der Hash des Eintrags erhalten,
 nicht aber Pull Request und Kopf.
@@ -1185,7 +1336,7 @@ gegen den Hash;
 nur der Beweis des Stubs einer Freigabe und der eines älteren Stubs ohne Art
 bleibt ungeprüft.
 Die Art steht im Stub, aber nicht im Hash des Eintrags (ADR-011).
-Einen Beweis schreiben die Freigabe, das Ergebnis einer Prüfung und der Owner-Override;
+Eine Beweisdatei schreibt der Owner-Override;
 die weiteren Operationen, deren Regel vom Akteur abhängt, folgen mit den restlichen Teilen von
 Phase~4.
 Die CLI-Befehle \type{register add-key}, \type{register retire}, \type{register revoke},
@@ -1243,7 +1394,7 @@ Eintrag, bis \type{commit} die Datei festhält.
 \type{add-human} verlangt keine Signatur von Ana, nur ihre Schlüsseldatei;
 der Eintrag zählt, sobald der Commit des Owners ihn trägt.
 Danach prüft \type{op verify} die Hash-Kette und das Register.
-Die Nummer eines Pull Requests ist die Nummer seines Eintrags \type{pr-open}.
+Die Nummer eines Pull Requests ist in dieser Sitzung die Nummer seines Eintrags \type{pr-open}.
 Die Einträge dazwischen gehören zu Schritten, die der Text nicht abdruckt:
 Branches und Commits für die späteren Beispiele sowie Prüfungen und Freigaben.
 Die Ausgaben stammen aus einem echten Lauf in einem frischen Verzeichnis;
@@ -1252,6 +1403,9 @@ und den Aufruf von \type{add-human} zeigt der Text mit der Zeile, die der Befehl
 In jenem Lauf stand der Eintrag von Ana schon in der Datei, Byte für Byte derselbe.
 Die IDs sind gekürzt und die Pfade stehen als \type{/home/daniel/...};
 ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
+Der Lauf stammt aus der Zeit vor den signierten Erklärungen.
+Die Aufrufe von \type{pr open} stehen hier mit der Option \type{--key}, die sie seither in einem
+durchsetzenden Repository verlangen; ihre Ausgabe und die Nummern der Einträge sind dieselben.
 Der Text nennt die Nummern der Einträge im Operation Log.
 \in{Abbildung}[fig:phase4-session] zeigt die Sitzung als Folge der Einträge, getrennt nach dem
 Akteur, dessen Befehl sie schreibt.
@@ -1301,7 +1455,7 @@ $ stemma track src/lib.rs
 tracked src/lib.rs
 $ stemma commit -m "Agent: Gruss und Bibliothek"
 Committed b3:bb8f…449a on agent-arbeit
-$ stemma pr open agent-arbeit --reviewer "human ana"
+$ stemma pr open agent-arbeit --reviewer "human ana" --key ../keys/claude
 Opened pull request 14 for branch agent-arbeit.
 \stoptyping
 
@@ -1323,7 +1477,8 @@ Der Eintrag 11 (\type{lease-acquire}) nennt Branch und Ablauf, aber keinen Commi
 Die Einträge 12 und 13 sind \type{track} und \type{commit} des Agenten mit der Zeile
 \type{worktree notizen-agent};
 der Commit bewegt nur \type{agent-arbeit} und den Working-Copy-Commit des Worktrees.
-Der Eintrag 14 (\type{pr-open}) nennt Branch, Kopf und Reviewer und bewegt nichts.
+Der Eintrag 14 (\type{pr-open}) nennt Branch, Kopf, Reviewer und den Hash der Eröffnung, die
+der Agent signiert hat, und bewegt nichts.
 Das Arbeitsverzeichnis von Daniel und \type{main} bleiben, wie sie waren.
 
 Dann kommen die Prüfung und die Freigabe.
@@ -1352,7 +1507,7 @@ Auf den Stufen 2 und 3 zählt eine Prüfung nur, wenn ihr Schreiber weder den Pu
 eröffnet noch einen Commit der Änderung geschrieben hat und kein Sponsor eines dieser Akteure ist
 (ADR-019).
 Das Ergebnis des Agenten zählt also nicht, und ein Ergebnis von Daniel als Sponsor ebenso wenig.
-Ein \type{check} und ein \type{pr-approve} schreiben eine Datei \type{.stemma/proofs/<Nummer>},
+Ein \type{check} und ein \type{pr-approve} legen eine Erklärung in \type{.stemma/statements/} ab,
 und die Ablehnungen schreiben nichts: Das Log bleibt bei Eintrag 15.
 Ana prüft und gibt frei:
 
@@ -1572,7 +1727,8 @@ Recorded fail for dc51d0dec57a in entry 37.
 $ stemma pr merge 45
 stemma: pull request 45 waits: the latest verified tip of `main` is red
   since b3:dc51…cf74; only a repair of it lands at level 2 or 3
-$ stemma pr open reparatur --reviewer "human ana" --repairs main
+$ stemma pr open reparatur --reviewer "human ana" --repairs main \
+>     --key ../keys/daniel
 Opened pull request 53 for branch reparatur.
 $ stemma pr merge 53
 Merged pull request 53 into main: a62bafbaba4a on top of dc51d0dec57a.
@@ -1599,7 +1755,9 @@ Nach jedem Abbruch hat \type{main} entweder den alten oder den neuen Wert, nie e
 Ein offener Pull Request bleibt offen, bis \type{pr-merge} im Log steht, und der nächste Aufruf
 des Gates bucht einen Merge nach, dessen Bewegung schon stattgefunden hat.
 \type{op verify} bestätigt am Ende der Sitzung die Hash-Kette und die Beweise: Das Log hat
-57 Einträge, das Register ist gültig, und 11 Beweise halten gegen es.
+57 Einträge, das Register ist gültig, und die Signaturen halten gegen es.
+Das sind die Beweisdatei des Owner-Overrides und die Erklärungen der vier Eröffnungen, der
+Prüfergebnisse und der Freigaben.
 Nach einem Abbruch vor der Bewegung wiederholt der nächste Aufruf den Merge;
 nach einem Abbruch hinter ihr fehlt nur der Eintrag \type{pr-merge},
 den der nächste \type{pr merge} nachträgt.
@@ -1639,14 +1797,14 @@ Grössen er ändert.
 \startxcell \type{pr open} \stopxcell
 \startxcell unverändert \stopxcell
 \startxcell unverändert \stopxcell
-\startxcell keiner \stopxcell
+\startxcell keiner; eine Erklärung \stopxcell
 \startxcell \type{pr-open} \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{check record}, \type{pr approve} \stopxcell
 \startxcell unverändert \stopxcell
 \startxcell unverändert \stopxcell
-\startxcell keiner; eine Beweisdatei \stopxcell
+\startxcell keiner; eine Erklärung \stopxcell
 \startxcell \type{check}, \type{pr-approve} \stopxcell
 \stopxrow
 \startxrow

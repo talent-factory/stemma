@@ -52,6 +52,21 @@ pub enum PayloadKind {
     /// An entry of the record of ref updates, signed by the key of the hub (ADR-025, ADR-026).
     /// The payload is the text of the hash of the entry.
     RecordEntry,
+    /// The opening of a pull request, a signed statement (ADR-025). The payload of this kind and
+    /// of the four that follow is that of
+    /// [`Statement::payload`](crate::protocol::statement::Statement::payload).
+    PullOpening,
+    /// The approval of the head of a pull request, a signed statement (ADR-025). It is another
+    /// type than [`Approval`](Self::Approval), which signs the number of a pull request in one
+    /// log and is read for the proofs from before the statements only.
+    PullApproval,
+    /// The result of a check, a signed statement (ADR-025).
+    CheckResult,
+    /// The closing of a pull request, a signed statement (ADR-025).
+    PullClosing,
+    /// The override of the write ownership of a branch by an owner, a signed statement
+    /// (ADR-025, rule 9 of ADR-004).
+    OwnerOverride,
     /// The challenge of a hub, signed for a sign-in (ADR-024). The payload names the address of
     /// the hub, the nonce and the key
     /// ([`SignedChallenge::payload`](crate::protocol::sign_in::SignedChallenge::payload)). It
@@ -69,6 +84,11 @@ impl PayloadKind {
             Self::Sponsorship => "sponsorship",
             Self::RefUpdate => "ref-update",
             Self::RecordEntry => "record-entry",
+            Self::PullOpening => "pr-opening",
+            Self::PullApproval => "pr-approval",
+            Self::CheckResult => "check-result",
+            Self::PullClosing => "pr-closing",
+            Self::OwnerOverride => "owner-override",
             Self::Challenge => "challenge",
         }
     }
@@ -211,7 +231,26 @@ pub trait Signer {
     /// [`SignError`] if the key is not available, the process fails, or the answer is not a
     /// signature that [`Signature::from_armored`] accepts.
     fn sign(&self, message: &[u8]) -> Result<Signature, SignError>;
+
+    /// The public key that [`sign`](Self::sign) signs with. A payload that names its key, such
+    /// as a statement (ADR-025), asks for it before it is signed.
+    ///
+    /// The default signs [`KEY_PROBE`] and reads the key from the signature, so a signer needs
+    /// no second way to its key. The probe does not begin with the header of a proof, so its
+    /// signature proves nothing. A signer that knows its key without signing overrides this.
+    ///
+    /// # Errors
+    ///
+    /// The error of [`sign`](Self::sign).
+    fn public_key(&self) -> Result<PublicKey, SignError> {
+        self.sign(KEY_PROBE)
+            .map(|signature| signature.signing_key())
+    }
 }
+
+/// The bytes that the default of [`Signer::public_key`] signs to learn the key. They are no
+/// signed bytes of a proof: those begin with the line `stemma-proof`.
+pub const KEY_PROBE: &[u8] = b"stemma-key-probe\n";
 
 /// Signs a payload with a [`Signer`]: the header of the signed bytes (type and [`FORMAT_VERSION`])
 /// comes first.
@@ -299,6 +338,31 @@ impl SshKeygen {
 }
 
 impl Signer for SshKeygen {
+    /// The key of the file `<key file>.pub` next to a private key, or of the key file itself if
+    /// its name ends in `.pub`, read without a call of `ssh-keygen`, so that a key with a
+    /// passphrase asks once and not twice. A private key file is never read here. Where no such
+    /// file holds a public key, the key is read from a signature of the probe. A `.pub` file
+    /// that belongs to another key is found when the signature is checked against the key.
+    fn public_key(&self) -> Result<PublicKey, SignError> {
+        let mut beside = self.key_file.clone().into_os_string();
+        beside.push(".pub");
+        let is_public = self.key_file.extension().is_some_and(|ext| ext == "pub");
+        let candidates = [
+            Some(PathBuf::from(beside)),
+            is_public.then(|| self.key_file.clone()),
+        ];
+        for path in candidates.into_iter().flatten() {
+            let key = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| PublicKey::from_openssh(text.trim_end()).ok());
+            if let Some(key) = key {
+                return Ok(key);
+            }
+        }
+        self.sign(KEY_PROBE)
+            .map(|signature| signature.signing_key())
+    }
+
     fn sign(&self, message: &[u8]) -> Result<Signature, SignError> {
         let mut child = Command::new(&self.program)
             .args(["-Y", "sign", "-n", NAMESPACE, "-f"])
@@ -994,6 +1058,37 @@ AVIRoZlxo88ExLG0/iVqNKMORmBJ7dsKhnfS9dIz37M=\n\
             ),
             Err(VerifyError::Invalid)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_keygen_names_its_public_key_from_the_pub_file_or_from_a_signature_of_the_probe() {
+        if !ssh_keygen_available() {
+            return;
+        }
+        let dir = scratch_dir("public-key");
+        let key_file = dir.join("key");
+        let status = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", ""])
+            .arg("-f")
+            .arg(&key_file)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let pub_file = dir.join("key.pub");
+        let public = PublicKey::from_openssh(&std::fs::read_to_string(&pub_file).unwrap()).unwrap();
+        // The file beside the private key, and the public key file itself.
+        assert_eq!(SshKeygen::new(&key_file).public_key().unwrap(), public);
+        assert_eq!(SshKeygen::new(&pub_file).public_key().unwrap(), public);
+        // Without the file the key is read from a signature of the probe, which is no proof.
+        let hidden = dir.join("hidden");
+        std::fs::rename(&pub_file, &hidden).unwrap();
+        assert_eq!(SshKeygen::new(&key_file).public_key().unwrap(), public);
+        assert!(!KEY_PROBE.starts_with(MAGIC.as_bytes()));
+        // A file that holds no key is passed over, and a signer without a key fails.
+        std::fs::write(&pub_file, "not a key\n").unwrap();
+        assert_eq!(SshKeygen::new(&key_file).public_key().unwrap(), public);
+        assert!(SshKeygen::new(dir.join("absent")).public_key().is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

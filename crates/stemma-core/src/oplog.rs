@@ -165,6 +165,7 @@ use std::str::FromStr;
 
 use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
+use crate::protocol::statement::StatementHash;
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::register::Identity;
 use crate::remote::RemoteRefName;
@@ -235,13 +236,21 @@ pub const PR_MERGE: &str = "pr-merge";
 /// belongs to the entry of a check and to no change.
 pub const CHECK: &str = "check";
 
-/// The version of the body of a `check` entry, the line `version 1`. The entry holds a type and a
-/// version, as the signed payload does (ADR-003), so a later form is told from this one. A reader
-/// accepts this version only.
+/// The first version of the body of a `check` entry, the line `version 1`: the entry of the
+/// repository formats 11 to 15, whose proof was a file that signed the hash of the entry. The
+/// entry holds a type and a version, as the signed payload does (ADR-003), so a later form is
+/// told from this one. A reader accepts this version and [`CHECK_STATEMENT_VERSION`]; the writer
+/// of the repository writes the later one only.
 pub const CHECK_VERSION: u32 = 1;
 
+/// The version of the body of a `check` entry that names its signed statement, the line
+/// `version 2` (ADR-025, repository format 16): the lines of version 1 and the line
+/// `statement <hash>` after them.
+pub const CHECK_STATEMENT_VERSION: u32 = 2;
+
 /// The operation of the entry that approves the head of a pull request (ADR-004 rule 4). The
-/// approver signs it; the signature is a proof file, not a line of the entry.
+/// approver signs the statement that the entry names (ADR-025); in the repository formats 10
+/// to 15 the signature was a proof file.
 pub const PR_APPROVE: &str = "pr-approve";
 
 /// The most reviewers that the entry of an opening names.
@@ -1471,6 +1480,14 @@ impl PullKind {
 /// commit can become stubs in a purge; the purge refuses to replace the opening of a pull request
 /// that is still open. An approval names the pull request and the head that the approver reviewed
 /// (`pull <number>`, `commit <id>`); it counts for that head only (ADR-004 rule 4).
+///
+/// Since the repository format 16 an opening, a closing, and an approval name the signed
+/// statement that they made, as their last line `statement <hash>` (ADR-025, ADR-011,
+/// [`with_statement`](Self::with_statement)). The statement is the evidence, and the entry
+/// records the act: its number is the name of the pull request in this log, and the hash of the
+/// opening is its name everywhere. An entry without the line is one of the formats 9 to 15; it
+/// is read as an entry of the chain and is no evidence. A merge names no statement, as "merged"
+/// is none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullEntry {
     time: i64,
@@ -1481,6 +1498,7 @@ pub struct PullEntry {
     commit: Option<CommitId>,
     reviewers: Vec<Actor>,
     repairs: Option<CommitId>,
+    statement: Option<StatementHash>,
 }
 
 impl PullEntry {
@@ -1626,7 +1644,28 @@ impl PullEntry {
             commit,
             reviewers,
             repairs,
+            statement: None,
         })
+    }
+
+    /// The entry with the hash of the signed statement that it made (ADR-025): the opening, the
+    /// closing, or the approval.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::BadPullShape`] for a merge, which names no statement.
+    pub fn with_statement(mut self, statement: StatementHash) -> Result<Self, EntryError> {
+        if self.kind == PullKind::Merge {
+            return Err(EntryError::BadPullShape);
+        }
+        self.statement = Some(statement);
+        Ok(self)
+    }
+
+    /// The hash of the signed statement that the entry made, or `None` for a merge and for an
+    /// entry from before the repository format 16.
+    pub fn statement(&self) -> Option<StatementHash> {
+        self.statement
     }
 
     /// The time that the writer claims, in seconds since the Unix epoch (UTC).
@@ -1697,6 +1736,9 @@ impl PullEntry {
         if let Some(repairs) = &self.repairs {
             out.push_str(&format!("repairs {repairs}\n"));
         }
+        if let Some(statement) = &self.statement {
+            out.push_str(&format!("statement {statement}\n"));
+        }
         out
     }
 }
@@ -1735,8 +1777,14 @@ impl CheckResult {
 /// *base*; a run on the tip of `main` itself, after a merge, has no base. One entry holds one
 /// base, so a run against another tip is another entry. The entry says nothing about who may
 /// count it: that follows from the writer, the register, and the risk level when the evidence is
-/// read ([`crate::check`]). In an enforcing repository the writer signs the hash of the entry, as
-/// for every entry whose rule depends on who acts (ADR-003).
+/// read ([`crate::check`]).
+///
+/// Since the repository format 16 the entry names the signed statement that it made, as its
+/// last line `statement <hash>`, and has the line `version 2` (ADR-025, ADR-011,
+/// [`with_statement`](Self::with_statement)). The statement is the evidence, and in an enforcing
+/// repository its signature is the proof of the writer. An entry of version 1 is one of the
+/// formats 11 to 15, whose proof was a file that signed the hash of the entry; it is read as an
+/// entry of the chain and is no evidence.
 ///
 /// It names commits, so a purge replaces it with a stub when it rewrites one of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1746,6 +1794,7 @@ pub struct CheckEntry {
     commit: CommitId,
     base: Option<CommitId>,
     result: CheckResult,
+    statement: Option<StatementHash>,
 }
 
 impl CheckEntry {
@@ -1764,7 +1813,22 @@ impl CheckEntry {
             commit,
             base,
             result,
+            statement: None,
         }
+    }
+
+    /// The entry with the hash of the signed statement that it made (ADR-025), which makes it
+    /// an entry of version 2.
+    #[must_use]
+    pub fn with_statement(mut self, statement: StatementHash) -> Self {
+        self.statement = Some(statement);
+        self
+    }
+
+    /// The hash of the signed statement that the entry made, or `None` for an entry of
+    /// version 1.
+    pub fn statement(&self) -> Option<StatementHash> {
+        self.statement
     }
 
     /// The time that the writer claims, in seconds since the Unix epoch (UTC).
@@ -1804,8 +1868,12 @@ impl CheckEntry {
             .base
             .as_ref()
             .map_or_else(|| "-".to_owned(), ToString::to_string);
+        let (version, statement) = match &self.statement {
+            None => (CHECK_VERSION, String::new()),
+            Some(statement) => (CHECK_STATEMENT_VERSION, format!("statement {statement}\n")),
+        };
         format!(
-            "operation {CHECK}\nversion {CHECK_VERSION}\ncommit {}\nbase {base}\nresult {}\n",
+            "operation {CHECK}\nversion {version}\ncommit {}\nbase {base}\nresult {}\n{statement}",
             self.commit,
             self.result.name()
         )
@@ -2080,6 +2148,17 @@ impl Entry {
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Pull(_) => None,
+        }
+    }
+
+    /// The hash of the signed statement that the entry made (ADR-025): an opening, a closing, an
+    /// approval, or the result of a check, since the repository format 16. `None` for every
+    /// other entry, for a stub, and for an entry of an older format.
+    pub fn statement(&self) -> Option<StatementHash> {
+        match &self.record {
+            Record::Pull(pull) => pull.statement,
+            Record::Check(check) => check.statement,
+            Record::Change(_) | Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => None,
         }
     }
 
@@ -2521,8 +2600,8 @@ fn parse_lease(
 }
 
 /// Reads the body of a check entry, which starts with the line `operation check` at the index
-/// `body`: `version 1`, `commit <id>`, `base <id>` or `base -`, and `result pass` or
-/// `result fail`.
+/// `body`: `version 1` or `version 2`, `commit <id>`, `base <id>` or `base -`, `result pass` or
+/// `result fail`, and for version 2 `statement <hash>`.
 fn parse_check(
     lines: &[&str],
     body: usize,
@@ -2546,10 +2625,14 @@ fn parse_check(
                 source,
             })
     };
-    if line_at(body + 1, "version ", EntryMalformed::ExpectedVersion)? != CHECK_VERSION.to_string()
-    {
+    let version = line_at(body + 1, "version ", EntryMalformed::ExpectedVersion)?;
+    let names_statement = if version == CHECK_VERSION.to_string() {
+        false
+    } else if version == CHECK_STATEMENT_VERSION.to_string() {
+        true
+    } else {
         return Err(malformed(body + 2, EntryMalformed::ExpectedVersion));
-    }
+    };
     let commit = commit_of(
         body + 2,
         line_at(body + 2, "commit ", EntryMalformed::ExpectedCommit)?,
@@ -2564,21 +2647,40 @@ fn parse_check(
         EntryMalformed::ExpectedResult,
     )?)
     .ok_or_else(|| malformed(body + 5, EntryMalformed::ExpectedResult))?;
-    if body + 5 < lines.len() {
-        return Err(malformed(body + 6, EntryMalformed::TrailingLine));
+    let mut check = CheckEntry::new(time, actor, commit, base, result);
+    let mut next = body + 5;
+    if names_statement {
+        check = check.with_statement(statement_at(lines, next)?);
+        next += 1;
     }
-    Entry::linked(
-        number,
-        chain,
-        Record::Check(CheckEntry::new(time, actor, commit, base, result)),
-    )
-    .map_err(EntryParseError::Entry)
+    if next < lines.len() {
+        return Err(malformed(next + 1, EntryMalformed::TrailingLine));
+    }
+    Entry::linked(number, chain, Record::Check(check)).map_err(EntryParseError::Entry)
+}
+
+/// Reads the line `statement <hash>` at the index `index`: the hash of a signed statement in
+/// canonical form.
+fn statement_at(lines: &[&str], index: usize) -> Result<StatementHash, EntryParseError> {
+    let text = lines
+        .get(index)
+        .and_then(|line| line.strip_prefix("statement "))
+        .ok_or(EntryParseError::Malformed {
+            line: index + 1,
+            reason: EntryMalformed::ExpectedStatement,
+        })?;
+    text.parse()
+        .map_err(|source| EntryParseError::InvalidObjectId {
+            line: index + 1,
+            source,
+        })
 }
 
 /// Reads the body of a pull request entry, which starts with the line `operation pr-…` at the
 /// index `body`: `branch <name>` (an opening) or `pull <number>` (a closing, a merge, and an
-/// approval), then `commit <id>` (an opening, a merge, and an approval), and for an opening `reviewer <actor>` in ascending
-/// order and `repairs <id>`.
+/// approval), then `commit <id>` (an opening, a merge, and an approval), and for an opening
+/// `reviewer <actor>` in ascending order and `repairs <id>`. An opening, a closing, and an
+/// approval may end with `statement <hash>`.
 fn parse_pull(
     lines: &[&str],
     body: usize,
@@ -2654,10 +2756,26 @@ fn parse_pull(
             next += 1;
         }
     }
+    // An entry of the repository format 16 names its statement; one of an older format has no
+    // such line. A merge never has it.
+    let statement = if kind != PullKind::Merge
+        && lines
+            .get(next)
+            .is_some_and(|line| line.starts_with("statement "))
+    {
+        next += 1;
+        Some(statement_at(lines, next - 1)?)
+    } else {
+        None
+    };
     if next < lines.len() {
         return Err(malformed(next + 1, EntryMalformed::TrailingLine));
     }
     PullEntry::build(time, actor, kind, branch, pull, commit, reviewers, repairs)
+        .and_then(|entry| match statement {
+            Some(statement) => entry.with_statement(statement),
+            None => Ok(entry),
+        })
         .and_then(|entry| Entry::linked(number, chain, Record::Pull(entry)))
         .map_err(EntryParseError::Entry)
 }
@@ -2946,12 +3064,14 @@ pub enum EntryMalformed {
     ExpectedCommit,
     /// A closing, a merge, or an approval has no line `pull <number>`.
     ExpectedPull,
-    /// A check has no line `version 1` after the operation.
+    /// A check has no line `version 1` or `version 2` after the operation.
     ExpectedVersion,
     /// A check has no line `base <id>` or `base -` after the commit.
     ExpectedBase,
     /// A check has no line `result pass` or `result fail` after the base.
     ExpectedResult,
+    /// A check of version 2 has no line `statement <hash>` after the result.
+    ExpectedStatement,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -3006,9 +3126,10 @@ impl fmt::Display for EntryMalformed {
             }
             Self::ExpectedCommit => "expected the line `commit <id>` or `repairs <id>`",
             Self::ExpectedPull => "expected the line `pull <number>`",
-            Self::ExpectedVersion => "expected the line `version 1`",
+            Self::ExpectedVersion => "expected the line `version 1` or `version 2`",
             Self::ExpectedBase => "expected the line `base <id>` or `base -`",
             Self::ExpectedResult => "expected the line `result pass` or `result fail`",
+            Self::ExpectedStatement => "expected the line `statement <hash>`",
         })
     }
 }
@@ -9097,6 +9218,144 @@ mod tests {
         assert_eq!(written.len(), 1);
         assert!(matches!(written[0].record(), Record::Purge(_)));
         log.verify().expect("the whole log is in the chain");
+    }
+
+    // ----- the entries that name a signed statement (ADR-025, STEMMA-290) -----
+
+    fn statement_hash() -> StatementHash {
+        C.parse().unwrap()
+    }
+
+    #[test]
+    fn an_entry_of_a_pull_request_names_its_statement_in_its_last_line() {
+        for pull in pull_entries() {
+            let kind = pull.kind();
+            let old = pull_entry(4, pull.clone());
+            assert_eq!(
+                old.statement(),
+                None,
+                "an entry of an older format names none"
+            );
+            let Ok(named) = pull.with_statement(statement_hash()) else {
+                assert_eq!(kind, PullKind::Merge, "only a merge names no statement");
+                continue;
+            };
+            assert_ne!(kind, PullKind::Merge);
+            let entry = pull_entry(4, named);
+            assert_eq!(entry.statement(), Some(statement_hash()));
+            assert_eq!(entry.pull().unwrap().statement(), Some(statement_hash()));
+            let bytes = entry.encode();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            // The line comes after the lines of the older form, which stay as they were.
+            let old_text = String::from_utf8(old.encode()).unwrap();
+            assert_eq!(text, format!("{old_text}statement {C}\n"));
+            let again = Entry::parse(&bytes).expect("reads back");
+            assert_eq!(again, entry);
+            assert_eq!(again.encode(), bytes);
+            // The hash of the body covers the line, so the chain covers the name.
+            assert_ne!(entry.body_hash(), old.body_hash());
+            assert_ne!(entry.hash(), old.hash());
+            // The entry names the same commits, which a purge looks for.
+            assert_eq!(entry.commits(), old.commits());
+            // The older form is still read as what it is.
+            assert_eq!(Entry::parse(&old.encode()).unwrap(), old);
+        }
+    }
+
+    #[test]
+    fn the_reader_refuses_a_statement_line_that_the_writer_does_not_write() {
+        let entries = pull_entries();
+        let text =
+            |pull: &PullEntry| String::from_utf8(pull_entry(4, pull.clone()).encode()).unwrap();
+        let refused = |text: String| Entry::parse(text.as_bytes()).unwrap_err();
+        // A merge names no statement.
+        let merge = format!("{}statement {C}\n", text(&entries[2]));
+        assert!(
+            matches!(
+                refused(merge),
+                EntryParseError::Malformed {
+                    reason: EntryMalformed::TrailingLine,
+                    ..
+                }
+            ),
+            "a merge with a statement was read"
+        );
+        let close = text(&entries[1]);
+        // A hash in another form, a second line, and a line that does not come last.
+        let cases = [
+            format!("{close}statement {}\n", C.to_uppercase()),
+            format!("{close}statement -\n"),
+            format!("{close}statement {C}\nstatement {C}\n"),
+            close.replace("pull 3\n", &format!("statement {C}\npull 3\n")),
+        ];
+        for case in cases {
+            let error = refused(case.clone());
+            assert!(
+                matches!(
+                    error,
+                    EntryParseError::InvalidObjectId { .. } | EntryParseError::Malformed { .. }
+                ),
+                "{case}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_check_that_names_its_statement_has_version_2() {
+        for check in check_entries() {
+            let old = check_entry(4, check.clone());
+            assert_eq!(old.statement(), None);
+            let entry = check_entry(4, check.with_statement(statement_hash()));
+            assert_eq!(entry.statement(), Some(statement_hash()));
+            assert_eq!(entry.check().unwrap().statement(), Some(statement_hash()));
+            let text = String::from_utf8(entry.encode()).unwrap();
+            let old_text = String::from_utf8(old.encode()).unwrap();
+            assert_eq!(
+                text,
+                format!(
+                    "{}statement {C}\n",
+                    old_text.replace("\nversion 1\n", "\nversion 2\n")
+                )
+            );
+            let again = Entry::parse(text.as_bytes()).expect("reads back");
+            assert_eq!(again, entry);
+            assert_ne!(entry.hash(), old.hash());
+            assert_eq!(entry.commits(), old.commits());
+            // The version and the line go together: neither form takes the other's.
+            let without = text.replace(&format!("statement {C}\n"), "");
+            assert!(
+                matches!(
+                    Entry::parse(without.as_bytes()),
+                    Err(EntryParseError::Malformed {
+                        reason: EntryMalformed::ExpectedStatement,
+                        ..
+                    })
+                ),
+                "version 2 without a statement was read"
+            );
+            let with = format!("{old_text}statement {C}\n");
+            assert!(
+                matches!(
+                    Entry::parse(with.as_bytes()),
+                    Err(EntryParseError::Malformed {
+                        reason: EntryMalformed::TrailingLine,
+                        ..
+                    })
+                ),
+                "version 1 with a statement was read"
+            );
+            let later = text.replace("\nversion 2\n", "\nversion 3\n");
+            assert!(
+                matches!(
+                    Entry::parse(later.as_bytes()),
+                    Err(EntryParseError::Malformed {
+                        reason: EntryMalformed::ExpectedVersion,
+                        ..
+                    })
+                ),
+                "an unknown version was read"
+            );
+        }
     }
 
     fn check_entry(number: u64, check: CheckEntry) -> Entry {

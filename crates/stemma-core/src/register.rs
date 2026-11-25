@@ -89,6 +89,7 @@ use std::str::FromStr;
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
 use crate::oplog::{Entry, PullKind, Record, StubKind};
+use crate::protocol::statement::Statement;
 use crate::pull;
 use crate::repository::Repository;
 use crate::signature::{self, PayloadKind, PublicKey, Signature};
@@ -989,6 +990,39 @@ impl Register {
         self.verify(actor, PayloadKind::Approval, payload, signature, entry)
     }
 
+    /// Checks a signed statement (ADR-025) against the register: its signature is one of a key
+    /// of `actor`, and the key counts. The statement names no actor; `actor` is the one that it
+    /// is attributed to, the actor of the entry of the log that names it.
+    ///
+    /// `number` is the number of the statement in the order of its holder, in a clone the number
+    /// of that entry, and `None` for a statement that is not placed yet, where the caller asks
+    /// [`Register::is_active_key`] besides. The key counts by the rule of the proofs before the
+    /// statements: a retired key for what stands before its retirement, a revoked key never for
+    /// an approval
+    /// ([`StatementKind::Approval`](crate::protocol::statement::StatementKind::Approval)) and
+    /// for every other kind only before its
+    /// revocation.
+    ///
+    /// # Errors
+    ///
+    /// [`ProofError::Unsigned`] for a statement without a signature, the form of the open mode,
+    /// which no register accepts, and otherwise [`ProofError`] with the reason.
+    pub fn verify_statement(
+        &self,
+        actor: &Actor,
+        statement: &Statement,
+        number: Option<u64>,
+    ) -> Result<Verified, ProofError> {
+        let signature = statement.signature().ok_or(ProofError::Unsigned)?;
+        self.verify(
+            actor,
+            statement.kind().payload_kind(),
+            &statement.payload(),
+            signature,
+            number,
+        )
+    }
+
     fn verify(
         &self,
         actor: &Actor,
@@ -1019,7 +1053,7 @@ impl Register {
         // The signature first: a key that no longer counts must not hide a forged proof.
         signature::verify(&key, kind, signature::FORMAT_VERSION, payload, signature)
             .map_err(ProofError::Signature)?;
-        let approval = kind == PayloadKind::Approval;
+        let approval = matches!(kind, PayloadKind::Approval | PayloadKind::PullApproval);
         let counts = match (held.state, number) {
             (KeyState::Active, _) | (KeyState::Retired { .. }, None) => true,
             (KeyState::Retired { from }, Some(number)) => number < from,
@@ -1385,6 +1419,9 @@ pub enum ProofError {
         /// The sponsor of the register entry.
         registered: String,
     },
+    /// The statement carries no signature: it is the form of the open mode, which proves
+    /// nothing.
+    Unsigned,
 }
 
 impl fmt::Display for ProofError {
@@ -1415,6 +1452,7 @@ impl fmt::Display for ProofError {
                 f,
                 "the actor names {claimed} as its sponsor, and the register names {registered}"
             ),
+            Self::Unsigned => f.write_str("the statement is not signed"),
         }
     }
 }
