@@ -978,6 +978,7 @@ fn entry_line(error: &EntryParseError) -> Option<usize> {
         | EntryParseError::InvalidObjectId { line, .. }
         | EntryParseError::InvalidHash { line, .. }
         | EntryParseError::InvalidBranchName { line, .. }
+        | EntryParseError::InvalidRemoteName { line, .. }
         | EntryParseError::Unchanged { line }
         | EntryParseError::OutOfOrder { line, .. } => Some(*line),
     }

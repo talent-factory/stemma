@@ -94,7 +94,7 @@ fn parse_positive<T: FromStr>(text: &str) -> Option<T> {
 /// hexadecimal digits (ADR-027). The list of references names it, and a ref update binds it
 /// (ADR-025). A clone keeps it in the configuration of the remote
 /// ([`RemoteConfig`](crate::remote::RemoteConfig)), so that it can notice when another repository
-/// lies under the same address; that check belongs to a later slice.
+/// lies under the same address ([`FetchError::OtherRepository`](crate::repository::FetchError)).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RepositoryId([u8; 16]);
 

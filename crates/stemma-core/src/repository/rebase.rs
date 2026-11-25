@@ -230,6 +230,7 @@ impl Repository {
             head: None,
             working_copy: Some(carried.id),
             branches: &branches,
+            remotes: &[],
         };
         let logged = self
             .refs_store()

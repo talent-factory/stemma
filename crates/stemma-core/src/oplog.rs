@@ -43,6 +43,20 @@
 //! A branch and the working-copy commit have a commit ID or `-`; HEAD has `branch:<name>`,
 //! `commit:<id>`, or `-`. The file ends with a newline and has nothing after the last pointer.
 //!
+//! After the tags come the remote references (ADR-008), which the entry `fetch` and the restore
+//! of one name, sorted in the order of [`RemoteRefName`] (the remote, the branches before the
+//! tags, the name) and each once. A value has two parts, the commit and the hash of the record
+//! entry of that name on the hub, and `- -` stands for a reference that does not exist; a value
+//! with one part `-` is refused:
+//!
+//! ```text
+//! remote remotes/origin/heads/main b3:8cb4… b3:a1a1… b3:b5f2… b3:a1a1…
+//! remote remotes/origin/tags/v1 - - b3:4feb… b3:a1a1…
+//! ```
+//!
+//! The line came with version 17 of the repository format (STEMMA-295, ADR-009): a program that
+//! knows only version 16 refuses the repository instead of the line.
+//!
 //! # Stubs and purges (version 2)
 //!
 //! A purge (ADR-014) replaces every entry that names a commit it rewrote by a *stub* with the same
@@ -166,9 +180,10 @@ use std::str::FromStr;
 use crate::fault;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError, TimeError};
 use crate::protocol::statement::StatementHash;
+use crate::protocol::RecordHash;
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::register::Identity;
-use crate::remote::RemoteRefName;
+use crate::remote::{RemoteRef, RemoteRefName, RemoteRefNameError};
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError, ActorRef};
 
@@ -450,6 +465,8 @@ pub enum EntryError {
     DuplicateBranch(BranchName),
     /// A tag is listed twice.
     DuplicateTag(BranchName),
+    /// A remote reference is listed twice.
+    DuplicateRemote(RemoteRefName),
     /// The number is 0 or larger than [`MAX_NUMBER`].
     NumberOutOfRange(u64),
     /// A change has the operation `purge`, which only the entry of a purge has, or one of the four
@@ -526,6 +543,9 @@ impl fmt::Display for EntryError {
             Self::Unchanged(pointer) => write!(f, "{pointer} has the same old and new value"),
             Self::DuplicateBranch(name) => write!(f, "the branch `{name}` is listed twice"),
             Self::DuplicateTag(name) => write!(f, "the tag `{name}` is listed twice"),
+            Self::DuplicateRemote(name) => {
+                write!(f, "the remote reference `{name}` is listed twice")
+            }
             Self::NumberOutOfRange(number) => {
                 write!(f, "entry number {number} is not between 1 and {MAX_NUMBER}")
             }
@@ -643,8 +663,22 @@ pub struct Change {
     working_copy: Option<Moved<CommitId>>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
     tags: Vec<(BranchName, Moved<CommitId>)>,
+    /// The remote references that a `fetch` moved or removed, or that a restore of one puts
+    /// back (ADR-008), sorted by name.
+    remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
     /// The linked worktree of the entry, boxed so that the common entry stays small.
     worktree: Option<Box<WorktreeTag>>,
+}
+
+/// The pointers of a [`Change`], for [`Change::build`]. A pointer that is `None`, or a list that is
+/// empty, is not part of the change.
+#[derive(Debug, Default)]
+pub(crate) struct Pointers {
+    pub(crate) head: Option<Moved<Head>>,
+    pub(crate) working_copy: Option<Moved<CommitId>>,
+    pub(crate) branches: Vec<(BranchName, Moved<CommitId>)>,
+    pub(crate) tags: Vec<(BranchName, Moved<CommitId>)>,
+    pub(crate) remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
 }
 
 /// The worktree that an entry names and the directory of it, if the entry makes or removes one.
@@ -704,9 +738,63 @@ impl Change {
         operation: OperationName,
         head: Option<Moved<Head>>,
         working_copy: Option<Moved<CommitId>>,
-        mut branches: Vec<(BranchName, Moved<CommitId>)>,
-        mut tags: Vec<(BranchName, Moved<CommitId>)>,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
+        tags: Vec<(BranchName, Moved<CommitId>)>,
     ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            operation,
+            Pointers {
+                head,
+                working_copy,
+                branches,
+                tags,
+                remotes: Vec::new(),
+            },
+        )
+    }
+
+    /// Builds a change that names remote references only (ADR-008, ADR-011): the entry `fetch`,
+    /// and the restore of one. The references are kept sorted by name, in the order of
+    /// [`RemoteRefName`]. A remote reference that the change creates has no old value, and one
+    /// that it removes has no new value.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_new`](Self::try_new), and [`EntryError::DuplicateRemote`] for a remote reference
+    /// that is listed twice.
+    pub fn try_new_with_remotes(
+        time: i64,
+        actor: Actor,
+        operation: OperationName,
+        remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
+    ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            operation,
+            Pointers {
+                remotes,
+                ..Pointers::default()
+            },
+        )
+    }
+
+    /// Builds a change with any of the pointers: the one place that checks the rules of a change.
+    pub(crate) fn build(
+        time: i64,
+        actor: Actor,
+        operation: OperationName,
+        pointers: Pointers,
+    ) -> Result<Self, EntryError> {
+        let Pointers {
+            head,
+            working_copy,
+            mut branches,
+            mut tags,
+            mut remotes,
+        } = pointers;
         if operation.as_str() == PURGE
             || LeaseKind::from_operation(operation.as_str()).is_some()
             || PullKind::from_operation(operation.as_str()).is_some()
@@ -714,8 +802,11 @@ impl Change {
         {
             return Err(EntryError::ReservedOperation);
         }
-        let no_pointer =
-            head.is_none() && working_copy.is_none() && branches.is_empty() && tags.is_empty();
+        let no_pointer = head.is_none()
+            && working_copy.is_none()
+            && branches.is_empty()
+            && tags.is_empty()
+            && remotes.is_empty();
         match (operation.as_str() == TAKE_OVER, no_pointer) {
             (false, true) => return Err(EntryError::NoChange),
             (true, false) => return Err(EntryError::TakeOverWithPointer),
@@ -745,6 +836,15 @@ impl Change {
         if let Some((name, _)) = tags.iter().find(|(_, m)| m.old == m.new) {
             return Err(EntryError::Unchanged(Pointer::Tag(name.clone())));
         }
+        remotes.sort_by(|a, b| a.0.cmp(&b.0));
+        for pair in remotes.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(EntryError::DuplicateRemote(pair[0].0.clone()));
+            }
+        }
+        if let Some((name, _)) = remotes.iter().find(|(_, m)| m.old == m.new) {
+            return Err(EntryError::Unchanged(Pointer::Remote(name.clone())));
+        }
         Ok(Self {
             time,
             actor,
@@ -753,6 +853,7 @@ impl Change {
             working_copy,
             branches,
             tags,
+            remotes,
             worktree: None,
         })
     }
@@ -792,6 +893,12 @@ impl Change {
     /// each is made (the old value is `None`) or deleted (the new value is `None`).
     pub fn tags(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.tags
+    }
+
+    /// The remote references that the operation moved, created, or removed, sorted by name
+    /// (ADR-008). Only the entry `fetch` and the restore of one name them.
+    pub fn remotes(&self) -> &[(RemoteRefName, Moved<RemoteRef>)] {
+        &self.remotes
     }
 
     /// The linked worktree that the entry belongs to, or `None` for the main worktree, whose name
@@ -894,6 +1001,15 @@ impl Change {
             .chain(self.tags.iter().map(|(_, moved)| moved));
         for moved in moves {
             commits.extend(moved.old.iter().chain(moved.new.iter()).copied());
+        }
+        for (_, moved) in &self.remotes {
+            commits.extend(
+                moved
+                    .old
+                    .iter()
+                    .chain(moved.new.iter())
+                    .map(|reference| reference.commit),
+            );
         }
         commits
     }
@@ -2098,6 +2214,13 @@ impl Entry {
                         commit_value(moved.new.as_ref())
                     ));
                 }
+                for (name, moved) in &change.remotes {
+                    out.push_str(&format!(
+                        "remote {name} {} {}\n",
+                        remote_value(moved.old.as_ref()),
+                        remote_value(moved.new.as_ref())
+                    ));
+                }
                 Some(out)
             }
         }
@@ -2421,10 +2544,12 @@ impl Entry {
         let mut working_copy = None;
         let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
         let mut tags: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
+        let mut remotes: Vec<(RemoteRefName, Moved<RemoteRef>)> = Vec::new();
         for (index, line) in lines.iter().enumerate().skip(first) {
             let number = index + 1;
             let tokens: Vec<&str> = line.split(' ').collect();
-            let after_branches = !branches.is_empty() || !tags.is_empty();
+            let after_branches = !branches.is_empty() || !tags.is_empty() || !remotes.is_empty();
+            let after_tags = !remotes.is_empty();
             match tokens.as_slice() {
                 ["head", old, new] => {
                     if head.is_some() || working_copy.is_some() || after_branches {
@@ -2453,7 +2578,7 @@ impl Entry {
                     working_copy = Some(moved);
                 }
                 ["branch", name, old, new] => {
-                    if !tags.is_empty() {
+                    if !tags.is_empty() || after_tags {
                         return Err(malformed(number, EntryMalformed::PointerOutOfOrder));
                     }
                     let name = BranchName::try_new(*name).map_err(|source| {
@@ -2480,6 +2605,9 @@ impl Entry {
                     branches.push((name, moved));
                 }
                 ["tag", name, old, new] => {
+                    if after_tags {
+                        return Err(malformed(number, EntryMalformed::PointerOutOfOrder));
+                    }
                     let name = BranchName::try_new(*name).map_err(|source| {
                         EntryParseError::InvalidBranchName {
                             line: number,
@@ -2503,7 +2631,32 @@ impl Entry {
                     }
                     tags.push((name, moved));
                 }
-                ["head" | "working-copy" | "branch" | "tag", ..] => {
+                ["remote", name, old_commit, old_entry, new_commit, new_entry] => {
+                    let name = RemoteRefName::from_str(name).map_err(|source| {
+                        EntryParseError::InvalidRemoteName {
+                            line: number,
+                            source,
+                        }
+                    })?;
+                    let moved = Moved {
+                        old: parse_remote_value(old_commit, old_entry, number)?,
+                        new: parse_remote_value(new_commit, new_entry, number)?,
+                    };
+                    if moved.old == moved.new {
+                        return Err(EntryParseError::Unchanged { line: number });
+                    }
+                    if remotes
+                        .last()
+                        .is_some_and(|(previous, _)| *previous >= name)
+                    {
+                        return Err(EntryParseError::OutOfOrder {
+                            line: number,
+                            name: name.to_string(),
+                        });
+                    }
+                    remotes.push((name, moved));
+                }
+                ["head" | "working-copy" | "branch" | "tag" | "remote", ..] => {
                     return Err(malformed(number, EntryMalformed::WrongValueCount));
                 }
                 _ => return Err(malformed(number, EntryMalformed::UnknownPointer)),
@@ -2513,6 +2666,7 @@ impl Entry {
             && working_copy.is_none()
             && branches.is_empty()
             && tags.is_empty()
+            && remotes.is_empty()
             && operation.as_str() != TAKE_OVER
         {
             return Err(malformed(lines.len() + 1, EntryMalformed::ExpectedPointer));
@@ -2520,7 +2674,14 @@ impl Entry {
         // The rules of a change live in one place. The lines have been checked one by one above, to
         // report the line; this builds the value through the constructor, so that a reader cannot
         // return a change that the constructor would reject.
-        Change::try_new_with_tags(time, actor, operation, head, working_copy, branches, tags)
+        let pointers = Pointers {
+            head,
+            working_copy,
+            branches,
+            tags,
+            remotes,
+        };
+        Change::build(time, actor, operation, pointers)
             .and_then(|change| change.in_worktree(worktree, location))
             .and_then(|change| match former_owner {
                 Some(owner) => change.with_former_owner(owner),
@@ -2930,6 +3091,38 @@ fn commit_value(value: Option<&CommitId>) -> String {
     value.map_or_else(|| "-".to_owned(), ToString::to_string)
 }
 
+/// The text of the value of a remote reference in an entry: the commit and the hash of the record
+/// entry, or `- -` for a reference that does not exist.
+fn remote_value(value: Option<&RemoteRef>) -> String {
+    value.map_or_else(
+        || "- -".to_owned(),
+        |reference| format!("{} {}", reference.commit, reference.entry),
+    )
+}
+
+/// Reads the value of a remote reference from its two tokens; see [`remote_value`].
+fn parse_remote_value(
+    commit: &str,
+    entry: &str,
+    line: usize,
+) -> Result<Option<RemoteRef>, EntryParseError> {
+    match (commit, entry) {
+        ("-", "-") => Ok(None),
+        ("-", _) | (_, "-") => Err(EntryParseError::Malformed {
+            line,
+            reason: EntryMalformed::HalfRemoteValue,
+        }),
+        (commit, entry) => {
+            let commit = ObjectId::from_str(commit)
+                .map(CommitId::new)
+                .map_err(|source| EntryParseError::InvalidObjectId { line, source })?;
+            let entry = RecordHash::from_str(entry)
+                .map_err(|source| EntryParseError::InvalidHash { line, source })?;
+            Ok(Some(RemoteRef { commit, entry }))
+        }
+    }
+}
+
 /// The text of a HEAD value: `-`, `branch:<name>`, or `commit:<id>`.
 fn head_value(value: Option<&Head>) -> String {
     match value {
@@ -3072,6 +3265,9 @@ pub enum EntryMalformed {
     ExpectedResult,
     /// A check of version 2 has no line `statement <hash>` after the result.
     ExpectedStatement,
+    /// A value of a line `remote` has a commit without the hash of its record entry, or the
+    /// other way round: both are `-`, or neither is.
+    HalfRemoteValue,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -3130,6 +3326,9 @@ impl fmt::Display for EntryMalformed {
             Self::ExpectedBase => "expected the line `base <id>` or `base -`",
             Self::ExpectedResult => "expected the line `result pass` or `result fail`",
             Self::ExpectedStatement => "expected the line `statement <hash>`",
+            Self::HalfRemoteValue => {
+                "expected the commit and the record entry of the remote reference, or `- -`"
+            }
         })
     }
 }
@@ -3201,6 +3400,13 @@ pub enum EntryParseError {
         /// Why the name is invalid.
         source: BranchNameError,
     },
+    /// The name of a remote reference is rejected.
+    InvalidRemoteName {
+        /// Number of the line.
+        line: usize,
+        /// Why the name is invalid.
+        source: RemoteRefNameError,
+    },
     /// The old and the new value of a pointer are equal.
     Unchanged {
         /// Number of the line.
@@ -3243,6 +3449,7 @@ impl fmt::Display for EntryParseError {
                 write!(f, "line {line}: invalid hash: {source}")
             }
             Self::InvalidBranchName { line, source } => write!(f, "line {line}: {source}"),
+            Self::InvalidRemoteName { line, source } => write!(f, "line {line}: {source}"),
             Self::Unchanged { line } => {
                 write!(f, "line {line}: the old and the new value are equal")
             }
@@ -3269,6 +3476,7 @@ impl Error for EntryParseError {
                 source.source()
             }
             Self::InvalidBranchName { source, .. } => source.source(),
+            Self::InvalidRemoteName { source, .. } => source.source(),
             _ => None,
         }
     }
@@ -4656,6 +4864,9 @@ pub struct Current {
     /// an entry that made or deleted a tag stays unknown; `Some` of an empty map means that no tag
     /// exists.
     tags: Option<BTreeMap<BranchName, CommitId>>,
+    /// The remote references that exist: `None` until [`Current::with_remotes`] gave them, so
+    /// that the outcome of an entry that moved one stays unknown.
+    remotes: Option<BTreeMap<RemoteRefName, RemoteRef>>,
     /// The owner of the working copy: `None` if [`Current::with_owner`] was not called, and
     /// `Some(None)` for a working copy without an owner.
     owner: Option<Option<Actor>>,
@@ -4690,6 +4901,7 @@ impl Current {
             working_copy: WorkingCopy::Unknown,
             branches: branches.into_iter().collect(),
             tags: None,
+            remotes: None,
             owner: None,
             worktree: MAIN_WORKTREE.to_owned(),
             settled,
@@ -4720,6 +4932,17 @@ impl Current {
     #[must_use]
     pub fn with_tags(mut self, tags: impl IntoIterator<Item = (BranchName, CommitId)>) -> Self {
         self.tags = Some(tags.into_iter().collect());
+        self
+    }
+
+    /// Adds the remote references that exist (ADR-008). Without them, the outcome of an entry
+    /// that moved a remote reference stays unknown.
+    #[must_use]
+    pub fn with_remotes(
+        mut self,
+        remotes: impl IntoIterator<Item = (RemoteRefName, RemoteRef)>,
+    ) -> Self {
+        self.remotes = Some(remotes.into_iter().collect());
         self
     }
 
@@ -4830,6 +5053,7 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     let mut next_working_copy: HashMap<&str, &Moved<CommitId>> = HashMap::new();
     let mut next_branch: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
     let mut next_tag: HashMap<&BranchName, &Moved<CommitId>> = HashMap::new();
+    let mut next_remote: HashMap<&RemoteRefName, &Moved<RemoteRef>> = HashMap::new();
     let mut result = vec![Outcome::Unknown; entries.len()];
     // A stub replaced a change that moved pointers which can no longer be seen, so nothing after
     // it is evidence for an entry before it: such an entry is unknown (ADR-014). A purge entry
@@ -4904,6 +5128,14 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
                 });
             judged.push(judge(moved, next_tag.get(name).copied(), now, settled));
         }
+        for (name, moved) in change.remotes() {
+            let now = current
+                .and_then(|current| current.remotes.as_ref())
+                .map_or(Now::Unknown, |remotes| {
+                    remotes.get(name).map_or(Now::Absent, Now::Is)
+                });
+            judged.push(judge(moved, next_remote.get(name).copied(), now, settled));
+        }
         result[index] = if judged.contains(&Outcome::NotTaken) {
             Outcome::NotTaken
         } else if judged.iter().all(|outcome| *outcome == Outcome::Took) {
@@ -4923,6 +5155,9 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
         }
         for (name, moved) in change.tags() {
             next_tag.insert(name, moved);
+        }
+        for (name, moved) in change.remotes() {
+            next_remote.insert(name, moved);
         }
     }
     result

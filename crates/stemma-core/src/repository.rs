@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 16" and a newline; 2 to 15 before the signed statements
+//! ├── format          "stemma-repository 17" and a newline; 2 to 16 before the entry `fetch`
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
 //! ├── objects/        loose objects (ADR-007)
@@ -34,7 +34,7 @@
 //!
 //! ```text
 //! <directory>/
-//! ├── format          "stemma-repository 16" and a newline
+//! ├── format          "stemma-repository 17" and a newline
 //! ├── bare            "stemma-bare" and a newline: the marker of a bare repository
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
@@ -63,6 +63,7 @@ mod checkout;
 mod commit;
 mod conflicted;
 mod difference;
+mod fetch;
 mod follow;
 mod gate;
 mod lease;
@@ -90,6 +91,7 @@ pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, Plan
 pub use commit::{CommitError, Committed};
 pub use conflicted::ConflictedFile;
 pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextDiff};
+pub use fetch::{CloneError, FetchError, Fetched, FETCH, MAX_REF_LIST};
 pub use follow::{Behind, Followed};
 pub use gate::{GateError, GateMerge, Retry, MAX_ATTEMPTS};
 pub use lease::{Claimed, LeaseError};
@@ -140,16 +142,17 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` and `init_bare` write, and that a purge and
-/// every new entry of the log move a repository to: version 16, the signed statements in
-/// `statements/` and the entries that name them (STEMMA-290, ADR-025, ADR-009, ADR-011). Version
-/// 15 was the bare repository with its marker `bare` (STEMMA-284, ADR-009), version 14 the
+/// every new entry of the log move a repository to: version 17, the line `remote` of an entry,
+/// which the entry `fetch` writes (STEMMA-295, ADR-008, ADR-011). Version 16 was the signed
+/// statements in `statements/` and the entries that name them (STEMMA-290, ADR-025, ADR-009,
+/// ADR-011), version 15 the bare repository with its marker `bare` (STEMMA-284, ADR-009), version 14 the
 /// configuration of the remotes and the
 /// remote references (STEMMA-285, ADR-008, ADR-009), version 13 the line `former-owner` of the
 /// entry `worktree-remove` (STEMMA-217, ADR-011). Version 12 was the kind in the stub (ADR-011,
 /// ADR-014), version 11 was the entry `check` (ADR-019, ADR-011),
 /// version 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
 /// `pr-open`, `pr-close`, and `pr-merge`, version 8 the lease of a branch (ADR-009).
-const FORMAT_VERSION: u32 = 16;
+const FORMAT_VERSION: u32 = 17;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -188,8 +191,12 @@ const FORMAT_VERSION: u32 = 16;
 /// instead. A repository of an older version is read as it is: its entries of a pull request
 /// and of a check stay entries of the chain, and `op verify` still checks their proof files, but
 /// they name no statement and are no evidence any more. The evidence has one form (ADR-025),
-/// so a pull request that was open is opened again, and a check is recorded again.
-const READ_VERSIONS: [u32; 15] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+/// so a pull request that was open is opened again, and a check is recorded again. Version 17
+/// adds the line `remote` of an entry (STEMMA-295, ADR-011), with the old and the new state of a
+/// remote reference, which the entry `fetch` and the restore of one write. A program that knows
+/// only version 16 refuses such a line as damage, so the repository rises with its next entry or
+/// purge, as before.
+const READ_VERSIONS: [u32; 16] = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
 
 /// The name that the temporary directory of `init_bare` starts with. It differs from
 /// [`INIT_STAGING_PREFIX`], the one of `init`: a writer that takes the lock of the references
@@ -3439,7 +3446,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 16\n"
+            b"stemma-repository 17\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4772,7 +4779,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "17",
+            "18",
             "99",
             "4294967295",
             "4294967296",
@@ -4822,7 +4829,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 16\n"
+            "stemma-repository 17\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4848,7 +4855,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 16\n"
+            "stemma-repository 17\n"
         );
     }
 
@@ -4879,7 +4886,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 16\n"
+            "stemma-repository 17\n"
         );
     }
 
@@ -4912,7 +4919,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 16\n"
+            "stemma-repository 17\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -5156,7 +5163,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 16\n"
+            "stemma-repository 17\n"
         );
     }
 
@@ -5233,7 +5240,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 16\n");
+        assert_eq!(read(), "stemma-repository 17\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -5263,6 +5270,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 15\n");
         raise_format(&meta, 16).unwrap();
         assert_eq!(read(), "stemma-repository 16\n");
+        raise_format(&meta, 17).unwrap();
+        assert_eq!(read(), "stemma-repository 17\n");
     }
 
     #[test]
@@ -5307,7 +5316,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 16\n");
+        assert_eq!(format, "stemma-repository 17\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -5479,14 +5488,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 16",
+                "stemma-repository 17",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "17".to_string(),
+                    found: "18".to_string(),
                 },
-                "version 17, but this code supports versions 2 to 16",
+                "version 18, but this code supports versions 2 to 17",
             ),
         ];
         for (error, text) in cases {

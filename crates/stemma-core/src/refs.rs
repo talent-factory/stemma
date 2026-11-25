@@ -517,6 +517,18 @@ pub enum RefError {
         /// What `with` is.
         kind: ConflictKind,
     },
+    /// A remote reference cannot be written, because a name below `refs/remotes` is in the way
+    /// (ADR-008). A hub never lists two names of which one is a directory of the other, so this
+    /// is a reference that the clone holds from an earlier list and that the new state does not
+    /// remove, or a file that no writer of the clone made.
+    RemoteConflict {
+        /// The remote reference that was to be written.
+        name: RemoteRefName,
+        /// The entry that is in the way, as a path below `refs/remotes`.
+        with: String,
+        /// What `with` is.
+        kind: ConflictKind,
+    },
     /// The object store has no commit with this ID.
     MissingCommit(CommitId),
     /// The object with this ID is neither a `commit` nor a `commit2`.
@@ -798,6 +810,18 @@ impl fmt::Display for RefError {
                     ConflictKind::CaseVariant => write!(f, "{kind}"),
                 }
             }
+            Self::RemoteConflict { name, with, kind } => {
+                write!(
+                    f,
+                    "the remote reference `{name}` conflicts with `refs/remotes/{}`, which ",
+                    with.escape_debug()
+                )?;
+                match kind {
+                    ConflictKind::Reference => f.write_str("is a remote reference"),
+                    ConflictKind::Directory => f.write_str("is a directory of remote references"),
+                    ConflictKind::CaseVariant => write!(f, "{kind}"),
+                }
+            }
             Self::MissingCommit(id) => write!(f, "the store has no commit {id}"),
             Self::NotACommit { id, found } => {
                 write!(f, "object {id} is a {}, not a commit", found.name())
@@ -939,6 +963,7 @@ impl Error for RefError {
             | Self::StaleTag { .. }
             | Self::StaleHead { .. }
             | Self::Conflict { .. }
+            | Self::RemoteConflict { .. }
             | Self::MissingCommit(_)
             | Self::NotACommit { .. }
             | Self::Locked { .. }
@@ -2414,7 +2439,14 @@ pub(crate) struct RestoreTargets<'a> {
     pub(crate) working_copy: Option<CommitId>,
     /// The branches, each with the commit it takes, or `None` if it does not exist afterwards.
     pub(crate) branches: &'a [(BranchName, Option<CommitId>)],
+    /// The remote references, each with the value it takes, or `None` if it does not exist
+    /// afterwards (ADR-008).
+    pub(crate) remotes: &'a [(RemoteRefName, Option<RemoteRef>)],
 }
+
+/// The move of a remote reference: its name, its value now, and its value after; `None` means
+/// that it does not exist.
+pub(crate) type RemoteMove = (RemoteRefName, Option<RemoteRef>, Option<RemoteRef>);
 
 /// The pointers that a restore moves, each as `(value now, value after)`; for a branch, `None`
 /// means that it does not exist. A pointer that has its target value already is left out.
@@ -2423,11 +2455,15 @@ pub(crate) struct RestoreMoves {
     pub(crate) head: Option<(Head, Head)>,
     pub(crate) working_copy: Option<(CommitId, CommitId)>,
     pub(crate) branches: Vec<(BranchName, Option<CommitId>, Option<CommitId>)>,
+    pub(crate) remotes: Vec<RemoteMove>,
 }
 
 impl RestoreMoves {
     pub(crate) fn is_empty(&self) -> bool {
-        self.head.is_none() && self.working_copy.is_none() && self.branches.is_empty()
+        self.head.is_none()
+            && self.working_copy.is_none()
+            && self.branches.is_empty()
+            && self.remotes.is_empty()
     }
 }
 
@@ -3319,6 +3355,9 @@ impl FsRefStore {
                 empty_directories.extend(current.empty_directory);
             }
         }
+        let (remotes, empty) = self.plan_remote_moves(targets.remotes, objects)?;
+        moves.remotes = remotes;
+        empty_directories.extend(empty);
         Ok((moves, empty_directories))
     }
 
@@ -3552,11 +3591,14 @@ impl FsRefStore {
         }
     }
 
-    /// Makes the moves after the step ran: the branches, the deletions before the creations, then
+    /// Makes the moves after the step ran: the remote references, then the branches, each with the
+    /// deletions before the creations, then
     /// the working-copy commit, then HEAD, one after the other. After a failure, the branches that
     /// did not move are therefore not the end of the list of the moves.
     fn apply_moves<T, E>(&self, done: T, moves: &RestoreMoves) -> Logged<T, E> {
-        let mut steps = self.branch_steps(moves);
+        // The remote references first: no other pointer depends on them.
+        let mut steps = self.remote_steps(&moves.remotes);
+        steps.extend(self.branch_steps(moves));
         if let Some((_, new)) = &moves.working_copy {
             steps.push(Box::new(move || {
                 self.write_working_copy(new).map(|()| true)
@@ -3649,13 +3691,21 @@ impl FsRefStore {
         namespace: RefKind,
         name: &BranchName,
     ) -> Result<bool, RefError> {
-        let path = self.reference_path(namespace, name);
-        match fault::remove_file(&path) {
+        Self::delete_file_below(
+            &self.reference_path(namespace, name),
+            &self.namespace_dir(namespace),
+        )
+    }
+
+    /// Deletes the file of a reference at `path` and the directories above it that this empties,
+    /// up to `heads`, which stays; see [`delete_reference_file`](Self::delete_reference_file).
+    fn delete_file_below(path: &Path, heads: &Path) -> Result<bool, RefError> {
+        let heads = heads.to_path_buf();
+        match fault::remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => return Err(io_error("remove the reference", &path)(error)),
+            Err(error) => return Err(io_error("remove the reference", path)(error)),
         }
-        let heads = self.namespace_dir(namespace);
         let mut changed = path
             .parent()
             .map_or_else(|| heads.clone(), Path::to_path_buf);
@@ -3708,6 +3758,184 @@ impl FsRefStore {
             Err(error) => Logged::MoveFailed(done, error),
         }
     }
+}
+
+// The writer of the remote references (STEMMA-295): a fetch and the restore of a fetch.
+
+/// What stands where a remote reference goes, for [`FsRefStore::plan_remote_moves`].
+struct RemoteCurrent {
+    value: Option<RemoteRef>,
+    in_the_way: Option<(String, ConflictKind)>,
+    empty_directory: Option<PathBuf>,
+}
+
+impl FsRefStore {
+    /// The path of the file of a remote reference.
+    fn remote_path(&self, name: &RemoteRefName) -> PathBuf {
+        let mut path = self
+            .remotes_dir()
+            .join(name.remote.as_str())
+            .join(name.kind.directory());
+        path.extend(name.name.as_str().split('/'));
+        path
+    }
+
+    /// The value of a remote reference, and what stands in the way of writing it if there is
+    /// none. The names are compared exactly, as for a branch.
+    fn remote_current(&self, name: &RemoteRefName) -> Result<RemoteCurrent, RefError> {
+        let mut current = RemoteCurrent {
+            value: None,
+            in_the_way: None,
+            empty_directory: None,
+        };
+        if !self.directories_exist(REMOTES_DIR)? {
+            return Ok(current);
+        }
+        let mut components = vec![name.remote.as_str(), name.kind.directory()];
+        components.extend(name.name.as_str().split('/'));
+        match Self::lookup_below(self.remotes_dir(), &components)? {
+            Lookup::Absent => {}
+            Lookup::EmptyDirectory(path) => current.empty_directory = Some(path),
+            Lookup::Conflict(with, kind) => current.in_the_way = Some((with, kind)),
+            Lookup::Branch(path) => current.value = self.listed(path, &RemoteRef::parse)?,
+        }
+        Ok(current)
+    }
+
+    /// The moves that give the remote references of `targets` their values, each as `(name, value
+    /// now, value after)`, and the empty directories that stand where a reference is written. A
+    /// reference that has its value already is left out. The commit of every new value has to be
+    /// in `objects`. A name that something is in the way of is [`RefError::RemoteConflict`],
+    /// unless the moves delete what is in the way, as when `a` gives way to `a/b`.
+    pub(crate) fn plan_remote_moves(
+        &self,
+        targets: &[(RemoteRefName, Option<RemoteRef>)],
+        objects: &dyn ObjectStore,
+    ) -> Result<(Vec<RemoteMove>, Vec<PathBuf>), RefError> {
+        self.require_root()?;
+        for target in targets.iter().filter_map(|(_, target)| target.as_ref()) {
+            Self::require_commit(&target.commit, objects)?;
+        }
+        let mut currents = Vec::with_capacity(targets.len());
+        for (name, _) in targets {
+            currents.push(self.remote_current(name)?);
+        }
+        // The paths below `refs/remotes` of the references that the moves delete.
+        let deleted: Vec<String> = targets
+            .iter()
+            .zip(&currents)
+            .filter(|((_, target), current)| target.is_none() && current.value.is_some())
+            .map(|((name, _), _)| remote_relative(name))
+            .collect();
+        let mut moves = Vec::new();
+        let mut empty_directories = Vec::new();
+        for ((name, target), current) in targets.iter().zip(currents) {
+            if let Some((with, kind)) = &current.in_the_way {
+                let cleared = match kind {
+                    ConflictKind::Reference => deleted.contains(with),
+                    ConflictKind::Directory => {
+                        let prefix = format!("{with}/");
+                        self.list_remotes()?
+                            .iter()
+                            .map(|(other, _)| remote_relative(other))
+                            .filter(|path| path.starts_with(&prefix))
+                            .all(|path| deleted.contains(&path))
+                    }
+                    ConflictKind::CaseVariant => false,
+                };
+                if target.is_some() && !cleared {
+                    return Err(RefError::RemoteConflict {
+                        name: name.clone(),
+                        with: with.clone(),
+                        kind: *kind,
+                    });
+                }
+            }
+            if current.value != *target {
+                moves.push((name.clone(), current.value, *target));
+                empty_directories.extend(current.empty_directory);
+            }
+        }
+        Ok((moves, empty_directories))
+    }
+
+    /// Gives the remote references of `targets` their values, as a fetch does (ADR-008), and runs
+    /// `step` with the moves after the checks and before the first move, all under the lock of the
+    /// references that the caller holds (`_lock`). The step writes the entry `fetch`. If every
+    /// reference has its value already, the step does not run and the result is
+    /// [`Logged::Unchanged`].
+    ///
+    /// The values now are read under the lock, so the step sees the ones that the moves replace.
+    /// The deletions come before the writes; a failure at the first move is
+    /// [`Logged::MoveFailed`], a failure after one moved is [`Logged::PartlyMoved`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`plan_remote_moves`](Self::plan_remote_moves), and of the removal of
+    /// an empty directory where a reference goes. Once `step` has run, nothing is an error of this
+    /// call; see [`update_branch_after`](Self::update_branch_after).
+    pub(crate) fn move_remotes_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        targets: &[(RemoteRefName, Option<RemoteRef>)],
+        objects: &dyn ObjectStore,
+        step: impl FnOnce(&[RemoteMove]) -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        let (moves, empty_directories) = self.plan_remote_moves(targets, objects)?;
+        if moves.is_empty() {
+            return Ok(Logged::Unchanged);
+        }
+        for empty in &empty_directories {
+            match fault::remove_dir_all(empty) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io_error("remove the empty directory", empty)(error)),
+            }
+        }
+        let done = match step(&moves) {
+            Ok(done) => done,
+            Err(error) => return Ok(Logged::StepFailed(error)),
+        };
+        Ok(Self::run_steps(done, self.remote_steps(&moves)))
+    }
+
+    /// The steps that move the remote references: the deletions before the writes, so that `a`
+    /// can give way to `a/b` and the other way round.
+    fn remote_steps<'s>(&'s self, moves: &'s [RemoteMove]) -> Vec<MoveStep<'s>> {
+        let deletions_first = moves
+            .iter()
+            .filter(|(_, _, target)| target.is_none())
+            .chain(moves.iter().filter(|(_, _, target)| target.is_some()));
+        let mut steps: Vec<MoveStep<'_>> = Vec::new();
+        for (name, _, target) in deletions_first {
+            steps.push(match target {
+                Some(value) => Box::new(move || {
+                    // A deletion before this step may have left a directory without any
+                    // reference where the name goes.
+                    if let Some(empty) = self.remote_current(name)?.empty_directory {
+                        fault::remove_dir_all(&empty)
+                            .map_err(io_error("remove the empty directory", &empty))?;
+                    }
+                    self.write_replacing(
+                        &self.remote_path(name),
+                        &value.encode(),
+                        &self.remotes_dir(),
+                    )
+                    .map(|()| true)
+                }),
+                None => Box::new(move || {
+                    Self::delete_file_below(&self.remote_path(name), &self.remotes_dir())
+                }),
+            });
+        }
+        steps
+    }
+}
+
+/// The path of a remote reference below `refs/remotes`, with `/`, as a lookup names what is in
+/// the way: `<remote>/heads/<name>` or `<remote>/tags/<name>`.
+fn remote_relative(name: &RemoteRefName) -> String {
+    format!("{}/{}/{}", name.remote, name.kind.directory(), name.name)
 }
 
 /// The branch that a new worktree checks out.
@@ -7932,6 +8160,7 @@ mod tests {
             head: None,
             working_copy: None,
             branches: &branches,
+            remotes: &[],
         };
         let outcome = refs
             .restore_after(&writer(refs), &targets, objects, |_| Ok::<_, &str>(()))
@@ -7995,6 +8224,7 @@ mod tests {
             head: None,
             working_copy: None,
             branches: &branches,
+            remotes: &[],
         };
         let error = refs
             .restore_after(&writer(&refs), &targets, &objects, |_| Ok::<_, &str>(()))
@@ -8026,6 +8256,7 @@ mod tests {
             head: None,
             working_copy: None,
             branches: &branches,
+            remotes: &[],
         };
         let error = refs
             .restore_after(&writer(&refs), &targets, &objects, |_| Ok::<_, &str>(()))
