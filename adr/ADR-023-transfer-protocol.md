@@ -4,8 +4,9 @@
 for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-56, STEMMA-273,
 STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
-"The first number is 1"); nothing else of it is implemented yet. The numbers under "Basis" give a
-direction, not a threshold.
+"The first number is 1"), and the receiving side of an object stream exists in
+`stemma_core::receive` (STEMMA-289, see "The receiving side"); nothing else of it is implemented
+yet. The numbers under "Basis" give a direction, not a threshold.
 
 ## Context
 
@@ -124,7 +125,7 @@ its remote references, and only then does the hub call the accepting operation.
 - An object that the walk does not reach stays in the store unnamed and is no error (ADR-007,
   ADR-011).
 - The receiver sets upper bounds for the size of an object and of a request and refuses with a
-  typed error. The values come from the slice.
+  typed error. The values are named under "The receiving side".
 - The connectivity check does not presuppose that every object comes from the sender: a commit
   whose trees lie in the store already is accepted (ADR-015).
 
@@ -152,6 +153,64 @@ Known limit: a single commit that is larger than a connection carries cannot be 
 
 Rejected: discard and start again, keep without resumption, and a response cut into pieces of a
 bounded size (thousands of requests in a row for a large clone).
+
+### The receiving side
+
+The receiving side is built (STEMMA-289) in `stemma_core::receive`: `Repository::receive_objects`
+for the upload on a hub, `Repository::check_connectivity` for the check of a ref update, and
+`Repository::begin_fetch` with the type `Fetch` for the client.
+
+- **The bounds.** The body of an object has at most 1 GiB (`MAX_OBJECT_LEN`), because the store
+  holds an object in memory (ADR-007), and a stream has at most 16 GiB (`MAX_REQUEST_LEN`),
+  because a clone is one stream and a history has up to a few gigabytes (ADR-015). Both are the
+  defaults of `Bounds`, and a caller, such as a hub with a quota, names smaller ones. They count
+  the bytes that the messages carry, after the compression of the transport is taken off, so a
+  small compressed body cannot pass a long stream. A longer object is refused before its body is
+  read (`StreamError::TooLarge`) and a longer stream at the bound
+  (`ReceiveError::RequestTooLarge`). What arrived whole before the refusal stays in the store
+  unnamed.
+- **The walk.** The own references are the branches, the tags and the remote references. A commit
+  that one of them reaches is complete and is not read; the history below the references is read
+  only as far as it takes to learn whether a reference reaches a commit. For every other commit
+  the walk reads the commit, then its parents, then its trees, and descends only into an entry
+  that no tree of a parent has with the same ID at the same path. A parent or a tree of a parent
+  that cannot be read prunes nothing. Of a blob the walk reads the header of the file and not
+  the body: a blob has no strict reader, an object of a stream was hashed on arrival, and a body
+  that no longer matches its ID is the matter of a full read, as in the scan of a purge
+  (ADR-014).
+- **Durable in batches.** The objects of a stream are written to temporary files. At a commit of
+  the stream, once 1024 objects or 64 MiB have gathered, and at the end of the stream they are
+  flushed and moved into place as one batch of the store (ADR-007). A fetch checks the commits
+  of a batch only after that. When the stream is cut off, the same is done for everything that
+  was read whole before the error is reported.
+- **No lock, and a directory of its own in `tmp/`.** A receiving operation names no object and
+  holds no lock of the references. Its temporary files lie in
+  `tmp/receive-<pid>-<n>-<random>/`, which the writer that takes the lock leaves, because it
+  removes files and not directories (ADR-011). The operation holds a lock of the system on the
+  file `guard` in that directory while it runs and removes the directory at its end. A directory
+  whose guard is free was left by a process that ended: every receiving operation removes such
+  directories at its start, and `Repository::remove_receive_leftovers` does it on request, for a
+  hub that starts. The lock decides and not an age, as for `refs.lock` (ADR-008). On a file
+  system without locks of files the directory is used without one, and a cleanup that cannot
+  lock a guard leaves the directory.
+- **The journal `fetch-pending`.** The file lies in the metadata directory (ADR-009) and has the
+  first line `stemma-fetch 1` and one line `commit <id>` per commit that arrived completely, in
+  the order of arrival. A fetch holds a lock of the system on it, so a second fetch in the same
+  repository is refused while the first runs. A line is written, and the file flushed, only
+  after the objects of the commit are durable and the commit passed the check. The journal is a
+  hint and no proof: the next fetch checks every recorded commit again and sends as `have` those
+  that still hold and that no other of them has as a parent. A recorded commit that lost an
+  object since, as after a purge, is fetched again. A last line without a line feed is left by
+  a process that ended while it wrote and is cut off when the journal is opened; any other
+  content that no fetch writes is refused with its line. The journal is removed after the
+  remote references have moved.
+- **`have`.** A fetch sends the commits of its branches, its tags and its remote references, and
+  the commits of the journal. The tags are sent besides what "A fetch is the list of references
+  and one round" names, because the walk takes them as complete too.
+
+Known limit: a process that is killed loses the objects of the batch that was not yet flushed,
+at most 1024 objects or 64 MiB and the commit that follows them; they arrive again with the next
+fetch.
 
 ### One number covers every message
 
@@ -398,8 +457,12 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       and the count of repetitions of a merge because of `Stale` (ADR-015, ADR-025). Its numbers
       give the thresholds of the pack triggers.
 - [ ] The level and the window of the compression, the bound that a receiver names for the window
-      and how the sender learns it, the media types, and the bounds for the size of an object and
-      of a request. Left to the slices.
+      and how the sender learns it, and the media types. Left to the slices.
+- [x] The bounds for the size of an object and of a request: 1 GiB and 16 GiB as the defaults of
+      the receiver (STEMMA-289), see "The receiving side".
+- [ ] The kind of the error message for a bound that was exceeded (see "Error"). The receiver
+      refuses with a typed error of the core; the message on the wire comes with the slice that
+      carries an upload over a transport, and until then `StreamError::answer` has none for it.
 - [ ] Whether `push` reads the references first to report a stale state early. It belongs to the
       command surface.
 - [ ] The list of references carries the former keys without the signature of the current key

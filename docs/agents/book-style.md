@@ -177,7 +177,7 @@ this table and to `GLOSSARY.md` (the English domain glossary) in the same pull r
 | Restore | Wiederherstellung | `op restore` and its entry (ADR-013) |
 | Purge | Bereinigung | Removing a blob from history and log (ADR-014) |
 | Stub | | An entry whose operation and IDs a purge removed (ADR-014) |
-| Journal | | The record of a purge in progress (ADR-014); not the Operation Log |
+| Journal | | The record of a purge in progress (ADR-014) or of a fetch in progress (ADR-023); not the Operation Log |
 | Wurzel | | A commit from which the plan of a purge starts (working-copy commit, branch, HEAD, log) |
 | Memo | | The hash table of rewritten trees and commits in the plan of a purge |
 | Undo, Redo | | Only the two directions of the journal of a purge; never for `op restore` |

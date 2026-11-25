@@ -5,7 +5,8 @@ confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1
 Pack files, streaming, and the cheaper flush move to a later phase; garbage collection comes with
 the retention of snapshot entries in a later phase (ADR-011). For a bare repository on a hub,
 phase 5 decides the removal of unreachable objects and a directory of its own for an upload
-(STEMMA-270, STEMMA-272; see "Open", not implemented yet). The flush of directories on Windows
+(STEMMA-270, STEMMA-272; see "Open"). The directory is implemented (STEMMA-289); the removal is
+not yet. The flush of directories on Windows
 was decided on 2026-10-24 (STEMMA-84), and the replacement of a damaged object on 2026-10-30
 (STEMMA-85); the other guarantees on Windows stay open.
 
@@ -134,7 +135,9 @@ server will later keep objects elsewhere (API-first). The implementation is
   harmless until the next writer that takes the lock of the references removes them (ADR-011,
   STEMMA-31). An object is written under that lock by every command, so no file of a write in
   progress is removed; a caller of the library that stores objects through
-  `Repository::objects()` without the lock is not protected (ADR-011). On Windows the read-only
+  `Repository::objects()` without the lock is not protected (ADR-011). The receiving side of an
+  object stream writes without the lock and is protected by a directory of its own in `tmp/`
+  (see "Open"). On Windows the read-only
   flag of an object file is cleared before the removal.
 - Writing holds the body and a copy with the header in memory, and reading holds the file once.
   A very large file has to fit in memory.
@@ -170,12 +173,16 @@ server will later keep objects elsewhere (API-first). The implementation is
       serves the age of files only and occurs in no repository. The operation
       treats objects that a computation stored like every unnamed object (ADR-025).
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
-      them (ADR-011, STEMMA-31). An upload on a hub runs without the lock, so it writes its
-      temporary files into a subdirectory of its own in `tmp/`: the writer that takes the lock
-      empties `tmp/` of files and leaves directories. The upload removes the subdirectory at its
-      end, and what a crashed upload left is removed at the start of the hub. This amends the
-      rule for the receiving operation, as ADR-019 did for the gate; the exact form belongs to
-      the slice (STEMMA-272, not implemented yet).
+      them (ADR-011, STEMMA-31). A receiving operation, which is the upload on a hub and the
+      receiving side of a fetch, runs without the lock, so it writes its temporary files into a
+      subdirectory of its own, `tmp/receive-<pid>-<n>-<random>/`: the writer that takes the lock
+      empties `tmp/` of files and leaves directories. The operation holds a lock of the system
+      on the file `guard` in the subdirectory while it runs and removes the subdirectory at its
+      end. A subdirectory whose guard is free was left by a process that ended; the next
+      receiving operation removes it, and a hub can ask for the same at its start
+      (`Repository::remove_receive_leftovers`). This amends the rule for the receiving
+      operation, as ADR-019 did for the gate (decided in STEMMA-272, implemented in STEMMA-289;
+      the form is in ADR-023, "The receiving side").
 - [ ] A cheaper flush of each file of a batch: an ordinary `fsync` per file and one full flush
       of the device at the end, as Git does in its batch mode. On macOS this would remove most
       of the remaining cost of the first `track`; it needs `fcntl` through `libc` and `unsafe`

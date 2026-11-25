@@ -17,9 +17,11 @@
 //! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
 //! ├── leases/         one file per branch with a lease, made by the first one (ADR-004)
 //! ├── purge-pending   the journal of a purge, only while it runs or after it stopped (ADR-014)
+//! ├── fetch-pending   the journal of a fetch, only while it runs or after it stopped (ADR-023)
 //! ├── worktrees/      one state directory for each linked worktree (ADR-009)
 //! │   └── <name>/     its own `HEAD` and `working-copy`, and `location`, the path of the worktree
 //! └── tmp/            temporary files of the object store, the references, and the log
+//!     └── receive-…/  those of one receiving operation, which holds no lock (ADR-023)
 //! ```
 //!
 //! The directory of a linked worktree holds a file `.stemma` instead of a directory. The file
@@ -36,10 +38,11 @@
 //! ├── refs/heads/     branches (ADR-008)
 //! ├── refs/tags/      tags, made by the first tag (ADR-008)
 //! └── tmp/            temporary files of the object store and the references
+//!     └── receive-…/  those of one upload, which holds no lock (ADR-023)
 //! ```
 //!
 //! It has no `HEAD`, no `working-copy`, no `oplog/` and `oplog-tip`, no `leases/`, no
-//! `worktrees/`, and no `purge-pending`. An operation that needs one of them is refused with
+//! `worktrees/`, no `purge-pending`, and no `fetch-pending`. An operation that needs one of them is refused with
 //! [`RefError::Bare`] before it reads or writes anything.
 
 use std::error::Error;
@@ -891,7 +894,10 @@ impl Repository {
     ///
     /// On a bare repository these work: the object store ([`objects`](Self::objects)), reading
     /// the branches and the tags ([`refs`](Self::refs)), [`verify_refs`](Self::verify_refs),
-    /// [`policy_of`](Self::policy_of), and [`level_of_change`](Self::level_of_change), besides
+    /// [`policy_of`](Self::policy_of), [`level_of_change`](Self::level_of_change), the upload
+    /// of objects ([`receive_objects`](Self::receive_objects)) with the cleanup of what it
+    /// leaves ([`remove_receive_leftovers`](Self::remove_receive_leftovers)), and the
+    /// connectivity check ([`check_connectivity`](Self::check_connectivity)), besides
     /// the functions of the crate that take an object store, such as the tree merge
     /// ([`crate::merge`]), the register of a commit
     /// ([`Register::at_commit`](crate::register::Register::at_commit)), and the verification of

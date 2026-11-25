@@ -3,8 +3,8 @@
 //! the operation log (ADR-011), the exclusion file `.stemmaignore` (ADR-012), the best common
 //! ancestors of two commits ([`merge_base`]), conflicts as sums of trees ([`conflict`]), the merge
 //! of trees ([`merge`]), the SSHSIG signatures of proofs ([`signature`], ADR-020), the messages
-//! between a clone and a hub ([`protocol`], ADR-023), and the trait that carries them
-//! ([`transport`], ADR-022).
+//! between a clone and a hub ([`protocol`], ADR-023), the trait that carries them
+//! ([`transport`], ADR-022), and the receiving side of an object stream ([`receive`], ADR-023).
 //!
 //! # Errors
 //!
@@ -65,6 +65,7 @@ pub mod policy;
 mod properties;
 pub mod protocol;
 pub mod pull;
+pub mod receive;
 pub mod refs;
 pub mod register;
 pub mod remote;

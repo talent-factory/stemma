@@ -25,8 +25,9 @@ Operationen des Kerns wie lokal (ADR-025).
 
 Die Phase hat begonnen: Die Fragen des Entwurfs sind entschieden und in den ADRs festgehalten,
 umgesetzt sind erst die ersten Nachrichten des Protokolls, das Bare-Repository,
-die Schnittstelle für den Transport
-und die Remotes im Layout des Klons mit ihren Remote-Referenzen.
+die Schnittstelle für den Transport,
+die Remotes im Layout des Klons mit ihren Remote-Referenzen
+und die empfangende Seite des Objektstroms.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -90,6 +91,7 @@ darin, sodass die Suche der Befehlszeile es nie findet:
     refs/heads/   Branches (ADR-008)
     refs/tags/    Tags, mit dem ersten Tag angelegt (noch von keiner Operation)
     tmp/          temporäre Dateien der beiden Speicher
+      receive-…/  die eines Uploads, der keine Sperre hält (ADR-023)
 \stoptyping
 
 Es fehlen \type{HEAD}, der Working-Copy-Commit, das Operation Log, die Leases und die
@@ -199,7 +201,10 @@ Klon holt zuerst den neuen Stand.
 
 Beide Seiten prüfen, der Klon beim Fetch und der Hub beim Push.
 Der Empfänger wiederholt den Lauf des Senders: von den neuen Spitzen abwärts bis zu Commits, die
-von seinen eigenen Referenzen aus erreichbar sind.
+von seinen eigenen Referenzen aus erreichbar sind, also von einem Branch, einem Tag oder einer
+Remote-Referenz.
+Die Trees eines Commits vergleicht er mit denen seiner Eltern und steigt nur in das ab, was am
+selben Pfad anders ist.
 Jedes Objekt auf diesem Weg muss vorhanden sein, die richtige Art haben und vom strengen Leser
 gelesen werden (\in{Abschnitt}[sec:strict-readers]).
 Der Rahmen eines Objekts im Strom trägt keine ID.
@@ -207,10 +212,42 @@ Der Empfänger berechnet sie selbst; ein beschädigtes Objekt ist deshalb ein an
 der Lauf meldet das erwartete als fehlend.
 Ein Objekt, das der Lauf nicht erreicht, bleibt unbenannt im Speicher und ist kein Fehler.
 
+Der Lauf fragt nicht, woher ein Objekt stammt.
+Er liest auch Objekte, die schon vor der Übertragung im Speicher lagen, denn sie können von
+einer abgebrochenen Übertragung übrig sein.
+Umgekehrt besteht ein Commit, dessen Trees und Blobs der Empfänger auf anderem Weg schon hat,
+auch wenn der Strom nur den Commit selbst bringt.
+Die Kosten folgen dem Unterschied zum Stand der Eltern.
+Der Lauf liest die neuen Commits und Trees und von jedem neuen Blob nur den Kopf der Datei,
+also $O(n)$ Objekte für $n$ neue, dazu die Trees der Eltern an den geänderten Pfaden.
+Den Verlauf unter den eigenen Referenzen liest er nur so weit, bis er weiss, ob eine Referenz
+einen Commit erreicht; für einen Commit, auf den eine Referenz zeigt, kostet das nichts.
+
 Die Invariante dahinter: Eine Referenz zeigt nur auf einen Commit, dessen ganzer Verlauf im
 Speicher liegt und lesbar ist.
 Sie hält, weil die Referenz sich erst nach dem Lauf bewegt, und sie ist die Voraussetzung dafür,
 dass eine einzige Runde mit \type{want} und \type{have} genügt.
+
+\startinfobox
+{\bf Grenzfälle beim Empfang.}
+\startitemize
+\item Der Empfänger setzt zwei Obergrenzen: 1 GiB für den Inhalt eines Objekts und 16 GiB für
+einen Strom, gezählt ohne die Kompression des Transports; wer den Empfang aufruft, kann andere
+Werte nennen.
+Ein grösseres Objekt lehnt er ab, bevor er dessen Inhalt liest, einen längeren Strom an der
+Grenze, beides mit einem eigenen Fehler (ADR-023).
+\item Was vor der Ablehnung oder vor einem Abbruch ganz ankam, bleibt unbenannt im Speicher.
+\item Der Empfang hält die Sperre der Referenzen nicht.
+Seine temporären Dateien liegen deshalb in einem eigenen Verzeichnis
+\type{tmp/receive-…/}, denn der Schreiber, der die Sperre nimmt, entfernt in \type{tmp/} jede
+Datei und lässt Verzeichnisse stehen (\in{Abschnitt}[sec:oplog-tip]).
+\item Solange der Empfang läuft, hält er eine Sperre des Betriebssystems auf der Datei
+\type{guard} in diesem Verzeichnis, und am Ende entfernt er es.
+Ein Verzeichnis, dessen \type{guard} frei ist, stammt von einem Prozess, der endete; der nächste
+Empfang entfernt es, und ein Hub kann das beim Start selbst anstossen.
+Ein laufender Empfang verliert so nie eine Datei.
+\stopitemize
+\stopinfobox
 
 \subsection{Unterbrochene Übertragung}
 
@@ -223,6 +260,37 @@ Nach einem Abbruch sendet er dieselbe Anfrage mit diesen Commits als weitere \ty
 Die Wiederaufnahme ist ein gewöhnlicher Fetch, und der Hub hält keinen Zustand.
 Eine Grenze bleibt: Ein einzelner Commit, der grösser ist, als eine Verbindung trägt, lässt sich
 nicht wiederaufnehmen.
+
+Festgehalten werden die Commits im Journal des Fetch, der Datei \type{.stemma/fetch-pending}:
+
+\starttyping
+stemma-fetch 1
+commit <ID>          null oder mehr, in der Reihenfolge der Ankunft
+\stoptyping
+
+\startitemize[n]
+\item Der Fetch öffnet das Journal und hält eine Sperre des Betriebssystems darauf; ein zweiter
+Fetch im selben Repository lehnt ab, solange der erste läuft.
+\item Er sammelt die Objekte des Stroms in temporären Dateien.
+An einem Commit, sobald 1024 Objekte oder 64 MiB beisammen sind, und am Ende des Stroms sichert er
+sie und verschiebt sie an ihren Platz.
+\item Erst danach prüft er die Commits dieser Gruppe und schreibt für jeden vollständigen eine
+Zeile ins Journal, das er sichert.
+\item Bricht der Strom ab, tut er dasselbe für alles, was ganz ankam, und meldet dann den Fehler.
+\item Hat er die verlangten Commits geprüft und die Remote-Referenzen bewegt, entfernt er das
+Journal.
+\stopitemize
+
+Eine Zeile des Journals nennt also nur einen Commit, dessen Objekte dauerhaft gespeichert sind.
+Ein Absturz kostet höchstens die Objekte der letzten Gruppe, die noch nicht gesichert war.
+Das Journal ist dabei ein Hinweis und kein Beweis: Der nächste Fetch prüft jeden festgehaltenen
+Commit noch einmal und sendet nur, was noch besteht, etwa nicht mehr nach einem Purge, der ein
+Objekt entfernt hat.
+Von den bestehenden sendet er jene, die kein anderer von ihnen als Elter hat, denn ein
+\type{have} sagt, dass alles darunter vorhanden ist.
+Eine letzte Zeile ohne Zeilenende stammt von einem Prozess, der beim Schreiben endete; sie wird
+beim Öffnen abgeschnitten.
+Jedes andere Journal, das kein Fetch so schreibt, lehnt der Leser mit der Nummer der Zeile ab.
 
 \subsection{Nachrichten und Anfragen}
 

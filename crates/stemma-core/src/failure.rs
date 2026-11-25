@@ -355,6 +355,45 @@ impl Classify for HistoryError {
     }
 }
 
+impl Classify for crate::receive::ConnectivityError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // What a sender delivered does not hold together. The repository is as it was, and
+            // a second transfer can succeed.
+            Self::Missing { .. } | Self::WrongKind { .. } | Self::Unreadable { .. } => {
+                FailureKind::Other
+            }
+            Self::Store(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
+            Self::Own(error) => error.kind(),
+        }
+    }
+}
+
+impl Classify for crate::receive::FetchJournalError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Malformed { .. } => FailureKind::Damaged,
+            // Another fetch holds the journal, and a later call can succeed.
+            Self::Running { .. } => FailureKind::Locked,
+            Self::Io { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for crate::receive::ReceiveError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            // The stream or its carrier, not the repository.
+            Self::Stream(_) | Self::RequestTooLarge { .. } => FailureKind::Other,
+            Self::Store(error) => error.kind(),
+            Self::Connectivity(error) => error.kind(),
+            Self::Journal(error) => error.kind(),
+            Self::Refs(error) => error.kind(),
+        }
+    }
+}
+
 impl Classify for CheckoutError {
     fn kind(&self) -> FailureKind {
         match self {

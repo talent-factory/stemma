@@ -794,7 +794,7 @@ impl FsObjectStore {
                 return Ok(id);
             }
         }
-        let (file, temp) = self.write_temp(kind, body)?;
+        let (file, temp) = self.write_temp(&self.root.join("tmp"), kind, body)?;
         let fan_out = self.place(&id, file, temp)?;
         sync_directory(&fan_out)?;
         self.sync_ancestors(&fan_out)?;
@@ -811,10 +811,20 @@ impl FsObjectStore {
             .try_for_each(|dir| sync_directory(&dir))
     }
 
-    /// Starts a [`Batch`]: objects that are flushed together when it is finished.
+    /// Starts a [`Batch`]: objects that are flushed together when it is finished. Its temporary
+    /// files lie in `tmp/`, so the caller holds the lock of the references.
     pub(crate) fn batch(&self) -> Batch<'_> {
+        self.batch_in(self.root.join("tmp"))
+    }
+
+    /// Starts a [`Batch`] whose temporary files lie in `scratch`, a directory below `tmp/` that
+    /// belongs to the caller alone. The cleanup of `tmp/` removes files and leaves directories
+    /// (ADR-011), so such a batch runs without the lock of the references: the receiving side of
+    /// an object stream uses it (ADR-023, [`crate::receive`]).
+    pub(crate) fn batch_in(&self, scratch: PathBuf) -> Batch<'_> {
         Batch {
             store: self,
+            scratch,
             pending: RefCell::new(HashMap::new()),
             present: RefCell::new(BTreeSet::new()),
         }
@@ -836,12 +846,17 @@ impl FsObjectStore {
         }
     }
 
-    /// Writes the file of an object (header and body) to a new temporary file below
-    /// `<root>/tmp/`, without a flush. The file is removed when the guard is dropped.
-    fn write_temp(&self, kind: Kind, body: &[u8]) -> Result<(File, TempFile), StoreError> {
-        let temp_dir = self.root.join("tmp");
-        create_dirs_synced(&self.root, &temp_dir)?;
-        let (mut file, temp) = create_temp(&temp_dir, &mut unique_temp_name)?;
+    /// Writes the file of an object (header and body) to a new temporary file in `temp_dir`,
+    /// which is `<root>/tmp/` or a directory below it, without a flush. The file is removed when
+    /// the guard is dropped.
+    fn write_temp(
+        &self,
+        temp_dir: &Path,
+        kind: Kind,
+        body: &[u8],
+    ) -> Result<(File, TempFile), StoreError> {
+        create_dirs_synced(&self.root, temp_dir)?;
+        let (mut file, temp) = create_temp(temp_dir, &mut unique_temp_name)?;
         file.write_all(kind.header(body.len()).as_bytes())
             .and_then(|()| file.write_all(body))
             .map_err(io_error("write the temporary file", &temp.path))?;
@@ -1044,9 +1059,15 @@ impl ObjectStore for FsObjectStore {
 /// The caller holds the lock of the references, as every writer of `tmp/` does, so that the
 /// cleanup of `tmp/` cannot remove a file of the batch. A purge takes the same lock before it
 /// removes an object (ADR-014), so no object that the batch found can be removed before `finish`.
+/// The one writer without the lock is the receiving side of an object stream: its batch
+/// ([`FsObjectStore::batch_in`]) writes into a directory of its own below `tmp/`, which the
+/// cleanup leaves, and names no object, so an object that a purge removes under it is one that
+/// its connectivity check reports as missing (ADR-023).
 #[must_use = "the objects of a batch are not durable until `finish` succeeds"]
 pub(crate) struct Batch<'a> {
     store: &'a FsObjectStore,
+    /// The directory of the temporary files: `tmp/`, or a directory of the caller below it.
+    scratch: PathBuf,
     /// The temporary file of each object that is not in place yet.
     pending: RefCell<HashMap<ObjectId, TempFile>>,
     /// The directories of the objects that the store had already, to be flushed by `finish`.
@@ -1070,7 +1091,7 @@ impl Batch<'_> {
                 .insert(self.store.fan_out_path(&id)?);
             return Ok(id);
         }
-        let (file, temp) = self.store.write_temp(kind, body)?;
+        let (file, temp) = self.store.write_temp(&self.scratch, kind, body)?;
         drop(file);
         self.pending.borrow_mut().insert(id, temp);
         Ok(id)
@@ -1326,7 +1347,7 @@ pub(crate) fn is_checkout_temp_name(name: &str) -> bool {
 
 /// Whether `name` is `prefix` followed by a name of [`unique_temp_name`]: a decimal process ID, a
 /// decimal counter, and 16 lowercase hexadecimal digits, separated by `-`.
-fn is_scratch_name(name: &str, prefix: &str) -> bool {
+pub(crate) fn is_scratch_name(name: &str, prefix: &str) -> bool {
     let decimal = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
     let Some(rest) = name.strip_prefix(prefix) else {
         return false;
