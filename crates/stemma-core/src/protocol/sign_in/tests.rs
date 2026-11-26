@@ -423,6 +423,7 @@ fn other_kinds() -> Vec<PayloadKind> {
         | PayloadKind::PullClosing
         | PayloadKind::OwnerOverride
         | PayloadKind::Challenge
+        | PayloadKind::FormerKeys
         | PayloadKind::HeldStatement => kind,
     };
     vec![
@@ -436,6 +437,7 @@ fn other_kinds() -> Vec<PayloadKind> {
         known(PayloadKind::CheckResult),
         known(PayloadKind::PullClosing),
         known(PayloadKind::OwnerOverride),
+        known(PayloadKind::FormerKeys),
         known(PayloadKind::HeldStatement),
     ]
 }

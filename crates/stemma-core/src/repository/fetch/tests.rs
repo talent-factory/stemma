@@ -52,7 +52,9 @@ fn record(byte: u8) -> RecordHash {
 /// The keys of a hub without a former key, leaked so that the facts can borrow them.
 fn keys() -> &'static HubKeys {
     let key = PublicKey::from_openssh(KEY).unwrap();
-    Box::leak(Box::new(HubKeys::try_new(key, Vec::new()).unwrap()))
+    Box::leak(Box::new(
+        HubKeys::try_new(key, crate::protocol::FormerKeys::none()).unwrap(),
+    ))
 }
 
 /// A hub: a bare repository, and the record entry that its list names for every reference.
@@ -213,7 +215,7 @@ fn a_clone_holds_every_reference_of_the_hub_as_a_remote_reference() {
     repository.check_connectivity(&main).unwrap();
     assert_eq!(
         fs::read_to_string(repository.metadata_dir().join("format")).unwrap(),
-        "stemma-repository 17\n"
+        "stemma-repository 18\n"
     );
 }
 

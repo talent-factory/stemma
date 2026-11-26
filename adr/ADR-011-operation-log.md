@@ -637,6 +637,17 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     stub keeps, so `op verify` checks it for the stub of any other entry (STEMMA-256; before, a
     stub of any entry passed). The stub says which of the two it is: encoding 4 above.
 
+- **The entry `remote-pin`** *(confirmed; STEMMA-297)*. A human who pins the key of a hub again
+  (ADR-026) writes an entry with the lines `operation remote-pin`, `remote <name>`,
+  `old <key>` (or `old -` for a configuration that held no key) and `new <key>`, the keys in
+  the OpenSSH form without a comment. The entry is written under the lock of the references
+  before the configuration of the remote is replaced, as every entry comes before its move. It
+  names no commit, so no purge lists it, and a restore refuses it, as it moved no pointer. It is
+  always in the chain and keeps the encoding `stemma-oplog 3`. An older program would read it as
+  a change without a pointer, which is damage, so the repository format rises to 18 with it
+  (ADR-009). The same key as the pinned one writes no entry. Only a human pins, so the reader
+  refuses an entry whose actor is an agent, as the writer does.
+
 - **The entries that name a signed statement** *(decided in STEMMA-273; implemented in
   STEMMA-290)*. The evidence about a pull request is signed statements (ADR-025): its opening,
   an approval, the result of a check, and its closing. The log keeps recording what the clone

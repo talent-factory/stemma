@@ -2629,8 +2629,25 @@ Ein Purge ersetzt ihn durch einen Stub, wenn er einen der beiden Commits umschre
     commit b3:1d71...  base b3:4feb...  result pass
 \stoptyping
 
+{\bf Schlüssel des Hubs.} Der Eintrag, mit dem ein Mensch den Schlüssel des Hubs eines Remote neu
+festhält (ADR-011, ADR-026), zeigt die Operation \type{remote-pin} und in der zweiten Zeile den
+Remote, den Fingerabdruck des bisherigen Schlüssels (\type{old}, \type{-}, wenn die
+Konfiguration keinen hielt) und den des neuen (\type{new}).
+Er nennt keinen Zeiger und keinen Commit; sein Ausgang ist weder \type{!} noch \type{?}, ein
+Purge nennt ihn nie, und \type{op restore} lehnt ihn ab.
+
+\starttyping
+4  2023-11-14T22:13:20Z  human daniel  remote-pin
+    remote origin  old SHA256:bypXheKaWn8w...  new SHA256:B8JSQsDUxln2...
+\stoptyping
+
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
-\type{change}, \type{stub}, \type{purge}, \type{lease}, \type{pull} oder \type{check}.
+\type{change}, \type{stub}, \type{purge}, \type{lease}, \type{pull}, \type{check} oder
+\type{remote-pin}.
+Ein Eintrag \type{remote-pin} hat dazu \type{time}, \type{actor}, \type{operation},
+\type{remote}, \type{old} (der bisherige Schlüssel in der Form von OpenSSH, \type{null}, wenn
+es keinen gab) und \type{new}; der Wert \type{remote-pin} von \type{kind} kam ohne neues
+\type{schema} dazu.
 Ein Eintrag der Prüfung hat dazu \type{time}, \type{actor}, \type{operation}, \type{commit},
 \type{base} (\type{null} für einen Lauf ohne Basis) und \type{result}.
 Ein Eintrag des Pull Requests hat dazu \type{time}, \type{actor}, \type{operation},

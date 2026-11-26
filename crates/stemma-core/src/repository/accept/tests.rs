@@ -263,7 +263,13 @@ impl OtherSide for Hub {
                 Reference::new(name, commit, entry)
             })
             .collect();
-        Ok(RefList::try_new(repository_id(), hub_key().public(), Vec::new(), references).unwrap())
+        Ok(RefList::try_new(
+            repository_id(),
+            hub_key().public(),
+            crate::protocol::FormerKeys::none(),
+            references,
+        )
+        .unwrap())
     }
 
     fn fetch(&self, _request: &FetchRequest, _stream: &mut dyn Write) -> Result<(), Refusal> {
@@ -416,7 +422,11 @@ fn the_first_push_sets_main_by_the_register_that_it_brings() {
         (Some(receipt.hash()), Some(root))
     );
     // A reader of the record finds the actor in the register that the entry names.
-    let keys = crate::protocol::record::HubKeys::try_new(hub_key().public(), Vec::new()).unwrap();
+    let keys = crate::protocol::record::HubKeys::try_new(
+        hub_key().public(),
+        crate::protocol::FormerKeys::none(),
+    )
+    .unwrap();
     let unchecked = Chain::new(repository_id())
         .verify(
             &wire.side().entries(),

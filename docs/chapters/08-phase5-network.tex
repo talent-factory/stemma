@@ -32,8 +32,9 @@ die antwortende Seite eines Fetch,
 Fetch und Klon im Kern,
 die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
-die signierten Erklärungen mit ihrer Menge im Klon
-und die annehmende Operation für Branches, Tags und eingereichte Erklärungen.
+die signierten Erklärungen mit ihrer Menge im Klon,
+die annehmende Operation für Branches, Tags und eingereichte Erklärungen
+und das Festhalten des Schlüssels des Hubs im Klon.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -92,7 +93,7 @@ darin, sodass die Suche der Befehlszeile es nie findet:
 
 \starttyping
 <verzeichnis>/
-    format        stemma-repository 17
+    format        stemma-repository 18
     bare          stemma-bare (die Markierung eines Bare-Repositorys)
     objects/      Objekte (ADR-007)
     refs/heads/   Branches (ADR-008)
@@ -437,6 +438,9 @@ ref heads/main b3:94e11db2... b3:a1a1a1a1...
 
 Eine Zeile \type{ref} nennt den Namen der Referenz, ihren Commit und den Hash ihres letzten
 Eintrags der Aufzeichnung (\in{Abschnitt}[sec:ref-update]).
+Hat der Hub seinen Schlüssel gewechselt, stehen vor den Referenzen seine früheren Schlüssel als
+Zeilen \type{former} und danach die Signatur des aktuellen Schlüssels über sie
+(\in{Abschnitt}[sec:hub-key-pin]).
 Die Fetch-Anfrage besteht aus Zeilen \type{want <Commit>} und danach \type{have <Commit>}.
 Im Objektstrom folgt auf die erste Zeile je Objekt der Kopf, den es auch im Objektspeicher hat
 (Art, Länge und ein NUL-Byte), und sein Rumpf.
@@ -1206,7 +1210,8 @@ Er signiert damit nur seine eigenen Aussagen: jeden Eintrag der Aufzeichnung, se
 einer Erklärung und die Bestätigung eines Ankers.
 Für einen Akteur spricht dieser Schlüssel nie.
 Ein Klon hält den Schlüssel beim ersten Kontakt in der Konfiguration des Remote fest und zeigt den
-Fingerabdruck; ein anderer Schlüssel ist später ein Fehler, den ein Mensch auflöst.
+Fingerabdruck; ein anderer Schlüssel ist später ein Fehler, den ein Mensch auflöst
+(\in{Abschnitt}[sec:hub-key-pin]).
 Quittung und Bestätigung sind damit Beweise, die ein Klon prüft, ohne dem Transport zu vertrauen.
 Zwei signierte Einträge mit derselben Nummer und verschiedenen Hashes beweisen einen Hub, der
 seine Aufzeichnung umschreibt.
@@ -1234,6 +1239,70 @@ der Hub als solchen fest, mit der Signatur des Akteurs als Beleg.
 Er bestätigt ihn nicht und blockiert nichts.
 Alle Leser des Repositorys sehen ihn; was daraus folgt, entscheiden Menschen.
 Ein wiederhergestelltes Backup hält so keinen Akteur auf, dessen Beweise gültig sind.
+
+\subsection[sec:hub-key-pin]{Den Schlüssel des Hubs festhalten}
+
+Ein Klon vertraut dem Hub nur so weit, wie er dessen Schlüssel kennt.
+Er hält ihn deshalb beim ersten Kontakt fest und vergleicht danach jede Liste der Referenzen mit
+ihm.
+Wechselt der Hub den Schlüssel, folgt der Klon nicht von selbst: Ein Mensch prüft den neuen
+Fingerabdruck über einen zweiten Kanal und hält ihn neu fest.
+
+\startitemize[n]
+\item Beim ersten Kontakt, mit \type{remote add} oder \type{clone}, liest der Klon die Liste der
+Referenzen und schreibt deren Schlüssel in die Zeile \type{hub-key} der Konfiguration.
+Er zeigt den Fingerabdruck in der Form von OpenSSH, \type{SHA256:} und die Base64-Zeichen des
+Hashes.
+Wer den erwarteten Fingerabdruck schon kennt, gibt ihn mit; nennt der Hub einen anderen
+Schlüssel, hält der Klon nichts fest, und der erste Kontakt beruht nicht auf Vertrauen.
+\item Bei jedem weiteren Kontakt muss die Liste den festgehaltenen Schlüssel nennen.
+Ein anderer Schlüssel ist ein eigener Fehler mit beiden Fingerabdrücken, und keine
+Remote-Referenz bewegt sich.
+\item Jede Quittung und jede Bestätigung prüft der Klon gegen den festgehaltenen Schlüssel.
+Ältere Einträge der Aufzeichnung prüft er über die früheren Schlüssel der Liste.
+\item Das erneute Festhalten ist eine Operation für sich.
+Ein Mensch gibt den Fingerabdruck aus dem zweiten Kanal an; unter der Sperre der Referenzen
+schreibt der Klon zuerst den Eintrag \type{remote-pin} mit altem und neuem Schlüssel und ersetzt
+dann die Konfiguration.
+\stopitemize
+
+Ein Hub, der seinen Schlüssel wechselt, führt die früheren Schlüssel mit dem Bereich der
+Nummern, die jeder signiert hat.
+Der aktuelle Schlüssel signiert diese Liste, und die Signatur deckt auch die Zeilen
+\type{repository} und \type{key}.
+So bleiben alte Einträge für einen Klon prüfbar, der nur den neuen Schlüssel kennt:
+
+\starttyping
+repository 00112233445566778899aabbccddeeff
+key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBuk...
+former 1 40 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgH...
+former 41 97 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4h...
+former-signature U1NIU0lHAAAAAQAAADMAAAALc3No...
+\stoptyping
+
+Der Leser der Liste prüft die Signatur gegen die Zeilen \type{repository} und \type{key}.
+Wer eine Zeile \type{former} ändert, einen Schlüssel austauscht oder die Signatur entfernt,
+bekommt eine Liste, die schon der Leser ablehnt.
+Die Repository-ID gehört dazu, weil ein Hub einen Schlüssel für alle Repositories hat, die
+Bereiche aber die Nummern eines einzigen zählen.
+Ohne sie könnte, wer einen früheren Schlüssel gestohlen hat, den signierten Block eines anderen
+Repositorys mit grösserem Bereich einsetzen.
+Ob die Zeile \type{key} der richtige Schlüssel ist und die Liste zum Repository des Remote
+gehört, entscheidet erst der Vergleich mit der Konfiguration.
+Eine Liste, die ein fremder Schlüssel ganz neu signiert hat, liest sich also, scheitert aber dort.
+
+\startinfobox
+{\bf Warum der Klon einem Wechsel nicht folgt.}
+Eine Erklärung des alten Schlüssels, die den neuen nennt, wäre nichts wert, sobald der alte
+Schlüssel gestohlen ist: Der Dieb könnte genau diese Erklärung schreiben.
+Der Klon folgt deshalb auch dann nicht, wenn die Liste den festgehaltenen Schlüssel als früheren
+Schlüssel führt.
+Ein Agent kann das erneute Festhalten nicht auslösen; es gehört einem Menschen.
+Der Eintrag \type{remote-pin} nennt keinen Commit, ein Purge berührt ihn also nie, und
+\type{op restore} lehnt ihn ab, weil er keinen Zeiger bewegt hat.
+Mit ihm steigt das Repository-Format auf Version 18 (ADR-009): Ein älteres Programm läse ihn als
+Änderung ohne Zeiger, also als Schaden.
+\stopinfobox
 
 \subsection{Die Ordnung über Klone hinweg}
 

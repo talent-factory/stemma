@@ -1113,7 +1113,7 @@ mod tests {
         let format = repository.metadata_dir().join("format");
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 17\n"
+            "stemma-repository 18\n"
         );
         // A repository of version 7 moves to the current version with its next entry, a lease
         // entry among them.
@@ -1123,7 +1123,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 17\n"
+            "stemma-repository 18\n"
         );
         // A program that reads up to version 17 refuses version 18: the number is not one of
         // its own.

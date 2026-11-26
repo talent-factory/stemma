@@ -17,8 +17,8 @@ use crate::index::Index;
 use crate::object::{Blob, Commit, CommitId, EntryMode, FileMode, Kind, ObjectId, Tree, TreeId};
 use crate::protocol::examples::{self, Message};
 use crate::protocol::{
-    ObjectStreamReader, ObjectStreamWriter, ParseError, QualifiedName, RecordHash, Reference,
-    RepositoryId, Spoken, StreamObject,
+    FormerKeys, ObjectStreamReader, ObjectStreamWriter, ParseError, QualifiedName, RecordHash,
+    Reference, RepositoryId, Spoken, StreamObject,
 };
 use crate::refs::{encode_branch, RefKind};
 use crate::repository::{InitOptions, Repository};
@@ -155,7 +155,7 @@ impl OtherSide for Hub<'_> {
             })
             .collect();
         let key = PublicKey::from_openssh(KEY).unwrap();
-        Ok(RefList::try_new(repository_id(), key, Vec::new(), references).unwrap())
+        Ok(RefList::try_new(repository_id(), key, FormerKeys::none(), references).unwrap())
     }
 
     fn fetch(&self, request: &FetchRequest, stream: &mut dyn Write) -> Result<(), Refusal> {
