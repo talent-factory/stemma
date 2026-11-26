@@ -1630,7 +1630,10 @@ pub fn is_enforcing(metadata_dir: &Path) -> io::Result<bool> {
 /// for the register file: the call is refused before it writes, with
 /// [`io::ErrorKind::Unsupported`] and [`RefError::Bare`](crate::refs::RefError::Bare) as the
 /// inner error. If the register file cannot be created,
-/// the marker that this call set is removed again.
+/// the marker that this call set is removed again. A failure before that step (writing or
+/// flushing the marker, or flushing its directory) leaves the marker in place: the repository is
+/// then damaged ([`ModeError::RegisterMissing`]), never open, and a further call can complete the
+/// step.
 pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Result<()> {
     // The register file is a file of the working copy. A bare repository has none (ADR-009), and
     // its directory is the metadata directory, so the file would land among the stores.
@@ -2430,7 +2433,7 @@ mod tests {
             &crate::AllowAll,
         )
         .unwrap();
-        let _failure = crate::store::fail_flush_of(&repository.metadata_dir());
+        let failure = crate::store::fail_flush_of(&repository.metadata_dir());
         assert_eq!(
             enter_enforcing(&repository, &register())
                 .unwrap_err()
@@ -2438,6 +2441,15 @@ mod tests {
             io::ErrorKind::PermissionDenied
         );
         assert!(!dir.path().join(FILE).exists());
+        // The marker stays: the repository is damaged, not open.
+        assert!(matches!(
+            Mode::of(&repository),
+            Err(ModeError::RegisterMissing)
+        ));
+        // Once the directory can be flushed, a further call completes the step.
+        drop(failure);
+        enter_enforcing(&repository, &register()).unwrap();
+        assert_eq!(Mode::of(&repository).unwrap(), Mode::Enforcing(register()));
     }
 
     #[test]
