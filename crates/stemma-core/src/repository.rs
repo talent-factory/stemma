@@ -149,8 +149,10 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` and `init_bare` write, and that a purge and
-/// every new entry of the log move a repository to: version 17, the line `remote` of an entry,
-/// which the entry `fetch` writes (STEMMA-295, ADR-008, ADR-011). Version 16 was the signed
+/// every new entry of the log move a repository to: version 18, the entry `remote-pin`, which
+/// pins the key of the hub of a remote again (STEMMA-297, ADR-026, ADR-011). Version 17 was the
+/// line `remote` of an entry, which the entry `fetch` writes (STEMMA-295, ADR-008, ADR-011),
+/// version 16 the signed
 /// statements in `statements/` and the entries that name them (STEMMA-290, ADR-025, ADR-009,
 /// ADR-011), version 15 the bare repository with its marker `bare` (STEMMA-284, ADR-009), version 14 the
 /// configuration of the remotes and the
@@ -4806,7 +4808,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "18",
+            "19",
             "99",
             "4294967295",
             "4294967296",
@@ -5298,6 +5300,8 @@ mod tests {
         raise_format(&meta, 16).unwrap();
         assert_eq!(read(), "stemma-repository 16\n");
         raise_format(&meta, 17).unwrap();
+        assert_eq!(read(), "stemma-repository 17\n");
+        raise_format(&meta, 18).unwrap();
         assert_eq!(read(), "stemma-repository 18\n");
     }
 

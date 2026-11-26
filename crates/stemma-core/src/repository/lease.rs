@@ -1125,12 +1125,12 @@ mod tests {
             fs::read_to_string(&format).unwrap(),
             "stemma-repository 18\n"
         );
-        // A program that reads up to version 17 refuses version 18: the number is not one of
+        // A program that reads up to version 18 refuses version 19: the number is not one of
         // its own.
-        fs::write(&format, "stemma-repository 18\n").unwrap();
+        fs::write(&format, "stemma-repository 19\n").unwrap();
         let error = Repository::open(dir.path()).map(|_| ()).unwrap_err();
         assert!(
-            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "18"),
+            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "19"),
             "{error:?}"
         );
     }
