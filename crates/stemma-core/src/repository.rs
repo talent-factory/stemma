@@ -85,6 +85,11 @@ mod track;
 mod worktree;
 
 pub use accept::{AcceptContext, AcceptError, RecordDestination, RecordStep};
+// The second entry of the accepting operation (STEMMA-299).
+pub use accept::{
+    held_in, record_in, statements_of_open_pulls, RangeError, ReadAccess, StatementDestination,
+    StatementError,
+};
 pub use bounds::Pause;
 pub use check::CheckError;
 pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, PlannedWrite};

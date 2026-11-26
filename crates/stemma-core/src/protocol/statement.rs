@@ -65,9 +65,9 @@
 //! a register ([`Register::verify_statement`](crate::register::Register::verify_statement)):
 //! a statement names no actor, the actor follows from the key and the register.
 //!
-//! Not part of this module: the purge statement of ADR-025, the lines that a hub adds to a
-//! statement it keeps, and the request that submits one. They come with the slices that build
-//! them.
+//! Not part of this module: the purge statement of ADR-025, which comes with the slice that
+//! builds it, and the lines that a hub adds to a statement it keeps, which are the module
+//! [`held`](super::held).
 
 use std::error::Error;
 use std::fmt;
@@ -145,7 +145,7 @@ impl StatementKind {
         self.payload_kind().name()
     }
 
-    fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 }
@@ -709,6 +709,12 @@ impl Statement {
             })?;
         }
         Ok(statement)
+    }
+
+    /// Reads the form of the message without checking the signature, for a reader of a longer
+    /// message that judges the form of all of it before any signature (STEMMA-299).
+    pub(crate) fn parse_form(bytes: &[u8]) -> Result<Self, ParseError> {
+        read(bytes).map(|(statement, _)| statement)
     }
 
     /// Reads the form of the message without checking the signature, for the fuzz target: a

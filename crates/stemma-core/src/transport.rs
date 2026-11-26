@@ -14,7 +14,9 @@
 //! a request add its method. The sign-in is the one place where a transport reads a message: the
 //! token answer holds the token, which stays inside the transport
 //! ([`Transport::answer_challenge`]). The procedure of the client is [`sign_in`]. The upload of
-//! the objects that a ref update names comes with the slice of `push`.
+//! the objects that a ref update names comes with the slice of `push`. The submission of a
+//! signed statement and the two reading requests by a range of numbers, for the statements and
+//! for the record, belong to the statements on a hub (ADR-025).
 //!
 //! The trait names nothing of a carrier: no address, no path, no status, no header, and no
 //! compression. They belong to the implementation, as TLS and the token do (ADR-023): no method
@@ -33,6 +35,9 @@ use std::time::Duration;
 
 use crate::protocol::record::{RecordEntry, RefUpdate};
 use crate::protocol::sign_in::{Challenge, SignedChallenge, Token, TokenAnswer};
+// The statements on a hub (STEMMA-299).
+use crate::protocol::held::{HeldStatement, Range};
+use crate::protocol::statement::Statement;
 use crate::protocol::{ErrorMessage, FetchRequest, RefList};
 
 mod sign_in;
@@ -143,6 +148,66 @@ pub trait Transport {
     /// comes back is no answer of the other side, which includes a token answer that its reader
     /// refuses.
     fn answer_challenge(&mut self, request: &mut dyn Read) -> Result<SignedIn<'_>, TransportError>;
+
+    // The statements on a hub (ADR-025, STEMMA-299): submitting one, and reading the statements
+    // and the record by a range of numbers. The three methods have a body, which fails with
+    // `TransportError::Carrier` of the kind `Unsupported`, so that a transport that was written
+    // before them still builds; a transport that carries them replaces it.
+
+    /// Submits a signed statement, which `request` holds as
+    /// [`Statement::encode`](crate::protocol::statement::Statement::encode) writes it. The
+    /// message of the answer is the statement as the other side holds it, with its lines
+    /// ([`HeldStatement`]). A statement that the rules of the writer refuse is answered with
+    /// [`ErrorMessage::StatementRefused`].
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Request`] if `request` cannot be read, [`TransportError::Carrier`] if
+    /// the carrier fails, and [`TransportError::NoAnswer`] if what comes back is no answer of the
+    /// other side. After a failure of the carrier the caller may submit the same statement
+    /// again: the other side answers a statement that it holds with the lines it holds it with.
+    fn submit_statement(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let _ = request;
+        Err(not_carried("submit a statement"))
+    }
+
+    /// Asks for the statements that the other side holds in a range of their numbers, which
+    /// `request` holds as [`Range::encode`] writes it. The message of the answer is the held
+    /// statements of the range one after the other, for the reader
+    /// [`read_held`](crate::protocol::held::read_held). A repository that the requester may not
+    /// read is answered with [`ErrorMessage::NotReadable`].
+    ///
+    /// # Errors
+    ///
+    /// As [`submit_statement`](Self::submit_statement).
+    fn statements(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let _ = request;
+        Err(not_carried("read the statements"))
+    }
+
+    /// Asks for the entries of the record of ref updates in a range of their numbers, which
+    /// `request` holds as [`Range::encode`] writes it. The message of the answer is the entries
+    /// of the range one after the other, for the reader
+    /// [`read_record`](crate::protocol::record::read_record). A repository that the requester
+    /// may not read is answered with [`ErrorMessage::NotReadable`].
+    ///
+    /// # Errors
+    ///
+    /// As [`submit_statement`](Self::submit_statement).
+    fn record(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let _ = request;
+        Err(not_carried("read the record"))
+    }
+}
+
+/// The failure of a transport that does not carry a request (STEMMA-299): its carrier cannot
+/// send it, which no retry mends, so the kind of the error is
+/// [`Unsupported`](io::ErrorKind::Unsupported).
+fn not_carried(request: &str) -> TransportError {
+    TransportError::Carrier(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("this transport does not carry the request to {request}"),
+    ))
 }
 
 /// What the other side answered to a signed challenge ([`Transport::answer_challenge`]).
@@ -272,6 +337,46 @@ pub trait OtherSide {
     /// lives: the transport asks once for each request.
     fn sign_in(&self) -> Option<&dyn SignInSide> {
         None
+    }
+
+    // The statements on a hub (ADR-025, STEMMA-299). A side answers them by calling the
+    // accepting operation for a statement
+    // ([`Repository::accept_statement`](crate::repository::Repository::accept_statement)) and
+    // the readers of a range ([`held_in`](crate::repository::held_in),
+    // [`record_in`](crate::repository::record_in)) with its destinations. A side that answers
+    // none of them need not implement the methods: they fail, as a hub that does not know the
+    // request does.
+
+    /// Answers a submitted statement with the statement as this side holds it.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers
+    /// ([`ErrorMessage::StatementRefused`]), or the failure that kept it from answering.
+    fn submit_statement(&self, statement: &Statement) -> Result<HeldStatement, Refusal> {
+        let _ = statement;
+        Err(Refusal::Failed("this side accepts no statement".to_owned()))
+    }
+
+    /// Answers the held statements of a range, in the order of their numbers.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers ([`ErrorMessage::NotReadable`]),
+    /// or the failure that kept it from answering.
+    fn statements(&self, range: &Range) -> Result<Vec<HeldStatement>, Refusal> {
+        let _ = range;
+        Err(Refusal::Failed("this side holds no statement".to_owned()))
+    }
+
+    /// Answers the entries of the record of a range, in the order of their numbers.
+    ///
+    /// # Errors
+    ///
+    /// As [`statements`](Self::statements).
+    fn record(&self, range: &Range) -> Result<Vec<RecordEntry>, Refusal> {
+        let _ = range;
+        Err(Refusal::Failed("this side keeps no record".to_owned()))
     }
 }
 
@@ -449,6 +554,56 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
             Err(Refusal::Failed(detail)) => Err(TransportError::NoAnswer { detail }),
         }
     }
+
+    // The statements on a hub (STEMMA-299).
+
+    fn submit_statement(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let bytes = read_request(request)?;
+        let statement = match Statement::parse(&bytes) {
+            Ok(statement) => statement,
+            Err(error) => return answer(Err(ErrorMessage::from(&error).into())),
+        };
+        answer(
+            self.side
+                .submit_statement(&statement)
+                .map(|held| held.encode()),
+        )
+    }
+
+    fn statements(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let bytes = read_request(request)?;
+        let range = match Range::parse(&bytes) {
+            Ok(range) => range,
+            Err(error) => return answer(Err(ErrorMessage::from(&error).into())),
+        };
+        answer(
+            self.side
+                .statements(&range)
+                .map(|held| held.iter().flat_map(HeldStatement::encode).collect()),
+        )
+    }
+
+    fn record(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let bytes = read_request(request)?;
+        let range = match Range::parse(&bytes) {
+            Ok(range) => range,
+            Err(error) => return answer(Err(ErrorMessage::from(&error).into())),
+        };
+        answer(
+            self.side
+                .record(&range)
+                .map(|entries| entries.iter().flat_map(RecordEntry::encode).collect()),
+        )
+    }
+}
+
+/// The bytes of a request, read to its end (STEMMA-299).
+fn read_request(request: &mut dyn Read) -> Result<Vec<u8>, TransportError> {
+    let mut bytes = Vec::new();
+    request
+        .read_to_end(&mut bytes)
+        .map_err(TransportError::Request)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
