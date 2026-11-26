@@ -766,6 +766,57 @@ pub(crate) fn read_one(
     }
 }
 
+// The writer of the configuration (STEMMA-295).
+
+/// Writes the configuration of the remote `name` below the metadata directory `root`, as a
+/// clone does: to a temporary file in `scratch` (the `tmp/` of the metadata directory, on the
+/// same file system), flushed, then renamed over `remotes/<name>`, and the directory is flushed,
+/// so a reader sees the old or the new file and never a part of one. The directory `remotes/` is
+/// made if it is missing. A configuration that exists is replaced without a check, which is
+/// right for a new clone; a command that adds a remote to an existing repository checks first.
+/// The caller holds the lock of the references; this function takes none.
+///
+/// # Errors
+///
+/// [`RemoteError::Io`] if a directory cannot be made or flushed, or the file cannot be written
+/// or moved into place. A temporary file that stays is removed by the next writer that takes the
+/// lock of the references (ADR-011).
+pub(crate) fn write_config(
+    root: &Path,
+    scratch: &Path,
+    name: &RemoteName,
+    config: &RemoteConfig,
+) -> Result<(), RemoteError> {
+    let dir = root.join(REMOTES_DIR);
+    for (made, parent) in [(scratch, root), (dir.as_path(), root)] {
+        match fault::create_dir(made) {
+            Ok(()) => crate::store::flush_directory(parent)
+                .map_err(io_error("flush the directory", parent))?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(io_error("make the directory", made)(error)),
+        }
+    }
+    let temp = scratch.join(crate::store::unique_temp_name());
+    let written = (|| {
+        let mut file = fault::create_new(&temp)?;
+        io::Write::write_all(&mut file, &config.encode())?;
+        file.sync_all()
+    })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(io_error("write the temporary file", &temp)(error));
+    }
+    let path = dir.join(name.as_str());
+    if let Err(error) = fault::rename(&temp, &path) {
+        let _ = fs::remove_file(&temp);
+        return Err(io_error(
+            "move the configuration of the remote into place at",
+            &path,
+        )(error));
+    }
+    crate::store::flush_directory(&dir).map_err(io_error("flush the directory", &dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

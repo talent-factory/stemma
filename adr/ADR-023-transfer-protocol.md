@@ -10,8 +10,9 @@ reading of the statements and of the record by a range, and their two errors (ST
 ADR-025), and the
 receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
 receiving side"), and the answering side of the list of references and of a fetch exists in
-`stemma_core::serve` (STEMMA-288, see "The answering side"); nothing else of it is implemented
-yet. The numbers under "Basis" give a direction, not a threshold.
+`stemma_core::serve` (STEMMA-288, see "The answering side"), and the fetch and the clone of a
+clone exist as `Repository::fetch` and `Repository::clone_remote` (STEMMA-295); nothing else of
+it is implemented yet. The numbers under "Basis" give a direction, not a threshold.
 
 ## Context
 
@@ -231,8 +232,11 @@ for the upload on a hub, `Repository::check_connectivity` for the check of a ref
 - **The check and the lock.** `Fetch::check` does not read a commit again that the fetch found
   complete before, at its start from the journal or while it received, without the lock of the
   references. A purge between that read
-  and the move of a remote reference is not seen by it; the slice that moves the references
-  under the lock decides whether it checks once more there.
+  and the move of a remote reference is not seen by it. The fetch of STEMMA-295 checks once
+  more under the lock when a purge entry or a stub was written since the fetch began, or when
+  `purge-pending` existed then, as its `--abort` removes objects and writes no entry. It trusts
+  the first check otherwise: a purge writes its entry before it removes an object, and no purge
+  runs while the fetch holds the lock (ADR-014).
 
 Known limit: a process that is killed loses the objects that were not yet flushed. A batch is
 closed only at a commit, so that is fewer than 1024 objects and less than 64 MiB, and on top

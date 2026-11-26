@@ -127,7 +127,7 @@ fn the_json_form_is_one_object_per_line() {
             "{{\"schema\":1,\"number\":2,\"kind\":\"change\",\"time\":1700000000,\"actor\":\"human daniel\",\
              \"operation\":\"snapshot\",\"worktree\":\"main\",\"location\":null,\"former_owner\":null,\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
-             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\"tags\":[],\
+             \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\"tags\":[],\"remotes\":[],\
              \"purge_pending\":false,\"took_effect\":false}}"
         )
     );
@@ -135,7 +135,7 @@ fn the_json_form_is_one_object_per_line() {
         lines[1].starts_with("{\"schema\":1,\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
             && lines[1].ends_with(
-                "\"branches\":[],\"tags\":[],\"purge_pending\":false,\"took_effect\":true}",
+                "\"branches\":[],\"tags\":[],\"remotes\":[],\"purge_pending\":false,\"took_effect\":true}",
             ),
         "{}",
         lines[1]

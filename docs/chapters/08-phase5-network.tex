@@ -29,6 +29,7 @@ die Schnittstelle für den Transport,
 die Remotes im Layout des Klons mit ihren Remote-Referenzen,
 die empfangende Seite des Objektstroms,
 die antwortende Seite eines Fetch,
+Fetch und Klon im Kern,
 die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
 die signierten Erklärungen mit ihrer Menge im Klon
@@ -91,7 +92,7 @@ darin, sodass die Suche der Befehlszeile es nie findet:
 
 \starttyping
 <verzeichnis>/
-    format        stemma-repository 16
+    format        stemma-repository 17
     bare          stemma-bare (die Markierung eines Bare-Repositorys)
     objects/      Objekte (ADR-007)
     refs/heads/   Branches (ADR-008)
@@ -176,6 +177,26 @@ Ein \type{have}, das der Hub nicht kennt, übergeht er; er sendet dann zu viel, 
 ein doppeltes Objekt schadet nicht, weil sein Hash es adressiert.
 Fetch und Klon eines öffentlichen Repositorys kosten damit zwei Anfragen, unabhängig von der
 Grösse des Verlaufs.
+
+Gebaut sind beide im Kern, als \type{Repository::fetch} und \type{Repository::clone_remote},
+die über die Schnittstelle des Transports sprechen; die Befehle folgen.
+Der Autorisierer wird nach \type{fetch} mit dem Ziel \type{remote <Name>} gefragt.
+Nennt die Liste eine andere Repository-ID als die Konfiguration des Remote, liegt unter der
+Adresse ein anderes Repository: Der Fetch meldet es, empfängt nichts und bewegt nichts.
+Er verlangt jeden Commit der Liste, der kein \type{have} ist; kennt er alle, stellt er keine
+zweite Anfrage.
+Erst wenn jeder Commit der Liste die Prüfung der Verbindung bestanden hat, schreibt er unter der
+Sperre der Referenzen einen Eintrag \type{fetch} und bewegt danach die Remote-Referenzen.
+Hat seit dem Beginn ein Purge einen Eintrag geschrieben oder lag beim Beginn das Journal eines
+Purge vor, prüft er unter der Sperre noch einmal, denn der Purge oder sein Abbruch kann ein
+Objekt entfernt haben, das die erste Prüfung sah.
+Ein Klon liest zuerst die Liste, sodass ein Fehler dort nichts anlegt.
+Dann legt er das Repository an, schreibt die Konfiguration des Remote mit der Adresse und der
+ID aus der Liste und holt mit derselben Liste, also mit denselben zwei Anfragen.
+Er legt keinen lokalen Branch an; welcher Branch welcher Remote-Referenz folgt, entscheidet die
+Befehlsoberfläche.
+Den Schlüssel des Hubs hält der Klon in einem eigenen Teil fest (\in{Abschnitt}[sec:hub-anchor]),
+und eine Anmeldung macht der Aufrufer vorher auf dem Transport.
 
 Ein \type{want} ist an eine Referenz gebunden: Der Hub liefert nur, was von einer Referenz eines
 Repositorys aus erreichbar ist, das der Anfragende lesen darf.
@@ -772,7 +793,7 @@ Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteh
 \type{tag} mit eigenem Eintrag.
 Remote-Referenzen sind Wurzeln der Erreichbarkeit.
 
-Gebaut ist davon, was ein Klon ablegt und liest; \type{fetch} und \type{push} folgen.
+Gebaut ist davon, was ein Klon ablegt und liest, und \type{fetch}; \type{push} folgt.
 Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
 fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
 dem festgehaltenen Schlüssel des Hubs, einer zusätzlichen CA-Datei und der Angabe, ob der Hub
@@ -791,6 +812,22 @@ Wo ein Befehl eine Revision annimmt, nennt \type{remotes/<Remote>/heads/<Name>} 
 Die Form sucht nie nach einem Branch oder Tag weiter, und das Präfix \type{remotes/} ist für neue
 Branch- und Tag-Namen reserviert, wie \type{heads/} und \type{tags/}.
 Die Prüfung der Referenzen prüft auch den Commit jeder Remote-Referenz.
+
+Der Eintrag \type{fetch} nennt nach den Tags jede Remote-Referenz, die er bewegt, anlegt oder
+entfernt, mit dem alten und dem neuen Stand.
+Ein Stand hat zwei Teile, den Commit und den Eintrag der Aufzeichnung, und \type{- -} steht für
+eine Referenz, die es nicht gibt:
+
+\starttyping
+remote remotes/origin/heads/main b3:8cb4… b3:a1a1… b3:b5f2… b3:a1a1…
+remote remotes/origin/heads/feat/x b3:4feb… b3:a1a1… - -
+\stoptyping
+
+Bewegt der Hub einen Branch weg und wieder zurück, ändert sich nur der Eintrag der Aufzeichnung,
+und auch das bewegt die Remote-Referenz.
+\type{op restore} eines solchen Eintrags setzt die alten Stände zurück und schreibt die Zeilen
+in seinen eigenen Eintrag.
+Mit der Zeile \type{remote} steigt das Repository-Format auf Version 17 (ADR-009).
 
 \startinfobox
 {\bf Purge und Remote-Referenzen.}

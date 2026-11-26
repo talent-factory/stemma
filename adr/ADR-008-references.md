@@ -7,8 +7,9 @@ the command followed on 2026-10-30 (STEMMA-183), and so did the deletion of a ta
 The rule for a name that is both a branch and a tag was decided on 2026-11-04 (STEMMA-186).
 The command `branch` (create, list, rename, delete) was added in Phase 3 (STEMMA-166).
 Remote references were decided for Phase 5 on 2026-11-23 (STEMMA-56, see "Remote references"
-below). Their files, their names, and what reads them were built on 2026-11-24 (STEMMA-285);
-`fetch` and `push`, which move them, are not built yet. Packed references have no phase yet, and
+below). Their files, their names, and what reads them were built on 2026-11-24 (STEMMA-285),
+`fetch` and `clone` with the entry `fetch` on 2026-11-25 (STEMMA-295); `push` is not built yet.
+Packed references have no phase yet, and
 the rename on Windows waits for the CI run (STEMMA-33).
 
 ## Context
@@ -223,7 +224,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
   implementation `FsRefStore`.
 
 - **Remote references** *(decided for Phase 5, STEMMA-56; the layout, the names, and the
-  readers are implemented in STEMMA-285, the moves by `fetch` and `push` are not yet)*. A remote
+  readers are implemented in STEMMA-285, the moves by `fetch` in STEMMA-295, those by `push`
+  are not yet)*. A remote
   reference is the state of a branch or a tag on a hub as the clone last saw it.
   - **Layout.** A namespace of their own, one file per reference:
     `<metadata directory>/refs/remotes/<remote>/heads/<name>` and
@@ -257,8 +259,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     system. Entries whose name starts with a dot are skipped. A repository without
     `refs/remotes` has no remote reference. The lookup of one reference agrees with the listing
     about a file in the place of the directory of the remote or of its `heads` or `tags`: it is
-    an error and no missing reference. The store has no operation that writes one: the
-    writers come with `fetch` and `push`, each with its entry.
+    an error and no missing reference. Only `fetch` and the restore of its entry write one
+    (STEMMA-295); `push` comes with its slice.
   - **Tags stay in the namespace of the remote.** A local tag arises only through `tag` with its
     own log entry, because a tag never moves. A fetch creates no local tag.
   - **Only `fetch` and `push` move a remote reference**, with one log entry each (ADR-011). A
@@ -269,6 +271,29 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     remote references it moved and the number and hash of the receipt. A stale push (`Stale`)
     moves no remote reference: the clone may not have the new commit (`MissingCommit`), and only
     a fetch moves remote references, after the connectivity check (ADR-023).
+  - **The fetch as built** *(STEMMA-295)*. `Repository::fetch` and `Repository::clone_remote`
+    speak through `Transport` (ADR-022). The fetch reads the list, compares its repository ID
+    with the one of the configuration of the remote and refuses another
+    (`FetchError::OtherRepository`, nothing moves), wants every listed commit that is no
+    `have`, and checks every listed commit for connectivity before it takes the lock. Under the
+    lock it writes the entry `fetch` with every remote reference of the remote whose state
+    changes, the commit or only the record entry, and moves them, the deletions first, so that
+    `a` gives way to `a/b`, `a/b` to `a`, `main` to `Main`, and `Feature/x` to `feature/x`. A
+    name below `refs/remotes` that is in the way and that the fetch does not remove is
+    `RefError::RemoteConflict`, and so are two listed names of which one lies below the other,
+    that differ in case alone, or whose directories do (`Feature/x` and `feature/y`): one file
+    system cannot hold both, so the list is refused before the entry. The names to
+    remove are read under the lock. A purge entry or a stub after the start of
+    the fetch makes it check the listed commits once more under the lock (ADR-023). A fetch
+    whose references have their state already writes no entry. A clone reads the list first,
+    then runs `init`, writes the configuration with the address and the ID of the list, and
+    fetches with that list; it makes no local branch. `op restore` of a `fetch` entry puts
+    the old states back, also a reference that the fetch removed, and writes them into its
+    own entry.
+  - **Level and target** *(STEMMA-295)*. The code of `fetch` and `clone` is level 2 by
+    ADR-004 (network, references, the operation log). At run time the operation asks the
+    authorizer for `fetch` with the target `remote <name>`; a clone asks for `fetch` first,
+    before it makes anything, and for `init` when it makes the repository.
   - **Remote references are roots of the reachability.** The level and the target for the
     authorizer are set by the slice according to ADR-004. The plan of a purge walks from them as
     it does from a branch (STEMMA-285). A purge neither moves nor removes one, so it is refused
@@ -395,6 +420,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - [x] Remote references and the record of a ref update on a hub (ADR-003, handed to stemma-hub).
       Decided in STEMMA-56: the layout and the moves of a remote reference are in the decision
       above, the signed ref update and the record of a hub in ADR-025. The files, the names,
-      and the readers are built (STEMMA-285); the moves by `fetch` and `push` are not. Open stay
+      and the readers are built (STEMMA-285), and so are the moves by `fetch` (STEMMA-295);
+      those by `push` are not. Open stay
       how a purge treats remote references in a clone (ADR-014; until then it is refused), and
       which local branch follows which remote reference, which belongs to the command surface.
