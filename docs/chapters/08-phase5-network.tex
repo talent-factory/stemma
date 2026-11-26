@@ -29,10 +29,11 @@ die Schnittstelle für den Transport,
 die Remotes im Layout des Klons mit ihren Remote-Referenzen,
 die empfangende Seite des Objektstroms,
 die antwortende Seite eines Fetch,
+Fetch und Klon im Kern,
 die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
 die signierten Erklärungen mit ihrer Menge im Klon,
-die annehmende Operation für Branches und Tags
+die annehmende Operation für Branches, Tags und eingereichte Erklärungen
 und der HTTP-Client des Klons.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
@@ -92,7 +93,7 @@ darin, sodass die Suche der Befehlszeile es nie findet:
 
 \starttyping
 <verzeichnis>/
-    format        stemma-repository 16
+    format        stemma-repository 17
     bare          stemma-bare (die Markierung eines Bare-Repositorys)
     objects/      Objekte (ADR-007)
     refs/heads/   Branches (ADR-008)
@@ -177,6 +178,26 @@ Ein \type{have}, das der Hub nicht kennt, übergeht er; er sendet dann zu viel, 
 ein doppeltes Objekt schadet nicht, weil sein Hash es adressiert.
 Fetch und Klon eines öffentlichen Repositorys kosten damit zwei Anfragen, unabhängig von der
 Grösse des Verlaufs.
+
+Gebaut sind beide im Kern, als \type{Repository::fetch} und \type{Repository::clone_remote},
+die über die Schnittstelle des Transports sprechen; die Befehle folgen.
+Der Autorisierer wird nach \type{fetch} mit dem Ziel \type{remote <Name>} gefragt.
+Nennt die Liste eine andere Repository-ID als die Konfiguration des Remote, liegt unter der
+Adresse ein anderes Repository: Der Fetch meldet es, empfängt nichts und bewegt nichts.
+Er verlangt jeden Commit der Liste, der kein \type{have} ist; kennt er alle, stellt er keine
+zweite Anfrage.
+Erst wenn jeder Commit der Liste die Prüfung der Verbindung bestanden hat, schreibt er unter der
+Sperre der Referenzen einen Eintrag \type{fetch} und bewegt danach die Remote-Referenzen.
+Hat seit dem Beginn ein Purge einen Eintrag geschrieben oder lag beim Beginn das Journal eines
+Purge vor, prüft er unter der Sperre noch einmal, denn der Purge oder sein Abbruch kann ein
+Objekt entfernt haben, das die erste Prüfung sah.
+Ein Klon liest zuerst die Liste, sodass ein Fehler dort nichts anlegt.
+Dann legt er das Repository an, schreibt die Konfiguration des Remote mit der Adresse und der
+ID aus der Liste und holt mit derselben Liste, also mit denselben zwei Anfragen.
+Er legt keinen lokalen Branch an; welcher Branch welcher Remote-Referenz folgt, entscheidet die
+Befehlsoberfläche.
+Den Schlüssel des Hubs hält der Klon in einem eigenen Teil fest (\in{Abschnitt}[sec:hub-anchor]),
+und eine Anmeldung macht der Aufrufer vorher auf dem Transport.
 
 Ein \type{want} ist an eine Referenz gebunden: Der Hub liefert nur, was von einer Referenz eines
 Repositorys aus erreichbar ist, das der Anfragende lesen darf.
@@ -830,7 +851,7 @@ Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteh
 \type{tag} mit eigenem Eintrag.
 Remote-Referenzen sind Wurzeln der Erreichbarkeit.
 
-Gebaut ist davon, was ein Klon ablegt und liest; \type{fetch} und \type{push} folgen.
+Gebaut ist davon, was ein Klon ablegt und liest, und \type{fetch}; \type{push} folgt.
 Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
 fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
 dem festgehaltenen Schlüssel des Hubs, einer eigenen CA-Datei und der Angabe, ob der Hub
@@ -849,6 +870,22 @@ Wo ein Befehl eine Revision annimmt, nennt \type{remotes/<Remote>/heads/<Name>} 
 Die Form sucht nie nach einem Branch oder Tag weiter, und das Präfix \type{remotes/} ist für neue
 Branch- und Tag-Namen reserviert, wie \type{heads/} und \type{tags/}.
 Die Prüfung der Referenzen prüft auch den Commit jeder Remote-Referenz.
+
+Der Eintrag \type{fetch} nennt nach den Tags jede Remote-Referenz, die er bewegt, anlegt oder
+entfernt, mit dem alten und dem neuen Stand.
+Ein Stand hat zwei Teile, den Commit und den Eintrag der Aufzeichnung, und \type{- -} steht für
+eine Referenz, die es nicht gibt:
+
+\starttyping
+remote remotes/origin/heads/main b3:8cb4… b3:a1a1… b3:b5f2… b3:a1a1…
+remote remotes/origin/heads/feat/x b3:4feb… b3:a1a1… - -
+\stoptyping
+
+Bewegt der Hub einen Branch weg und wieder zurück, ändert sich nur der Eintrag der Aufzeichnung,
+und auch das bewegt die Remote-Referenz.
+\type{op restore} eines solchen Eintrags setzt die alten Stände zurück und schreibt die Zeilen
+in seinen eigenen Eintrag.
+Mit der Zeile \type{remote} steigt das Repository-Format auf Version 17 (ADR-009).
 
 \startinfobox
 {\bf Purge und Remote-Referenzen.}
@@ -907,25 +944,83 @@ Die Funktion, die sie faltet, nimmt die Erklärungen in der Ordnung dessen, der 
 Klon in der Ordnung der Einträge des Logs, auf dem Hub in der Ordnung seiner Zeilen.
 Dass ein Pull Request gemergt ist, sagt keine Erklärung; der Klon weiss es aus dem Eintrag
 \type{pr-merge}, der Hub aus dem Eintrag der Aufzeichnung, der \type{main} bewegt hat.
-Noch nicht gebaut sind das Einreichen einer Erklärung, die Zeilen des Hubs und der Fetch, der
-Erklärungen bringt.
+Das Einreichen einer Erklärung und die Zeilen des Hubs sind gebaut
+(\in{Abschnitt}[sec:accept-statement]); der Fetch, der die Erklärungen in den Klon bringt,
+folgt mit dem Fetch im Kern.
 
 \startinfobox
 {\bf Was eine lokale Erklärung noch nicht kann.}
 Ein Klon schreibt heute \type{repository -}: Die Erklärung nennt kein Repository eines Hubs und
 zählt nur lokal.
-Welches Remote einer Erklärung seine ID gibt, entscheidet der Teil, der sie einreicht.
+Welches Remote einer Erklärung seine ID gibt, entscheidet der Befehl, der sie einreicht;
+ein Hub lehnt eine Erklärung ohne die ID seines Repositorys ab.
 Im offenen Modus trägt eine Erklärung weder Schlüssel noch Signatur; sie zählt nur ohne
 Register,
 und ein Hub nimmt sie nie an.
 \stopinfobox
 
-Der Hub prüft eine eingereichte Erklärung nach den Regeln des lokalen Schreibers: Signatur und
-aktiver Schlüssel, eine Eröffnung nur durch den Schreibinhaber, eine Freigabe nur für den
-aktuellen Kopf und nie die eigene.
-Er fügt seine signierten Zeilen an, mit einer laufenden Nummer, der Zeit, dem Commit des
-Registers und der Nummer des letzten Eintrags der Aufzeichnung,
-und liefert die Erklärung allen Lesern des Repositorys aus.
+\subsection[sec:accept-statement]{Eingereichte Erklärungen}
+
+Eine Erklärung, die ein Klon einreicht, prüft der Hub nach den Regeln des lokalen Schreibers
+aus Phase 4, gegen das Register an der Spitze von \type{main} und gegen seinen eigenen Stand.
+Nimmt er sie an, hält er sie mit seinen signierten Zeilen fest und antwortet mit dieser
+gehaltenen Erklärung (\type{accept_statement}, der zweite Eingang der annehmenden Operation).
+
+\startitemize[n]
+\item Vor der Sperre prüft der Hub die Form: Die Erklärung nennt die ID dieses Repositorys,
+trägt eine Signatur und ist eine Art, die er annimmt.
+\item Unter der Sperre der Referenzen liest er die Aufzeichnung, vollendet ein unterbrochenes
+Ref-Update und liest die Erklärungen, die er hält.
+Eine Erklärung, die er schon hält, beantwortet er mit ihren alten Zeilen.
+\item Der Schlüssel muss ein aktiver Schlüssel des Registers an der Spitze von \type{main} sein,
+und der Authorizer muss \type{pr-open}, \type{pr-approve}, \type{pr-close} oder \type{check}
+erlauben.
+\item Dann gelten die Regeln der Art.
+Eine Eröffnung kommt, wo eine Lease gilt, vom Schreibinhaber, dessen Lease noch läuft;
+der Branch steht auf dem Hub am Kopf der Eröffnung, hat keinen offenen Pull Request,
+und jeder Reviewer steht im Register.
+Eine Freigabe gilt nur dem aktuellen Kopf eines offenen Pull Requests und nie dem eigenen: Wer
+ihn eröffnet, einen seiner Commits geschrieben oder ihn als Erster unter eine Referenz gebracht
+hat, gibt ihn nicht frei.
+Ein Prüfergebnis nennt nur Commits, die ein Branch oder ein Tag erreicht.
+Schliessen darf der Eröffner oder ein Owner.
+\item Der Hub hängt seine Zeilen an: eine laufende Nummer, seine Zeit, den Commit von
+\type{main}, dessen Register er benutzt hat, die Nummer des letzten Eintrags der Aufzeichnung
+und die Identität, die das Register für den Schlüssel nennt.
+Er signiert den Hash von Erklärung und Zeilen, legt das Ergebnis dauerhaft ab und antwortet.
+\stopitemize
+
+Die Erklärungen und die Aufzeichnung liest ein Klon mit einem Bereich von Nummern.
+Ob der Anfragende lesen darf, entscheidet der Hub aus Anmeldung und Namespace; der Kern bekommt
+die Antwort als Eingabe und antwortet sonst \type{not-readable}.
+Das Lesen nimmt keine Sperre; der Ablageort liefert nur, was ein Schreiben dauerhaft gemacht
+hat, also nie eine Erklärung, die der Hub danach doch nicht hält.
+
+Nach der Annahme gilt: Jede gehaltene Erklärung trägt eine Signatur, die das Register an der
+Spitze von \type{main} zu diesem Zeitpunkt angenommen hat, und die Zeilen des Hubs unter dessen
+Signatur.
+Eine Ablehnung schreibt nichts, ausser dass sie vorher ein unterbrochenes Ref-Update
+vollenden kann, und weil Erklärungen und Ref-Updates dieselbe Sperre nehmen, haben beide eine
+Ordnung.
+Die Nummer der Aufzeichnung stellt eine Erklärung in diese Ordnung: Sie liegt nach dem Eintrag
+mit dieser Nummer und vor dem nächsten, also vor einem Rückzug oder Widerruf eines Schlüssels,
+den ein späterer Eintrag nach \type{main} bringt.
+Ein Klon, der die Antwort verliert, reicht dieselbe Erklärung noch einmal ein und bekommt
+dieselben Zeilen; nur eine Eröffnung, deren Pull Request beendet ist, lehnt der Hub dann mit
+\type{not-open} ab.
+
+\startinfobox
+{\bf Grenzfälle eingereichter Erklärungen.}
+Ein Prüfergebnis, das für eine Änderung nicht zählen würde, etwa das eines Autors,
+nimmt der Hub trotzdem an; beim Merge zählt das Gate alles noch einmal.
+Dieselbe Eröffnung nimmt er nicht zweimal an: Nach dem Ende eines Pull Requests braucht der
+nächste einen neuen Kopf oder andere Reviewer.
+Einen Owner-Override nimmt diese Fassung noch nicht an.
+Die Zeit einer gehaltenen Erklärung liegt nie vor der Zeit der letzten Erklärung oder des
+letzten Eintrags der Aufzeichnung; ein Hub, dessen Uhr zurückgesprungen ist, wartet.
+Eine Ablehnung nennt einen Grund, etwa \type{head} mit dem Stand des Branch auf dem Hub oder
+\type{self-approval}; die Liste steht in ADR-025.
+\stopinfobox
 
 \subsection{Wie sich main bewegt}
 

@@ -9,7 +9,9 @@ repositories to Phase 5; the other open items stay open, among them `worktree re
 layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"). Of them, the
 configuration of the remotes and the remote references (STEMMA-285, format 14), the bare
 repository (STEMMA-284, format 15), and the journal of a running fetch with the directory of a
-receiving operation in `tmp/` (STEMMA-289) are implemented; the others are not yet.
+receiving operation in `tmp/` (STEMMA-289) are implemented, and so are the signed statements
+(STEMMA-290, format 16) and the line `remote` of the entry `fetch` (STEMMA-295, format 17); the
+others are not yet.
 
 ## Context
 
@@ -126,8 +128,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 16, the version of the signed statements
-  (STEMMA-290, see "The layout in Phase 5"), and `open` reads the versions 2 to 16.
+  supports: `init` and `init_bare` write version 17, the version of the line `remote` of an
+  entry (STEMMA-295), and `open` reads the versions 2 to 17.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
@@ -135,8 +137,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
   entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
   (11), before the former owner of a worktree (12), before the remotes (13), before the bare
-  repository (14), or before the signed statements (15) rises to 16 with its next entry or purge
-  (ADR-014, ADR-011, ADR-010).
+  repository (14), before the signed statements (15), or before the line `remote` (16) rises
+  to 17 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  Version 17 adds the line `remote` of an entry, which the entry `fetch` and the restore of one
+  write (ADR-011, ADR-008). It adds no file. A program that knows only version 16 would call
+  such a line damage, so it has to refuse the repository.
   Version 16 adds the directory `statements/` and changes four entries of the log: `pr-open`,
   `pr-close`, and `pr-approve` end with a line that names a statement, and `check` has its
   version 2 with that line (ADR-011). A program that knows only version 15 would call such an
@@ -217,7 +222,11 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     file atomically, and two remotes do not touch each other. A repository without the directory
     knows no remote. The core reads the configuration (`Repository::remote`, `remotes`) and has
     the encoding; the commands that write it (`remote add`, `clone`, pinning a key again) come
-    with their slices and their entries in the log.
+    with their slices and their entries in the log. The clone of the core
+    (`Repository::clone_remote`, STEMMA-295) writes it under the lock of the references, to a
+    temporary file in `tmp/` that is flushed and renamed into place, with the address that
+    the caller gives, the ID of the list, and no key, CA file, or sign-in; it has no entry of
+    its own, as the repository is new and its first entry `fetch` names the remote.
   - `refs/remotes/<remote>/heads/` and `refs/remotes/<remote>/tags/`, the remote references
     (ADR-008). Their file and their readers are built *(STEMMA-285)*; `fetch` and `push` write
     them.

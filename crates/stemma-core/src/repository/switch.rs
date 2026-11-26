@@ -330,6 +330,7 @@ impl Repository {
             head: Some(&resolved.head),
             working_copy: Some(next.id),
             branches: &branches,
+            remotes: &[],
         };
         let logged = self
             .refs_store()
@@ -457,6 +458,7 @@ impl Repository {
             head: Some(&resolved.head),
             working_copy: None,
             branches: &branches,
+            remotes: &[],
         };
         self.refs_store()
             .plan_restore(&targets, self.objects())
@@ -685,6 +687,7 @@ impl Repository {
             head: Some(&resolved.head),
             working_copy: None,
             branches: &branches,
+            remotes: &[],
         };
         self.refs_store()
             .plan_restore(&targets, self.objects())

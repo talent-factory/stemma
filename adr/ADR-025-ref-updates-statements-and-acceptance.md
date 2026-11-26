@@ -7,9 +7,10 @@ Built are the formats of the ref update and of the record with their writers and
 (STEMMA-291, see "The formats as built"), the signed statements with the set of a clone, the
 entries of the log that name them, and the fold (STEMMA-290, see "The statements as built"), and
 the accepting operation for branches and tags (STEMMA-296, see "The accepting operation as
-built"). The lines that a hub adds to a statement, the request that submits one,
-`accept_statement` and the gate on a hub are not built. The names of functions that are not
-built yet are a direction for the slices.
+built"), and the lines that a hub adds to a statement, the request that submits one, the two
+reading requests and `accept_statement` (STEMMA-299, see "The statements on a hub as built").
+The gate on a hub is not built. The names of functions that are not built yet are a direction
+for the slices.
 
 ## Context
 
@@ -461,8 +462,9 @@ without a clone (ADR-015):
 ### The accepting operation as built
 
 Built in STEMMA-296 for branches and tags: `Repository::accept_ref_update` in `stemma-core`, with
-the reasons of a refusal in `stemma_core::protocol::refusal`. The gate on a hub, the purge, the
-owner override and `accept_statement` are not built.
+the reasons of a refusal in `stemma_core::protocol::refusal`. The gate on a hub, the purge and
+the owner override are not built; `accept_statement` is (see "The statements on a hub as
+built").
 
 **The call.** It takes the ref update and a context: the address under which the hub was called,
 the ID of the repository, the destination of the record, the time of the hub, and the signer of
@@ -599,6 +601,115 @@ branch, and `denied` names `push` for a branch and `tag` or `untag` for a tag. T
 The reasons are one type, `Refused`, which the hub answers and the client reads. The holder of a
 lease is an identity there, as the record names it, where the local refusal names the actor of
 the lease file.
+
+### The statements on a hub as built
+
+Built in STEMMA-299: `Repository::accept_statement` in `stemma-core`, the held statement, the
+range and the reasons of a refusal in `stemma_core::protocol::held`, and the three requests in
+`Transport`.
+
+```text
+<the statement, from its first line to its `signature` line>   a held statement, and so the
+number <n>                                                     answer to a submission
+time <seconds since the Unix epoch>
+register <commit>
+record <n>
+actor <human or agent> <id>
+hub-signature <SSHSIG signature on one line>
+
+stemma-protocol 1                                              the request that reads the
+range <first number> <last number, or `-` for the end>         statements or the record
+
+stemma-protocol 1                                              a refused statement (403)
+error statement-refused
+refused <reason> <facts>
+
+stemma-protocol 1                                              a repository that the requester
+error not-readable                                             may not read
+```
+
+- **The lines of the hub.** The running number counts the statements of the repository from 1,
+  the time is the time of the hub, `register` is the tip of `main` whose register was used, and
+  `record` is the number of the last record entry. The `actor` line is the identity that the
+  register names for the key, as in a record entry: a statement of the hub and no proof. The
+  four lines of the decision above are joined by it, because a reader places a statement with
+  an actor and should not need the register of an old commit for that.
+- **The hash and the signature.** The hash of a held statement is the BLAKE3 hash of the line
+  `stemma-held-hash 1` and everything before the `hub-signature` line, the statement with its
+  signature included. The hub signs the text of the hash as a proof with the type tag
+  `held-statement`, as it signs a record entry. The reader judges the form of the whole message
+  first, then the signature of the actor, then the one of the hub.
+- **The order of the hub.** A held statement comes after the record entry that its `record`
+  line names and before the next one, and the held statements among themselves by their
+  numbers. It lies before a record entry whose number is larger than its `record` line
+  (`HeldStatement::lies_before`), so before a retirement or a revocation that this entry
+  brought to `main`. The fold of a hub takes the held statements and the merges of the record in
+  this one order; a merge is an entry that moves `main` with an opening as its evidence. The
+  fold takes the actor of each step from the identity in its lines; a step whose identity a
+  later register no longer holds still counts, so a closing or a merge of a removed actor does
+  not open its pull request again.
+- **The destination.** The hub keeps its held statements one after the other in a destination
+  that it passes with every call (`StatementDestination`), as it keeps the record; the layout of
+  ADR-009 gets no file. It is a parameter of `accept_statement` beside the context of the ref
+  update, so the context keeps the form that the ref update built.
+- **The order of the call.** Before the lock: the repository that the statement names, which
+  must be the one it was sent to (a statement with `repository -` counts locally only and is
+  refused), a signature, and a kind that this version accepts. An owner override is refused as
+  a kind of its own (`kind owner-override`) until the slice of the override on a hub. Under the
+  lock the call reads the record, completes an update that stopped, checks that the references
+  agree with the record, as the ref update does, and reads the held statements. A statement that
+  the hub holds already is answered with the lines that it holds it with, so a sender whose
+  answer was lost submits again; an opening whose pull request ended is final, and the same
+  opening submitted again is refused with `not-open`, as the local writer refuses it. Then the
+  key must be an
+  active key of the register at the tip of `main`, the authorizer must allow `pr-open`,
+  `pr-approve`, `pr-close` or `check`, and the rules of the kind hold:
+  - an opening: the opener is none of its reviewers, the branch is at the head of the opening on
+    the hub, the opener is the write owner of the branch where a lease applies (the actor of the
+    last record entry of the branch, before the end of the lease that the policy at the tip of
+    `main` names), the branch has no open pull request, every reviewer is in the register, and a
+    repaired commit is reached by a reference;
+  - an approval: the pull request is known and open, its branch is at the approved head on the
+    hub, and the approver is neither the opener nor a writer of a commit that the pull request
+    brings: its author, or the actor of the record entry that first brought it under a branch or
+    a tag, the rule of the local writer with the record in the place of the log;
+  - a check result: the commit and the base are reached by a branch or a tag;
+  - a closing: the pull request is known and open, and the closer is the opener or an owner.
+- **A check that does not count** for a change is accepted all the same; the verdict at the
+  merge counts everything again.
+- **The time** of a held statement is never earlier than the time of the last held statement or
+  of the last record entry, by the rule of the record; a hub whose clock stepped back accepts no
+  statement until it has passed them.
+- **The reasons** of `statement-refused` are `repository <id>`, `unsigned -`, `no-main -`,
+  `key <commit>`, `kind <kind>`, `denied <operation>`, `not-write-owner -`,
+  `head <commit or ->`, `already-open <pull>`, `unknown-reviewer <identity>`, `self-review -`,
+  `no-pull -`, `not-open -`, `self-approval -`, `not-closer -`, `unreachable <commit>` and
+  `policy <text>`.
+- **The reading requests.** The statements and the record are read by a range of numbers
+  (`held_in`, `record_in`). Whether the requester may read the repository is an input of the
+  caller, which knows its sign-in and its namespaces (ADR-024, ADR-027); a requester that may
+  not is answered `not-readable`, which says as little about a repository that does not exist.
+  The reading takes no lock. The destination of the statements and that of the record answer
+  only what an append made durable, never the bytes of an append that runs or that failed, so a
+  reader never serves a held statement or an entry that the hub then denies holding; a part of
+  an entry that a crash left is damage, which the reader reports. A held statement or an entry
+  that does not carry the number of its place is damage too, for the reader as for the
+  writer, and so is a held statement whose `record` line or time lies before the one of the
+  statement before it, or whose `record` line names an entry that the record does not hold.
+- **The fetch.** `statements_of_open_pulls` selects from the held statements and the record the
+  openings of the open pull requests, the approvals that name them, the checks of their heads,
+  and every closing: the set of a clone only grows, so a clone that holds an opening from an
+  earlier fetch learns its end only from the closing. That a merge ended a pull request the
+  clone learns from the record, which the entry `fetch` reads as well. The actor of a step is
+  the one that the register at the tip of `main` names for its identity, else the one of the
+  register commit in its lines; where neither holds it, the identity alone, which the gate on
+  a hub asks the register about itself. The clone puts them into its set after it checked that the pinned key
+  of the hub signed them, for the entry `fetch` that names them (ADR-011). That entry and the
+  wiring into `fetch` come with the fetch in the core (STEMMA-295). The lines of the hub are not
+  kept in the clone yet: the entry `fetch` places the statements in the order of the clone.
+
+Example messages are checked in beside the others (`held-statement`, `range`,
+`range-to-the-end`, `error-statement-refused`, `error-not-readable`).
 
 ### A refusal names its reason, and only the evidence is shared
 

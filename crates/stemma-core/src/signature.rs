@@ -72,6 +72,11 @@ pub enum PayloadKind {
     /// ([`SignedChallenge::payload`](crate::protocol::sign_in::SignedChallenge::payload)). It
     /// yields a token and is no proof about a repository.
     Challenge,
+    // The statements that a hub holds (ADR-025, STEMMA-299).
+    /// The lines of a hub for a statement that it holds, signed by the key of the hub (ADR-025,
+    /// ADR-026). The payload is the text of the hash of the held statement
+    /// ([`HeldStatement`](crate::protocol::held::HeldStatement)).
+    HeldStatement,
 }
 
 impl PayloadKind {
@@ -90,6 +95,7 @@ impl PayloadKind {
             Self::PullClosing => "pr-closing",
             Self::OwnerOverride => "owner-override",
             Self::Challenge => "challenge",
+            Self::HeldStatement => "held-statement",
         }
     }
 }
