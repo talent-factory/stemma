@@ -869,8 +869,10 @@ fn a_commit_stands_after_its_parents_where_a_merge_names_an_ancestor_of_its_othe
             let receiver = bare(&dir, &format!("clone-{index}-{position}"));
             receiver
                 .receive_objects(prefix.as_slice(), Bounds::default())
-                .unwrap();
-            receiver.check_connectivity(&[commit]).unwrap();
+                .unwrap_or_else(|error| panic!("receive the prefix of {commit}: {error:?}"));
+            receiver
+                .check_connectivity(&[commit])
+                .unwrap_or_else(|error| panic!("check the prefix of {commit}: {error:?}"));
         }
         let stream = answer(&hub, &request(&[merge], &[a]));
         assert_eq!(commits(&stream), [b, merge]);
