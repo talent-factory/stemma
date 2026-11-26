@@ -1630,7 +1630,12 @@ pub fn is_enforcing(metadata_dir: &Path) -> io::Result<bool> {
 /// for the register file: the call is refused before it writes, with
 /// [`io::ErrorKind::Unsupported`] and [`RefError::Bare`](crate::refs::RefError::Bare) as the
 /// inner error. If the register file cannot be created,
-/// the marker that this call set is removed again.
+/// the marker that this call set is removed again. A failure before that step never leaves an
+/// open repository with a register file: if the marker cannot be created, the repository stays
+/// open; if it was created but writing or flushing it, or flushing its directory, fails, the
+/// marker stays and the repository is damaged ([`ModeError::RegisterMissing`] for a complete
+/// marker, [`ModeError::Io`] for one that is not in its form). A further call can complete the
+/// step.
 pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Result<()> {
     // The register file is a file of the working copy. A bare repository has none (ADR-009), and
     // its directory is the metadata directory, so the file would land among the stores.
@@ -1646,7 +1651,9 @@ pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Resu
     let mut marker = fs::File::create(&marker_path)?;
     io::Write::write_all(&mut marker, MARKER_CONTENT.as_bytes())?;
     marker.sync_all()?;
-    fs::File::open(&metadata)?.sync_all()?;
+    // The flush of the store: Windows opens a directory only with `FILE_FLAG_BACKUP_SEMANTICS`,
+    // and a plain `File::open` of it is denied (ADR-007).
+    crate::store::flush_directory(&metadata)?;
     let path = repository.path().join(FILE);
     // As long as no register file exists, this call can take its own marker back. A failure after
     // the file exists leaves both in place: the repository is then damaged, not open.
@@ -2398,6 +2405,53 @@ mod tests {
         fs::write(dir.path().join(".stemma-actors"), "in the way").unwrap();
         assert!(enter_enforcing(&repository, &register()).is_err());
         assert!(!is_enforcing(&repository.metadata_dir()).unwrap());
+    }
+
+    #[test]
+    fn the_marker_is_made_durable_through_the_flush_of_the_store() {
+        let dir = crate::testutil::TempDir::new();
+        let repository = Repository::init(
+            dir.path(),
+            &crate::repository::InitOptions::default(),
+            &daniel(),
+            &crate::AllowAll,
+        )
+        .unwrap();
+        let since = crate::store::flush_count();
+        enter_enforcing(&repository, &register()).unwrap();
+        assert_eq!(
+            crate::store::flushed_since(since),
+            vec![repository.metadata_dir()]
+        );
+    }
+
+    #[test]
+    fn a_marker_whose_directory_cannot_be_flushed_fails_the_step_and_writes_no_register() {
+        let dir = crate::testutil::TempDir::new();
+        let repository = Repository::init(
+            dir.path(),
+            &crate::repository::InitOptions::default(),
+            &daniel(),
+            &crate::AllowAll,
+        )
+        .unwrap();
+        let failure = crate::store::fail_flush_of(&repository.metadata_dir());
+        assert_eq!(
+            enter_enforcing(&repository, &register())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(!dir.path().join(FILE).exists());
+        // The marker stays: the repository is damaged, not open.
+        assert!(matches!(
+            Mode::of(&repository),
+            Err(ModeError::RegisterMissing)
+        ));
+        // Once the directory can be flushed, a further call completes the step.
+        drop(failure);
+        enter_enforcing(&repository, &register()).unwrap();
+        assert_eq!(Mode::of(&repository).unwrap(), Mode::Enforcing(register()));
     }
 
     #[test]
