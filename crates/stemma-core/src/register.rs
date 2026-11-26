@@ -1630,9 +1630,11 @@ pub fn is_enforcing(metadata_dir: &Path) -> io::Result<bool> {
 /// for the register file: the call is refused before it writes, with
 /// [`io::ErrorKind::Unsupported`] and [`RefError::Bare`](crate::refs::RefError::Bare) as the
 /// inner error. If the register file cannot be created,
-/// the marker that this call set is removed again. A failure before that step (writing or
-/// flushing the marker, or flushing its directory) leaves the marker in place: the repository is
-/// then damaged ([`ModeError::RegisterMissing`]), never open, and a further call can complete the
+/// the marker that this call set is removed again. A failure before that step never leaves an
+/// open repository with a register file: if the marker cannot be created, the repository stays
+/// open; if it was created but writing or flushing it, or flushing its directory, fails, the
+/// marker stays and the repository is damaged ([`ModeError::RegisterMissing`] for a complete
+/// marker, [`ModeError::Io`] for one that is not in its form). A further call can complete the
 /// step.
 pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Result<()> {
     // The register file is a file of the working copy. A bare repository has none (ADR-009), and
