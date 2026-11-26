@@ -564,7 +564,8 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       and the count of repetitions of a merge because of `Stale` (ADR-015, ADR-025). Its numbers
       give the thresholds of the pack triggers.
 - [ ] The level and the window of the compression, the bound that a receiver names for the window
-      and how the sender learns it, and the media types. Left to the slices.
+      and how the sender learns it. Left to the slices. The media types are set by the HTTP client
+      (ADR-028, "As built").
 - [x] The bounds for the size of an object and of a request: 1 GiB and 16 GiB as the defaults of
       the receiver (STEMMA-289), see "The receiving side".
 - [ ] The cost of the connectivity check for a new commit: one read of every commit below the own

@@ -167,7 +167,8 @@ dependency.
   pin; it reports and blocks nothing.
 - A slice that changes the protocol names its counterpart in the hub and counts as done only when
   the hub is green with the raised pin.
-- How the HTTP client of `stemma-remote` is tested here without a server is left to its slice.
+- The HTTP client of `stemma-remote` is tested here without a server, against a scripted
+  responder on a loopback socket (ADR-028, "As built").
 
 ### Properties that must stay
 

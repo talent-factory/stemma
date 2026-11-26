@@ -32,6 +32,26 @@ allow = ["BSD-3-Clause"]
 crate = "subtle"
 allow = ["BSD-3-Clause"]
 
+# rustls with `ring` and the Mozilla roots, for the TLS of the HTTP client in `stemma-remote`
+# (ADR-028): `ring`, `rustls-webpki` and `untrusted` carry ISC, and `webpki-roots` carries
+# CDLA-Permissive-2.0. The exceptions name the crates instead of allowing the licenses for the
+# whole tree.
+[[licenses.exceptions]]
+crate = "ring"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "rustls-webpki"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "untrusted"
+allow = ["ISC"]
+
+[[licenses.exceptions]]
+crate = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
 [licenses.private]
 # The crates of the workspace are not published (`publish = false`), so their own license is not
 # checked.

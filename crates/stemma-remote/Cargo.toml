@@ -1,0 +1,24 @@
+[package]
+name = "stemma-remote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+stemma-core = { path = "../stemma-core" }
+# The HTTP client (ADR-028): blocking, HTTP/1.1, rustls with `ring` and the compiled-in Mozilla
+# roots of `webpki-roots`. Without the default features, so that `gzip` stays out (ADR-029).
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+# Not called: the features cap the level of every log record of the build at `debug`, because
+# `ureq` (through `ureq-proto`) writes the raw bytes of every request and answer at the level
+# `trace`, among them the `Authorization` header and the token answer of a sign-in.
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_debug"] }
+# The check of the certificates of a CA file, and the TLS of the responder of the tests. The
+# version that `ureq` uses, so the tree gets no new package.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+# The tests of the log records install a logger of their own.
+log = { version = "0.4", features = ["std"] }

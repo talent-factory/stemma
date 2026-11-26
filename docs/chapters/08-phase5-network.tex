@@ -33,8 +33,9 @@ Fetch und Klon im Kern,
 die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
 die signierten Erklärungen mit ihrer Menge im Klon,
-die annehmende Operation für Branches, Tags und eingereichte Erklärungen
-und das Festhalten des Schlüssels des Hubs im Klon.
+die annehmende Operation für Branches, Tags und eingereichte Erklärungen,
+das Festhalten des Schlüssels des Hubs im Klon
+und der HTTP-Client des Klons.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -520,6 +521,63 @@ Die Schwellen liefert eine Messung an echten Stemma-Speichern.
 In jedem Fall ändert sich keine Objekt-ID.
 \stopinfobox
 
+\subsection[sec:http-client]{Der HTTP-Client}
+
+Ein eigenes Crate (\type{stemma-remote}) trägt die Anfragen über HTTP/1.1 zum Hub (ADR-028).
+Der Client arbeitet blockierend und ohne asynchrone Laufzeit, wie der Kern, die Befehlszeile und
+die Oberfläche im Terminal.
+Er liest keine Nachricht ausser der Antwort mit dem Token: Der Kern schreibt die Anfrage und
+liest die Antwort, der Client trägt die Bytes und sagt, ob eine Antwort die verlangte Nachricht
+ist oder ein Fehler an ihrer Stelle.
+TLS ist rustls mit den Wurzelzertifikaten von Mozilla, die im Programm enthalten sind, sodass sich
+der Client auf jeder Plattform gleich verhält und nichts vom Vertrauensspeicher des Systems
+braucht.
+
+\startitemize[n]
+\item Der Client prüft die Adresse des Remote, bevor er eine Verbindung öffnet.
+\type{https://} gilt für jeden Host, \type{http://} nur für \type{127.0.0.1}, \type{::1} und
+\type{localhost}; jede andere Adresse mit \type{http://} lehnt er mit einem eigenen Fehler ab.
+\item Er sendet die Anfrage an ihren Endpunkt unter der Adresse des Repositorys
+(\in{Tabelle}[tab:hub-requests]).
+Nach einer Anmeldung trägt jede Anfrage das Token als \type{Authorization: Bearer}, ausser den
+zwei Anfragen der Anmeldung selbst.
+Der Rumpf fliesst in beide Richtungen als Strom; nur die Antwort mit dem Token liest der Client
+ganz, bis zu ihrer Schranke.
+\item Er ordnet die Antwort nach ihrem Status und ihrem Medientyp ein.
+Ein Status 200 mit dem Medientyp einer Nachricht (\type{application/vnd.stemma.message}) ist die
+verlangte Nachricht, ein Status 204 eine Nachricht ohne Rumpf.
+Ein Status 4xx oder 5xx mit dem Medientyp eines Fehlers (\type{application/vnd.stemma.error})
+ist ein Fehler, dessen Art der Kern aus dem Rumpf liest.
+Alles andere ist keine Antwort des Protokolls, etwa die Seite eines Proxys, eine Weiterleitung,
+ein komprimierter Rumpf, um den der Client nicht gebeten hat, oder ein Rumpf ohne Länge, dessen
+Ende sich nicht von einem Abbruch unterscheiden lässt; der Fehler nennt den Status, falls die
+Antwort einen hat.
+\stopitemize
+
+Der Client folgt keiner Weiterleitung und nennt stattdessen die neue Adresse, falls die Antwort
+sie nennt, damit das Token nie an einen anderen Host geht.
+Das Token liegt nur im Speicher des Clients: Es steht in keinem Fehler, in keiner Ausgabe zur
+Fehlersuche und in keinem Eintrag eines Logs.
+Die Auflösung des Namens hat eine Frist von 30 Sekunden, der Aufbau der Verbindung mit TLS noch
+einmal 30 Sekunden, und jedes einzelne Lesen und Schreiben eine Frist von 60 Sekunden ohne Daten.
+Für eine ganze Anfrage gilt keine Frist, sodass ein langer Klon nicht abbricht, solange Bytes
+fliessen.
+Den Status behält der Client als grobe Klasse der letzten Antwort; daraus liest ein Befehl, was
+der Rumpf nicht sagt, etwa dass der Hub ausgelastet ist oder dass das Remote eine Anmeldung
+braucht.
+
+\startinfobox
+{\bf Eigene CA und Tests ohne Hub.}
+Ein Remote kann eine CA-Datei nennen, für einen Hub mit dem Zertifikat einer eigenen CA.
+Ihre Zertifikate ersetzen dann für dieses Remote die eingebauten Wurzeln, statt sie zu ergänzen;
+ein Zertifikat, das ein Administrator dem Vertrauensspeicher des Systems hinzufügt, zählt nicht.
+Die Tests des Clients brauchen keinen Hub: Ein Responder auf einem Loopback-Socket beantwortet jede
+Anfrage mit Bytes, die der Test vorgibt, und spricht mit einer Test-CA auch TLS.
+Die Tests gegen einen echten Hub liegen in stemma-hub (ADR-022).
+Noch nicht gebaut sind die Kompression mit zstd (ADR-029) und die Wiederholung einer Anfrage,
+die der Hub wegen Auslastung ablehnt; sie kommen mit dem Upload und den Befehlen.
+\stopinfobox
+
 \section[sec:hub-auth]{Anmeldung am Hub}
 
 Der Hub muss wissen, welcher Schlüssel eine Anfrage sendet.
@@ -800,7 +858,7 @@ Remote-Referenzen sind Wurzeln der Erreichbarkeit.
 Gebaut ist davon, was ein Klon ablegt und liest, und \type{fetch}; \type{push} folgt.
 Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
 fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
-dem festgehaltenen Schlüssel des Hubs, einer zusätzlichen CA-Datei und der Angabe, ob der Hub
+dem festgehaltenen Schlüssel des Hubs, einer eigenen CA-Datei und der Angabe, ob der Hub
 eine Anmeldung verlangt.
 Der Pfad der CA-Datei ist absolut, denn alle Worktrees teilen die Konfiguration,
 und ein relativer Pfad meinte je nach Verzeichnis eine andere Datei.
