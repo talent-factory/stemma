@@ -169,7 +169,7 @@ fn init_bare_makes_the_layout_without_head_working_copy_and_log() {
     );
     assert_eq!(
         fs::read(root.join("format")).unwrap(),
-        b"stemma-repository 17\n"
+        b"stemma-repository 18\n"
     );
     assert_eq!(fs::read(root.join("bare")).unwrap(), b"stemma-bare\n");
     // The temporary directory of `init_bare` is gone: nothing else lies beside the repository.

@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(check.result(), CheckResult::Pass);
         assert_eq!(
             std::fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 17\n"
+            "stemma-repository 18\n"
         );
         let found = f.repository.checks().unwrap();
         assert_eq!(found.len(), 1);

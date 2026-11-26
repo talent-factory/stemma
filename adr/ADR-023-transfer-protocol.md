@@ -351,8 +351,9 @@ is refused as such whatever follows. The one exception is the reader of the erro
 
 A small message has no line that names its type; the request says which message is expected, and
 each reader refuses the messages of the others. No message carries a count or an end mark: a
-list of references that is cut after a whole line from the `key` line on, a fetch request that
-is cut after a whole line from its first `want` on, and a stream that is cut between two frames
+list of references that is cut after a whole line from the `key` line on (but between a `former`
+line and the `former-signature` line, which must follow), a fetch request that is cut after a
+whole line from its first `want` on, and a stream that is cut between two frames
 read as shorter messages. A cut before a line that must be there is refused as a missing line,
 and so is every cut of an error message; a cut inside a line or a frame is refused as cut off.
 The carrier must report a body that ends early, as HTTP does by the length of the body, and an
@@ -366,6 +367,7 @@ stemma-protocol 1                                   the list of references
 repository <32 lower-case hexadecimal digits>
 key ssh-ed25519 <base64>
 former <first> <last> ssh-ed25519 <base64>          zero or more
+former-signature <SSHSIG signature on one line>     once if there is a former key
 ref heads/<name> <commit> <record entry>            zero or more, then tags/<name>
 
 stemma-protocol 1                                   the fetch request
@@ -386,7 +388,8 @@ want <commit>
 
 - **List of references.** A key is an Ed25519 public key in the OpenSSH form without a comment.
   A former key names the range of record numbers that it signed (ADR-026); the ranges ascend and
-  share no number. The references stand in the order of the bytes of their qualified names, each
+  share no number. The current key signs the former keys, and the line `former-signature`
+  follows them; the reader checks it against the `repository` and `key` lines (ADR-026). The references stand in the order of the bytes of their qualified names, each
   once; the record entry is the hash of the last record entry of the name (ADR-025), in the form
   of an object ID. The list holds the references that exist: a deleted name is not listed, and a
   client that creates it again learns its chain from the `Stale` answer.

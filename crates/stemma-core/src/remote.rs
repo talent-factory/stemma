@@ -44,9 +44,13 @@ use std::str::FromStr;
 use crate::fault;
 use crate::object::{CommitId, ObjectId};
 use crate::protocol::{RecordHash, RepositoryId};
+// Pinning of the key of the hub (STEMMA-297).
+use crate::protocol::record::HubKeys;
+use crate::protocol::RefList;
 use crate::refs::{
     BranchName, BranchNameError, BranchNameProblem, RefKind, RefMalformed, RefParseError,
 };
+use crate::signature::KeyFingerprint;
 use crate::signature::PublicKey;
 
 /// The directory below the metadata directory that holds one configuration file per remote.
@@ -766,6 +770,152 @@ pub(crate) fn read_one(
         None => Ok(None),
     }
 }
+
+// Pinning of the key of the hub (ADR-026, STEMMA-297).
+
+impl RemoteConfig {
+    /// Pins the key of the hub on the first contact (`remote add`, `clone`) and returns its
+    /// fingerprint, which the command shows (ADR-026). With `expected`, a fingerprint that a
+    /// human got on a second channel, the key is pinned only if it has that fingerprint, so the
+    /// first contact need not be taken on trust.
+    ///
+    /// A configuration that pinned the key already keeps it: the same key is no change, and
+    /// another key is refused, as [`hub_keys`](Self::hub_keys) refuses it. Only
+    /// [`Repository::pin_hub_key_again`](crate::repository::Repository::pin_hub_key_again)
+    /// replaces a key.
+    ///
+    /// # Errors
+    ///
+    /// [`HubKeyError::OtherRepository`] if the list is that of another repository than the one
+    /// of the configuration, [`HubKeyError::Unexpected`] if the key of the list does not have
+    /// the fingerprint `expected`, and [`HubKeyError::Changed`] if the configuration pinned
+    /// another key. The configuration is unchanged then.
+    pub fn pin_first_contact(
+        &mut self,
+        list: &RefList,
+        expected: Option<&KeyFingerprint>,
+    ) -> Result<KeyFingerprint, HubKeyError> {
+        if list.repository() != self.repository {
+            return Err(HubKeyError::OtherRepository);
+        }
+        let offered = list.key().fingerprint();
+        if let Some(expected) = expected.filter(|expected| **expected != offered) {
+            return Err(HubKeyError::Unexpected {
+                expected: *expected,
+                offered,
+            });
+        }
+        match &self.hub_key {
+            Some(pinned) if pinned != list.key() => Err(HubKeyError::Changed {
+                pinned: pinned.fingerprint(),
+                offered,
+            }),
+            Some(_) => Ok(offered),
+            None => {
+                self.hub_key = Some(list.key().clone());
+                Ok(offered)
+            }
+        }
+    }
+
+    /// The key that the configuration pinned, against which every receipt and every
+    /// confirmation of the hub is checked
+    /// ([`RecordEntry::check_receipt`](crate::protocol::record::RecordEntry::check_receipt)).
+    ///
+    /// # Errors
+    ///
+    /// [`HubKeyError::NotPinned`] if the configuration holds no key.
+    pub fn pinned_key(&self) -> Result<&PublicKey, HubKeyError> {
+        self.hub_key.as_ref().ok_or(HubKeyError::NotPinned)
+    }
+
+    /// The keys of the hub by record number, for a list of references that the hub just sent:
+    /// the pinned key as the current key, and the former keys of the list, which the reader of
+    /// the list checked against its `key` line. Old record entries are checked through them
+    /// ([`HubKeys::at`]).
+    ///
+    /// A clone never follows a rotation on its own, not even when the list names the pinned key
+    /// as a former key: a statement of rotation is worthless once the old key is stolen
+    /// (ADR-026). A human pins the new key again.
+    ///
+    /// The list must be one of the repository of the remote: its former keys were signed for
+    /// that repository, and their ranges count its record numbers.
+    ///
+    /// # Errors
+    ///
+    /// [`HubKeyError::NotPinned`] if the configuration holds no key,
+    /// [`HubKeyError::OtherRepository`] if the list is that of another repository, and
+    /// [`HubKeyError::Changed`] if the list names another key than the pinned one. Nothing may
+    /// move then.
+    pub fn hub_keys(&self, list: &RefList) -> Result<HubKeys, HubKeyError> {
+        let pinned = self.pinned_key()?;
+        if list.repository() != self.repository {
+            return Err(HubKeyError::OtherRepository);
+        }
+        if pinned != list.key() {
+            return Err(HubKeyError::Changed {
+                pinned: pinned.fingerprint(),
+                offered: list.key().fingerprint(),
+            });
+        }
+        Ok(HubKeys::try_new(pinned.clone(), list.former_keys().clone())
+            .expect("the reader of a list checked its former keys against its key"))
+    }
+}
+
+/// Why a clone does not trust the key that a hub names (ADR-026). Each one leaves the remote
+/// references and the configuration as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HubKeyError {
+    /// The configuration of the remote holds no key of the hub.
+    NotPinned,
+    /// The hub names another key than the one the clone pinned. The hub rotated its key, or
+    /// another hub answers under its address: a human compares the fingerprint on a second
+    /// channel and pins the key again.
+    Changed {
+        /// The fingerprint of the pinned key.
+        pinned: KeyFingerprint,
+        /// The fingerprint of the key that the hub names.
+        offered: KeyFingerprint,
+    },
+    /// The list of references is that of another repository than the one of the remote.
+    OtherRepository,
+    /// The key that the hub names does not have the fingerprint that was expected.
+    Unexpected {
+        /// The fingerprint that the caller passed.
+        expected: KeyFingerprint,
+        /// The fingerprint of the key that the hub names.
+        offered: KeyFingerprint,
+    },
+}
+
+impl fmt::Display for HubKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPinned => {
+                f.write_str("the configuration of the remote pinned no key of the hub")
+            }
+            Self::OtherRepository => f.write_str(
+                "the hub answers with the list of another repository than the one of the remote",
+            ),
+            Self::Changed { pinned, offered } => write!(
+                f,
+                "the hub names the key {offered}, but the key {pinned} is pinned; compare the \
+                 fingerprint on a second channel and pin the key again"
+            ),
+            Self::Unexpected { expected, offered } => write!(
+                f,
+                "the hub names the key {offered}, but the key {expected} was expected"
+            ),
+        }
+    }
+}
+
+impl Error for HubKeyError {}
+
+#[cfg(test)]
+mod pin_tests;
 
 // The writer of the configuration (STEMMA-295).
 

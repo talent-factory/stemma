@@ -183,7 +183,8 @@ use crate::protocol::statement::StatementHash;
 use crate::protocol::RecordHash;
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::register::Identity;
-use crate::remote::{RemoteRef, RemoteRefName, RemoteRefNameError};
+use crate::remote::{RemoteName, RemoteRef, RemoteRefName, RemoteRefNameError};
+use crate::signature::PublicKey;
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError, ActorRef};
 
@@ -267,6 +268,11 @@ pub const CHECK_STATEMENT_VERSION: u32 = 2;
 /// approver signs the statement that the entry names (ADR-025); in the repository formats 10
 /// to 15 the signature was a proof file.
 pub const PR_APPROVE: &str = "pr-approve";
+
+/// The operation of the entry that pins the key of the hub of a remote again (ADR-026,
+/// STEMMA-297): a human replaces the pinned key by a new one, with a fingerprint from a second
+/// channel. It belongs to the entry of a pinning and to no change (repository format 18).
+pub const REMOTE_PIN: &str = "remote-pin";
 
 /// The most reviewers that the entry of an opening names.
 pub const MAX_REVIEWERS: usize = 32;
@@ -530,6 +536,16 @@ pub enum EntryError {
     /// A check entry names the commit it tested as its base: a run merged onto itself says
     /// nothing. Carries its number.
     CheckBaseIsCommit(u64),
+    /// The entry of a pinning was written before the hash chain. Carries its number. The entry
+    /// came with the chain, so it has no older encoding.
+    RemotePinOutsideChain(u64),
+    /// The entry of a pinning names the same key as the old and the new key: nothing changed.
+    RemotePinUnchanged,
+    /// The entry of a pinning names an agent as its actor. Only a human pins the key of a hub.
+    RemotePinByAgent,
+    /// The entry of a pinning names no commit, so a purge never replaces it with a stub.
+    /// Carries its number.
+    RemotePinNotReplaceable(u64),
 }
 
 impl fmt::Display for EntryError {
@@ -642,6 +658,20 @@ impl fmt::Display for EntryError {
                 f,
                 "the base of the check entry {number} is the commit it tested"
             ),
+            Self::RemotePinOutsideChain(number) => write!(
+                f,
+                "the entry {number} that pins the key of a hub cannot be older than the hash chain"
+            ),
+            Self::RemotePinNotReplaceable(number) => write!(
+                f,
+                "the entry {number} that pins the key of a hub names no commit and is never a stub"
+            ),
+            Self::RemotePinByAgent => {
+                f.write_str("the entry of a pinning names an agent; only a human pins a key")
+            }
+            Self::RemotePinUnchanged => {
+                f.write_str("the entry of a pinning names the same key as its old and its new key")
+            }
             Self::BadReason => write!(
                 f,
                 "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
@@ -799,6 +829,7 @@ impl Change {
             || LeaseKind::from_operation(operation.as_str()).is_some()
             || PullKind::from_operation(operation.as_str()).is_some()
             || operation.as_str() == CHECK
+            || operation.as_str() == REMOTE_PIN
         {
             return Err(EntryError::ReservedOperation);
         }
@@ -1996,6 +2027,94 @@ impl CheckEntry {
     }
 }
 
+// The entry that pins the key of a hub again (ADR-026, STEMMA-297).
+
+/// The entry of a pinning: a human replaced the key of the hub that the configuration of a
+/// remote pinned (ADR-026). It names the remote, the key that was pinned before (none if the
+/// configuration had none), and the new key, and no commit, so that a purge never touches it.
+///
+/// ```text
+/// operation remote-pin
+/// remote origin
+/// old ssh-ed25519 <base64>        or   old -
+/// new ssh-ed25519 <base64>
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemotePinEntry {
+    time: i64,
+    actor: Actor,
+    remote: RemoteName,
+    old: Option<PublicKey>,
+    new: PublicKey,
+}
+
+impl RemotePinEntry {
+    /// The entry of `actor`, who pins `new` for the hub of `remote` in place of `old`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EntryError::RemotePinByAgent`] if `actor` is an agent, as only a human pins the
+    /// key of a hub (ADR-026), and [`EntryError::RemotePinUnchanged`] if `old` is `new`.
+    pub fn try_new(
+        time: i64,
+        actor: Actor,
+        remote: RemoteName,
+        old: Option<PublicKey>,
+        new: PublicKey,
+    ) -> Result<Self, EntryError> {
+        if matches!(actor.view(), ActorRef::Agent { .. }) {
+            return Err(EntryError::RemotePinByAgent);
+        }
+        if old.as_ref() == Some(&new) {
+            return Err(EntryError::RemotePinUnchanged);
+        }
+        Ok(Self {
+            time,
+            actor,
+            remote,
+            old,
+            new,
+        })
+    }
+
+    /// The time that the writer claims, in seconds since the Unix epoch (UTC).
+    pub fn time(&self) -> i64 {
+        self.time
+    }
+
+    /// The human who pinned the key.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    /// The remote whose configuration holds the key.
+    pub fn remote(&self) -> &RemoteName {
+        &self.remote
+    }
+
+    /// The key that was pinned before, or `None` if the configuration held none.
+    pub fn old(&self) -> Option<&PublicKey> {
+        self.old.as_ref()
+    }
+
+    /// The key that is pinned now.
+    pub fn new_key(&self) -> &PublicKey {
+        &self.new
+    }
+
+    /// The lines of the body, which the hash of the body covers.
+    fn body_text(&self) -> String {
+        let old = self
+            .old
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), PublicKey::to_openssh);
+        format!(
+            "operation {REMOTE_PIN}\nremote {}\nold {old}\nnew {}\n",
+            self.remote, self.new
+        )
+    }
+}
+
 /// What an entry holds. The enum is exhaustive on purpose: a new kind of entry has to be handled
 /// by every reader, which the compiler then shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2012,6 +2131,8 @@ pub enum Record {
     Pull(PullEntry),
     /// The result of a check run (ADR-019).
     Check(CheckEntry),
+    /// A key of a hub pinned again (ADR-026).
+    RemotePin(RemotePinEntry),
 }
 
 /// An entry of the log: a number, its place in the hash chain, and a record, which is a change,
@@ -2088,6 +2209,9 @@ impl Entry {
             }
             (Record::Lease(_), Chain::Unchained) => {
                 return Err(EntryError::LeaseOutsideChain(number));
+            }
+            (Record::RemotePin(_), Chain::Unchained) => {
+                return Err(EntryError::RemotePinOutsideChain(number));
             }
             _ => {}
         }
@@ -2175,6 +2299,7 @@ impl Entry {
             Record::Lease(lease) => Some(lease.body_text()),
             Record::Pull(pull) => Some(pull.body_text()),
             Record::Check(check) => Some(check.body_text()),
+            Record::RemotePin(pin) => Some(pin.body_text()),
             Record::Change(change) => {
                 let mut out = format!("operation {}\n", change.operation);
                 if let Some(tag) = change.worktree.as_deref() {
@@ -2234,7 +2359,8 @@ impl Entry {
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Pull(_)
-            | Record::Check(_) => None,
+            | Record::Check(_)
+            | Record::RemotePin(_) => None,
         }
     }
 
@@ -2246,7 +2372,8 @@ impl Entry {
             | Record::Stub(_)
             | Record::Purge(_)
             | Record::Pull(_)
-            | Record::Check(_) => None,
+            | Record::Check(_)
+            | Record::RemotePin(_) => None,
         }
     }
 
@@ -2258,7 +2385,8 @@ impl Entry {
             | Record::Stub(_)
             | Record::Purge(_)
             | Record::Lease(_)
-            | Record::Check(_) => None,
+            | Record::Check(_)
+            | Record::RemotePin(_) => None,
         }
     }
 
@@ -2270,7 +2398,21 @@ impl Entry {
             | Record::Stub(_)
             | Record::Purge(_)
             | Record::Lease(_)
-            | Record::Pull(_) => None,
+            | Record::Pull(_)
+            | Record::RemotePin(_) => None,
+        }
+    }
+
+    /// The pinning of the key of a hub that the entry records, or `None` for any other entry.
+    pub fn remote_pin(&self) -> Option<&RemotePinEntry> {
+        match &self.record {
+            Record::RemotePin(pin) => Some(pin),
+            Record::Change(_)
+            | Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::Pull(_)
+            | Record::Check(_) => None,
         }
     }
 
@@ -2281,7 +2423,11 @@ impl Entry {
         match &self.record {
             Record::Pull(pull) => pull.statement,
             Record::Check(check) => check.statement,
-            Record::Change(_) | Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => None,
+            Record::Change(_)
+            | Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::RemotePin(_) => None,
         }
     }
 
@@ -2295,6 +2441,7 @@ impl Entry {
             Record::Lease(lease) => lease.time,
             Record::Pull(pull) => pull.time,
             Record::Check(check) => check.time,
+            Record::RemotePin(pin) => pin.time,
         }
     }
 
@@ -2308,6 +2455,7 @@ impl Entry {
             Record::Lease(lease) => &lease.actor,
             Record::Pull(pull) => &pull.actor,
             Record::Check(check) => &check.actor,
+            Record::RemotePin(pin) => &pin.actor,
         }
     }
 
@@ -2317,7 +2465,9 @@ impl Entry {
             Record::Change(change) => change.commits(),
             Record::Pull(pull) => pull.commits(),
             Record::Check(check) => check.commits(),
-            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) => Vec::new(),
+            Record::Stub(_) | Record::Purge(_) | Record::Lease(_) | Record::RemotePin(_) => {
+                Vec::new()
+            }
         }
     }
 
@@ -2336,6 +2486,9 @@ impl Entry {
         }
         if matches!(self.record, Record::Lease(_)) {
             return Err(EntryError::LeaseNotReplaceable(self.number));
+        }
+        if matches!(self.record, Record::RemotePin(_)) {
+            return Err(EntryError::RemotePinNotReplaceable(self.number));
         }
         let body = self.body_hash();
         let replaced = match (&self.record, &self.chain) {
@@ -2487,6 +2640,9 @@ impl Entry {
             .and_then(PullKind::from_operation);
         if version == 3 && lines.get(body).copied() == Some(&format!("operation {CHECK}")) {
             return parse_check(&lines, body, number, chain, time, actor);
+        }
+        if version == 3 && lines.get(body).copied() == Some(&format!("operation {REMOTE_PIN}")) {
+            return parse_remote_pin(&lines, body, number, chain, time, actor);
         }
         if let (3, Some(kind)) = (version, pull_kind) {
             return parse_pull(&lines, body, number, chain, time, actor, kind);
@@ -2818,6 +2974,47 @@ fn parse_check(
         return Err(malformed(next + 1, EntryMalformed::TrailingLine));
     }
     Entry::linked(number, chain, Record::Check(check)).map_err(EntryParseError::Entry)
+}
+
+/// Reads the body of the entry of a pinning, which starts with the line `operation remote-pin` at
+/// the index `body`: `remote <name>`, `old <key>` or `old -`, and `new <key>`. A key is in its
+/// canonical form, without a comment.
+fn parse_remote_pin(
+    lines: &[&str],
+    body: usize,
+    number: u64,
+    chain: Chain,
+    time: i64,
+    actor: Actor,
+) -> Result<Entry, EntryParseError> {
+    let malformed = |line, reason| EntryParseError::Malformed { line, reason };
+    let line_at = |index: usize, key: &str, reason| -> Result<&str, EntryParseError> {
+        lines
+            .get(index)
+            .and_then(|line| line.strip_prefix(key))
+            .ok_or_else(|| malformed(index + 1, reason))
+    };
+    let key_at = |index: usize, text: &str, reason| -> Result<PublicKey, EntryParseError> {
+        PublicKey::from_openssh(text)
+            .ok()
+            .filter(|key| key.to_openssh() == text)
+            .ok_or_else(|| malformed(index + 1, reason))
+    };
+    let remote = line_at(body + 1, "remote ", EntryMalformed::ExpectedRemote)?;
+    let remote = RemoteName::try_new(remote)
+        .map_err(|_| malformed(body + 2, EntryMalformed::ExpectedRemote))?;
+    let old = match line_at(body + 2, "old ", EntryMalformed::ExpectedOldKey)? {
+        "-" => None,
+        text => Some(key_at(body + 2, text, EntryMalformed::ExpectedOldKey)?),
+    };
+    let new = line_at(body + 3, "new ", EntryMalformed::ExpectedNewKey)?;
+    let new = key_at(body + 3, new, EntryMalformed::ExpectedNewKey)?;
+    if body + 4 < lines.len() {
+        return Err(malformed(body + 5, EntryMalformed::TrailingLine));
+    }
+    RemotePinEntry::try_new(time, actor, remote, old, new)
+        .and_then(|pin| Entry::linked(number, chain, Record::RemotePin(pin)))
+        .map_err(EntryParseError::Entry)
 }
 
 /// Reads the line `statement <hash>` at the index `index`: the hash of a signed statement in
@@ -3265,6 +3462,14 @@ pub enum EntryMalformed {
     ExpectedResult,
     /// A check of version 2 has no line `statement <hash>` after the result.
     ExpectedStatement,
+    /// The entry of a pinning lacks the line `remote <name>`, or the name is no name of a remote.
+    ExpectedRemote,
+    /// The entry of a pinning lacks the line `old <key>` or `old -`, or the key is not in its
+    /// canonical form.
+    ExpectedOldKey,
+    /// The entry of a pinning lacks the line `new <key>`, or the key is not in its canonical
+    /// form.
+    ExpectedNewKey,
     /// A value of a line `remote` has a commit without the hash of its record entry, or the
     /// other way round: both are `-`, or neither is.
     HalfRemoteValue,
@@ -3326,6 +3531,13 @@ impl fmt::Display for EntryMalformed {
             Self::ExpectedBase => "expected the line `base <id>` or `base -`",
             Self::ExpectedResult => "expected the line `result pass` or `result fail`",
             Self::ExpectedStatement => "expected the line `statement <hash>`",
+            Self::ExpectedRemote => "expected the line `remote <name>` with the name of a remote",
+            Self::ExpectedOldKey => {
+                "expected the line `old <key>` with an Ed25519 key without a comment, or `old -`"
+            }
+            Self::ExpectedNewKey => {
+                "expected the line `new <key>` with an Ed25519 key without a comment"
+            }
             Self::HalfRemoteValue => {
                 "expected the commit and the record entry of the remote reference, or `- -`"
             }
@@ -4417,6 +4629,17 @@ impl FsOpLog {
         self.append_record(&Record::Check(check.clone()))
     }
 
+    /// Writes the entry that pins the key of a hub again, as [`append`](Self::append) writes the
+    /// entry of a change. The entry names no pointer, so the caller holds the lock of the
+    /// references while it reads and replaces the configuration of the remote (ADR-026).
+    ///
+    /// # Errors
+    ///
+    /// See [`append`](Self::append).
+    pub(crate) fn append_remote_pin(&self, pin: &RemotePinEntry) -> Result<Entry, OpLogError> {
+        self.append_record(&Record::RemotePin(pin.clone()))
+    }
+
     /// Writes the entries of a purge, as [`append`](Self::append) writes an entry, and returns
     /// them. A list of stubs that does not fit into one entry is split over several, and the first
     /// has the count of commits (ADR-014). The entries go after the ones that they list. Before
@@ -5069,7 +5292,8 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Pull(_)
-            | Record::Check(_) => continue,
+            | Record::Check(_)
+            | Record::RemotePin(_) => continue,
             Record::Stub(_) => {
                 behind_stub = true;
                 continue;
@@ -9765,6 +9989,158 @@ mod tests {
         log.verify().expect("the whole log is in the chain");
         let purge = Purge::try_new(TIME, human(), 2, &[1]).unwrap();
         log.append_purge(purge).unwrap();
+        log.verify().expect("the whole log is in the chain");
+    }
+
+    // The entry that pins the key of a hub again (STEMMA-297).
+
+    fn hub_key(seed: u8) -> PublicKey {
+        crate::protocol::record::tests::Seeded::new(seed).public()
+    }
+
+    fn remote_pin(old: Option<u8>) -> RemotePinEntry {
+        RemotePinEntry::try_new(
+            TIME,
+            human(),
+            RemoteName::try_new("origin").unwrap(),
+            old.map(hub_key),
+            hub_key(0x71),
+        )
+        .unwrap()
+    }
+
+    fn pin_entry(pin: RemotePinEntry) -> Entry {
+        Entry::linked(7, Chain::Start, Record::RemotePin(pin)).unwrap()
+    }
+
+    #[test]
+    fn a_remote_pin_entry_is_written_as_it_is_read() {
+        for pin in [remote_pin(Some(0x70)), remote_pin(None)] {
+            let entry = pin_entry(pin.clone());
+            let text = String::from_utf8(entry.encode()).unwrap();
+            let old = pin
+                .old()
+                .map_or_else(|| "-".to_owned(), PublicKey::to_openssh);
+            assert!(
+                text.starts_with("stemma-oplog 3\nnumber 7\n")
+                    && text.ends_with(&format!(
+                        "previous -\noperation remote-pin\nremote origin\nold {old}\nnew {}\n",
+                        hub_key(0x71)
+                    )),
+                "{text}"
+            );
+            let read = Entry::parse(text.as_bytes()).unwrap();
+            assert_eq!(read, entry);
+            assert_eq!(read.remote_pin(), Some(&pin));
+            assert_eq!(read.time(), TIME);
+            assert_eq!(read.actor(), &human());
+            assert!(read.commits().is_empty());
+            assert_eq!(read.change(), None);
+            assert_eq!(read.statement(), None);
+        }
+    }
+
+    #[test]
+    fn the_reader_refuses_what_the_remote_pin_writer_does_not_write() {
+        let good = String::from_utf8(pin_entry(remote_pin(Some(0x70))).encode()).unwrap();
+        let old = hub_key(0x70).to_string();
+        let new = hub_key(0x71).to_string();
+        let cases = [
+            // The entry names the chain: no older encoding has it.
+            good.replace("stemma-oplog 3", "stemma-oplog 2"),
+            good.replace("stemma-oplog 3", "stemma-oplog 4"),
+            // Lines missing, out of order, repeated, or added.
+            good.replace("remote origin\n", ""),
+            good.replace(&format!("old {old}\n"), ""),
+            good.replace(&format!("new {new}\n"), ""),
+            good.clone() + &format!("new {new}\n"),
+            good.replace(
+                &format!("old {old}\nnew {new}\n"),
+                &format!("new {new}\nold {old}\n"),
+            ),
+            // A name that no remote has, a key that is not canonical, the same key twice.
+            good.replace("remote origin", "remote a/b"),
+            good.replace("remote origin", "remote "),
+            good.replace(&format!("old {old}"), "old ssh-ed25519 AAAA"),
+            good.replace(&format!("old {old}"), &format!("old {old} comment")),
+            good.replace(&format!("new {new}"), "new -"),
+            good.replace(&format!("old {old}"), &format!("old {new}")),
+            // An agent does not pin the key of a hub.
+            good.replace(
+                "actor human daniel",
+                "actor agent a1 model=m session=s1 sponsor=daniel",
+            ),
+        ];
+        for bad in cases {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // A program that does not know the entry reads it as a change without a pointer, which
+        // is damage: the reason for the repository format 18.
+        let change = good.replace("operation remote-pin", "operation remote-pinned");
+        assert!(Entry::parse(change.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn a_remote_pin_entry_is_refused_for_the_same_key_outside_the_chain_and_as_a_stub() {
+        assert_eq!(
+            RemotePinEntry::try_new(
+                TIME,
+                human(),
+                RemoteName::try_new("origin").unwrap(),
+                Some(hub_key(0x71)),
+                hub_key(0x71),
+            ),
+            Err(EntryError::RemotePinUnchanged)
+        );
+        assert_eq!(
+            Entry::linked(3, Chain::Unchained, Record::RemotePin(remote_pin(None))),
+            Err(EntryError::RemotePinOutsideChain(3))
+        );
+        assert_eq!(
+            pin_entry(remote_pin(None)).to_stub(),
+            Err(EntryError::RemotePinNotReplaceable(7))
+        );
+        assert_eq!(
+            RemotePinEntry::try_new(
+                TIME,
+                Actor::agent("a1", "m", "s1", "daniel").unwrap(),
+                RemoteName::try_new("origin").unwrap(),
+                None,
+                hub_key(0x71),
+            ),
+            Err(EntryError::RemotePinByAgent)
+        );
+        for error in [
+            EntryError::RemotePinByAgent,
+            EntryError::RemotePinUnchanged,
+            EntryError::RemotePinOutsideChain(3),
+            EntryError::RemotePinNotReplaceable(7),
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+        // A change cannot take the name of the operation.
+        assert_eq!(
+            Change::try_new(
+                TIME,
+                human(),
+                OperationName::try_new(REMOTE_PIN).unwrap(),
+                None,
+                None,
+                vec![(
+                    BranchName::try_new("main").unwrap(),
+                    Moved::from_to(None, Some(commit(A)))
+                )],
+            ),
+            Err(EntryError::ReservedOperation)
+        );
+    }
+
+    #[test]
+    fn the_log_appends_and_reads_a_remote_pin_entry() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let written = log.append_remote_pin(&remote_pin(Some(0x70))).unwrap();
+        assert_eq!(log.read(1).unwrap().remote_pin(), written.remote_pin());
         log.verify().expect("the whole log is in the chain");
     }
 }

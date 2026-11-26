@@ -128,8 +128,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 17, the version of the line `remote` of an
-  entry (STEMMA-295), and `open` reads the versions 2 to 17.
+  supports: `init` and `init_bare` write version 18, the version of the entry `remote-pin`
+  (STEMMA-297), and `open` reads the versions 2 to 18.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
@@ -137,8 +137,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   entries `pr-open`, `pr-close`, and `pr-merge`; ADR-004, ADR-011), before the approvals (9, the
   entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
   (11), before the former owner of a worktree (12), before the remotes (13), before the bare
-  repository (14), before the signed statements (15), or before the line `remote` (16) rises
-  to 17 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  repository (14), before the signed statements (15), before the line `remote` (16), or before
+  the entry `remote-pin` (17) rises to 18 with its next entry or purge (ADR-014, ADR-011,
+  ADR-010).
+  Version 18 adds the entry `remote-pin`, which pins the key of the hub of a remote again
+  (ADR-011, ADR-026). It adds no file. A program that knows only version 17 would read it as a
+  change without a pointer, which is damage, so it has to refuse the repository.
   Version 17 adds the line `remote` of an entry, which the entry `fetch` and the restore of one
   write (ADR-011, ADR-008). It adds no file. A program that knows only version 16 would call
   such a line damage, so it has to refuse the repository.

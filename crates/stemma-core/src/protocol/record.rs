@@ -68,8 +68,8 @@ use std::io::{self, Write};
 use std::str::FromStr;
 
 use super::{
-    first_line, malformed, parse_commit, parse_key, parse_positive, FormerKey, Lines, Malformed,
-    ParseError, QualifiedName, RecordHash, RefListError, RepositoryId, VERSION,
+    first_line, malformed, parse_commit, parse_key, parse_positive, FormerKey, FormerKeys, Lines,
+    Malformed, ParseError, QualifiedName, RecordHash, RefListError, RepositoryId, VERSION,
 };
 use crate::conflict::AnyCommit;
 use crate::object::{parse_seconds, CommitId, ObjectId, ObjectIdParseError};
@@ -1764,30 +1764,27 @@ impl Error for RecordError {}
 
 /// The keys of a hub by the numbers of the record entries that they signed (ADR-026): the
 /// current key, which a clone pinned, and the former keys with their ranges, which the list of
-/// references names.
+/// references names and the current key signed ([`FormerKeys`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HubKeys {
     current: PublicKey,
-    former: Vec<FormerKey>,
+    former: FormerKeys,
 }
 
 impl HubKeys {
     /// The keys of a hub: the current key, which the caller trusts (a clone passes the key that
-    /// it pinned, not the key that a list of references names), and the former keys. A number
-    /// in the range of a former key was signed by that key, and every other number by the
-    /// current key.
+    /// it pinned, not the key that a list of references names,
+    /// [`RemoteConfig::hub_keys`](crate::remote::RemoteConfig::hub_keys)), and the former keys
+    /// that this key signed. A number in the range of a former key was signed by that key, and
+    /// every other number by the current key.
     ///
     /// # Errors
     ///
-    /// [`RefListError::OverlappingRanges`] if two former keys share a record number, by the rule
-    /// of [`RefList::try_new`](super::RefList::try_new).
-    pub fn try_new(current: PublicKey, mut former: Vec<FormerKey>) -> Result<Self, RefListError> {
-        former.sort_by_key(FormerKey::first);
-        if let Some(pair) = former
-            .windows(2)
-            .find(|pair| pair[1].first() <= pair[0].last())
-        {
-            return Err(RefListError::OverlappingRanges(pair[1].first()));
+    /// [`RefListError::FormerKeysOfOtherKey`] if another key than `current` signed the former
+    /// keys, by the rule of [`RefList::try_new`](super::RefList::try_new).
+    pub fn try_new(current: PublicKey, former: FormerKeys) -> Result<Self, RefListError> {
+        if !former.signed_by(&current) {
+            return Err(RefListError::FormerKeysOfOtherKey);
         }
         Ok(Self { current, former })
     }
@@ -1799,20 +1796,33 @@ impl HubKeys {
 
     /// The former keys, in the order of their ranges, which share no number.
     pub fn former(&self) -> &[FormerKey] {
+        self.former.keys()
+    }
+
+    /// The former keys with the signature of the current key over them.
+    pub fn former_keys(&self) -> &FormerKeys {
         &self.former
     }
 
-    /// The key that signed the entry with this number.
+    /// The key that signed the entry with this number in the repository of the former keys
+    /// ([`FormerKeys::repository`]).
     pub fn at(&self, number: u64) -> &PublicKey {
-        self.former
+        self.former()
             .iter()
             .find(|former| (former.first()..=former.last()).contains(&number))
             .map_or(&self.current, FormerKey::key)
     }
 
-    /// Whether the key for the number of the entry signed it.
+    /// Whether the key for the number of the entry signed it. The former keys count only for
+    /// an entry of the repository that they were signed for; an entry of another repository is
+    /// checked against the current key alone.
     pub fn signed(&self, entry: &RecordEntry) -> bool {
-        &entry.hub_key() == self.at(entry.number)
+        let key = if self.former.of(entry.update.payload.repository) {
+            self.at(entry.number)
+        } else {
+            &self.current
+        };
+        &entry.hub_key() == key
     }
 
     /// Whether two entries prove that the hub rewrote its record (ADR-026): both are of one

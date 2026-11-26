@@ -11,17 +11,28 @@ use crate::object::{Blob, Commit, FileMode, Tree, TreeEntry};
 use crate::properties::{cases, seed, Rng};
 use crate::Actor;
 
-/// Three Ed25519 public keys, made for these tests; nobody holds their private halves.
+/// Three Ed25519 public keys, those of [`signer`] 0 to 2, so that a test can sign the former keys
+/// of a list with the current key.
 const KEYS: [&str; 3] = [
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIjwWEZ4603dDnTO8ilPzaYzYG5PnbKb6TxOzauTQ9du",
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMvFr9B9A1KP4dOTnLhI/EgEXCwoXP3pX0wkzADNmpZG",
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF95/u2UGkOnSZeFLSp5AKJ+ZHAzKs6FvxQ/kpc8m7yg",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBukB1t3yeP7Ps3hXNr1Ih88EDc+Yj97Dh73Y2awr3E3",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgHWll+choVbi4Hmd5cwMUyTcbn6vHN1GJQho7FMhXd",
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4hLAmA5LOfwJchE0qgIQk3Tt/SYMDT0Dy1AcjWVFep",
 ];
 
 const REPOSITORY: &str = "00112233445566778899aabbccddeeff";
 
 fn key(index: usize) -> PublicKey {
     PublicKey::from_openssh(KEYS[index]).unwrap()
+}
+
+/// The signer that holds the private half of `key(index)`.
+fn signer(index: usize) -> record::tests::Seeded {
+    record::tests::Seeded::new(0x30 + u8::try_from(index).unwrap())
+}
+
+/// The former keys, signed by the key of `signer(current)`.
+fn signed(current: usize, keys: Vec<FormerKey>) -> FormerKeys {
+    record::tests::signed_former_of(repository(), &signer(current), keys)
 }
 
 /// The text of an ID whose bytes are all `byte`.
@@ -90,10 +101,13 @@ fn example_refs() -> RefList {
     RefList::try_new(
         repository(),
         key(0),
-        vec![
-            FormerKey::try_new(41, 97, key(2)).unwrap(),
-            FormerKey::try_new(1, 40, key(1)).unwrap(),
-        ],
+        signed(
+            0,
+            vec![
+                FormerKey::try_new(41, 97, key(2)).unwrap(),
+                FormerKey::try_new(1, 40, key(1)).unwrap(),
+            ],
+        ),
         vec![
             Reference::new(name("tags/v0.1.0"), example_commit(), record(0xa3)),
             Reference::new(name("heads/main"), example_commit(), record(0xa1)),
@@ -132,7 +146,7 @@ fn read_stream(bytes: &[u8], limit: u64) -> Result<Vec<StreamObject>, StreamErro
 fn written(example_name: &str) -> Vec<u8> {
     match example_name {
         "refs" => example_refs().encode(),
-        "refs-empty" => RefList::try_new(repository(), key(0), Vec::new(), Vec::new())
+        "refs-empty" => RefList::try_new(repository(), key(0), FormerKeys::none(), Vec::new())
             .unwrap()
             .encode(),
         "fetch" => example_fetch().encode(),
@@ -261,12 +275,14 @@ fn the_list_of_references_has_this_text() {
          key {}\n\
          former 1 40 {}\n\
          former 41 97 {}\n\
+         former-signature {}\n\
          ref heads/feat/login {} {}\n\
          ref heads/main {main} {}\n\
          ref tags/v0.1.0 {main} {}\n",
         KEYS[0],
         KEYS[1],
         KEYS[2],
+        signature_to_line(example_refs().former_keys().signature().unwrap()),
         id_text(0x22),
         id_text(0xa2),
         id_text(0xa1),
@@ -651,7 +667,7 @@ fn refs_text() -> String {
 fn a_list_of_references_refuses_lines_that_are_missing_unknown_or_out_of_order() {
     let text = refs_text();
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    assert_eq!(lines.len(), 8);
+    assert_eq!(lines.len(), 9);
     let refused = |lines: &[&str]| RefList::parse(lines.concat().as_bytes()).unwrap_err();
     let at = |line, reason| ParseError::Malformed { line, reason };
 
@@ -680,8 +696,21 @@ fn a_list_of_references_refuses_lines_that_are_missing_unknown_or_out_of_order()
     );
     // A former key after a reference, the first line again, an unknown keyword, an empty line.
     assert_eq!(
-        refused(&[lines[0], lines[1], lines[2], lines[5], lines[3]]),
+        refused(&[lines[0], lines[1], lines[2], lines[6], lines[3]]),
         at(5, Malformed::Unexpected)
+    );
+    // The signature of the former keys must follow them, and only them.
+    assert_eq!(
+        refused(&[lines[0], lines[1], lines[2], lines[3], lines[4], lines[6]]),
+        at(6, Malformed::Expected("former-signature"))
+    );
+    assert_eq!(
+        refused(&[lines[0], lines[1], lines[2], lines[5], lines[6]]),
+        at(4, Malformed::Unexpected)
+    );
+    assert_eq!(
+        refused(&[lines[0], lines[1], lines[2], lines[3], lines[4], lines[5], lines[5]]),
+        at(7, Malformed::Unexpected)
     );
     for extra in [
         "stemma-protocol 1\n",
@@ -695,7 +724,7 @@ fn a_list_of_references_refuses_lines_that_are_missing_unknown_or_out_of_order()
         with_extra.push(extra);
         assert_eq!(
             refused(&with_extra),
-            at(9, Malformed::Unexpected),
+            at(10, Malformed::Unexpected),
             "{extra:?}"
         );
     }
@@ -807,8 +836,86 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
         );
     }
     // A gap between two ranges is no error, and neither is a range of one entry.
-    let gap = text.replacen("former 41 97 ", "former 97 97 ", 1);
-    assert!(RefList::parse(gap.as_bytes()).is_ok());
+    let gap = RefList::try_new(
+        repository(),
+        key(0),
+        signed(
+            0,
+            vec![
+                FormerKey::try_new(1, 40, key(1)).unwrap(),
+                FormerKey::try_new(97, 97, key(2)).unwrap(),
+            ],
+        ),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(RefList::parse(&gap.encode()).unwrap(), gap);
+    // A list whose former keys were changed, or whose signature is another one, is forged.
+    let signature_problem = |reason| ParseError::FormerKeys { line: 6, reason };
+    assert_eq!(
+        changed("former 41 97 ", "former 41 98 "),
+        signature_problem(FormerKeysProblem::Signature)
+    );
+    assert_eq!(
+        changed(
+            &format!("former 41 97 {}", KEYS[2]),
+            &format!("former 41 97 {}", KEYS[0])
+        ),
+        signature_problem(FormerKeysProblem::Signature)
+    );
+    assert_eq!(
+        changed("former-signature U", "former-signature !"),
+        signature_problem(FormerKeysProblem::SignatureForm)
+    );
+    assert_eq!(
+        changed("former-signature ", "former-signature  "),
+        signature_problem(FormerKeysProblem::SignatureForm)
+    );
+    // The current key is part of what it signed: the same list under another key is forged,
+    // even with a signature that this other key made over the same former keys.
+    let other_key = text.replacen(&format!("key {}", KEYS[0]), &format!("key {}", KEYS[1]), 1);
+    assert_eq!(
+        RefList::parse(other_key.as_bytes()).unwrap_err(),
+        signature_problem(FormerKeysProblem::Signature)
+    );
+    let resigned = signed(1, example_refs().former().to_vec());
+    let resigned_line = signature_to_line(resigned.signature().unwrap());
+    let original_line = signature_to_line(example_refs().former_keys().signature().unwrap());
+    assert!(RefList::parse(
+        other_key
+            .replacen(&original_line, &resigned_line, 1)
+            .as_bytes()
+    )
+    .is_ok());
+    assert_eq!(
+        RefList::parse(text.replacen(&original_line, &resigned_line, 1).as_bytes()).unwrap_err(),
+        signature_problem(FormerKeysProblem::Signature)
+    );
+    // The repository is part of what the current key signed: the block of one repository does
+    // not pass in the list of another.
+    let other_repository = text.replacen(REPOSITORY, "ffeeddccbbaa99887766554433221100", 1);
+    assert_eq!(
+        RefList::parse(other_repository.as_bytes()).unwrap_err(),
+        signature_problem(FormerKeysProblem::Signature)
+    );
+    assert_eq!(
+        RefList::try_new(
+            "ffeeddccbbaa99887766554433221100".parse().unwrap(),
+            key(0),
+            example_refs().former_keys().clone(),
+            Vec::new(),
+        )
+        .unwrap_err(),
+        RefListError::FormerKeysOfOtherRepository
+    );
+    for problem in [
+        FormerKeysProblem::Signature,
+        FormerKeysProblem::SignatureForm,
+    ] {
+        let error = signature_problem(problem);
+        assert!(error.to_string().starts_with("line 6: "), "{error}");
+        crate::fuzz::check_rejection(&error);
+    }
     assert_eq!(
         changed(
             &format!("former 1 40 {}", KEYS[1]),
@@ -820,13 +927,13 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
     // The references: their fields, their names, their IDs.
     assert_eq!(
         changed("ref heads/main ", "ref heads/main  "),
-        at(7, Malformed::Fields)
+        at(8, Malformed::Fields)
     );
     let entry = id_text(0xa1);
-    assert_eq!(changed(&format!(" {entry}"), ""), at(7, Malformed::Fields));
+    assert_eq!(changed(&format!(" {entry}"), ""), at(8, Malformed::Fields));
     assert_eq!(
         changed(&format!(" {entry}"), &format!(" {entry} ")),
-        at(7, Malformed::Fields)
+        at(8, Malformed::Fields)
     );
     for name in [
         "main",
@@ -838,7 +945,7 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
         assert_eq!(
             changed("ref heads/main ", &format!("ref {name} ")),
             ParseError::InvalidName {
-                line: 7,
+                line: 8,
                 source: QualifiedNameError::UnknownKind
             },
             "{name:?}"
@@ -849,7 +956,7 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
             matches!(
                 changed("ref heads/main ", &format!("ref {name} ")),
                 ParseError::InvalidName {
-                    line: 7,
+                    line: 8,
                     source: QualifiedNameError::Name(_)
                 }
             ),
@@ -859,24 +966,24 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
     // A space in a name is a further field.
     assert_eq!(
         changed("ref heads/main ", "ref heads/a b "),
-        at(7, Malformed::Fields)
+        at(8, Malformed::Fields)
     );
     assert!(matches!(
         changed(&entry, &entry.to_uppercase()),
-        ParseError::InvalidRecordHash { line: 7, .. }
+        ParseError::InvalidRecordHash { line: 8, .. }
     ));
     assert!(matches!(
         changed(&entry, "-"),
-        ParseError::InvalidRecordHash { line: 7, .. }
+        ParseError::InvalidRecordHash { line: 8, .. }
     ));
     let feat = id_text(0x22);
     assert!(matches!(
         changed(&feat, &feat[3..]),
-        ParseError::InvalidObjectId { line: 6, .. }
+        ParseError::InvalidObjectId { line: 7, .. }
     ));
     assert!(matches!(
         changed(&feat, "-"),
-        ParseError::InvalidObjectId { line: 6, .. }
+        ParseError::InvalidObjectId { line: 7, .. }
     ));
 }
 
@@ -886,8 +993,8 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
 fn a_list_of_references_refuses_references_that_are_repeated_or_out_of_order() {
     let text = refs_text();
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let (feat, main, tag) = (lines[5], lines[6], lines[7]);
-    let head = lines[..5].concat();
+    let (feat, main, tag) = (lines[6], lines[7], lines[8]);
+    let head = lines[..6].concat();
     let refused = |references: &[&str]| {
         RefList::parse(format!("{head}{}", references.concat()).as_bytes()).unwrap_err()
     };
@@ -895,13 +1002,13 @@ fn a_list_of_references_refuses_references_that_are_repeated_or_out_of_order() {
         line,
         reason: Malformed::Order,
     };
-    assert_eq!(refused(&[main, feat, tag]), out_of_order(7));
-    assert_eq!(refused(&[feat, tag, main]), out_of_order(8));
-    assert_eq!(refused(&[tag, feat]), out_of_order(7));
-    assert_eq!(refused(&[feat, main, main, tag]), out_of_order(8));
+    assert_eq!(refused(&[main, feat, tag]), out_of_order(8));
+    assert_eq!(refused(&[feat, tag, main]), out_of_order(9));
+    assert_eq!(refused(&[tag, feat]), out_of_order(8));
+    assert_eq!(refused(&[feat, main, main, tag]), out_of_order(9));
     // The same name at another commit is the same name.
     let moved = main.replace(&example_commit().to_string(), &id_text(0x55));
-    assert_eq!(refused(&[feat, main, moved.as_str(), tag]), out_of_order(8));
+    assert_eq!(refused(&[feat, main, moved.as_str(), tag]), out_of_order(9));
     // A branch and a tag of the same name are two references.
     let tag_main = main.replace("heads/main", "tags/main");
     assert!(RefList::parse(format!("{head}{feat}{main}{tag_main}{tag}").as_bytes()).is_ok());
@@ -912,7 +1019,7 @@ fn a_list_of_references_refuses_references_that_are_repeated_or_out_of_order() {
         RefList::try_new(
             repository(),
             key(0),
-            Vec::new(),
+            FormerKeys::none(),
             vec![
                 reference("heads/main", commit(1)),
                 reference("tags/main", commit(1)),
@@ -931,20 +1038,32 @@ fn a_list_of_references_refuses_references_that_are_repeated_or_out_of_order() {
         former(4, 3).unwrap_err(),
         RefListError::EmptyRange { first: 4, last: 3 }
     );
+    assert!(matches!(
+        FormerKeys::sign(
+            repository(),
+            &key(0),
+            vec![former(10, 20).unwrap(), former(1, 10).unwrap()],
+            &signer(0),
+        ),
+        Err(FormerKeysError::List(RefListError::OverlappingRanges(10)))
+    ));
+    // Former keys that another key signed make no list of this key.
     assert_eq!(
         RefList::try_new(
             repository(),
-            key(0),
-            vec![former(10, 20).unwrap(), former(1, 10).unwrap()],
+            key(1),
+            signed(0, vec![former(1, 10).unwrap()]),
             Vec::new(),
         )
         .unwrap_err(),
-        RefListError::OverlappingRanges(10)
+        RefListError::FormerKeysOfOtherKey
     );
     for error in [
         RefListError::EmptyRange { first: 4, last: 3 },
         RefListError::OverlappingRanges(10),
         RefListError::DuplicateReference(name("heads/main")),
+        RefListError::FormerKeysOfOtherKey,
+        RefListError::FormerKeysOfOtherRepository,
     ] {
         assert!(!error.to_string().is_empty());
     }
@@ -1485,9 +1604,15 @@ fn generated_refs(rng: &mut Rng) -> RefList {
             references.push(Reference::new(name(text), commit, entry));
         }
     }
+    let current = rng.below(3);
+    let former = if former.is_empty() {
+        FormerKeys::none()
+    } else {
+        record::tests::signed_former_of(RepositoryId::from_bytes(bytes), &signer(current), former)
+    };
     RefList::try_new(
         RepositoryId::from_bytes(bytes),
-        key(rng.below(3)),
+        key(current),
         former,
         references,
     )
@@ -1720,7 +1845,14 @@ fn a_carriage_return_is_refused_on_every_line_of_a_list_of_references() {
     assert_eq!(with_cr(2), key_form(3));
     assert_eq!(with_cr(3), key_form(4));
     assert_eq!(with_cr(4), key_form(5));
-    for at in 5..8 {
+    assert_eq!(
+        with_cr(5),
+        ParseError::FormerKeys {
+            line: 6,
+            reason: FormerKeysProblem::SignatureForm
+        }
+    );
+    for at in 6..9 {
         assert!(
             matches!(with_cr(at), ParseError::InvalidRecordHash { line, .. } if line == at + 1),
             "line {}",
@@ -1779,16 +1911,15 @@ fn a_reason_is_refused_by_the_rule_that_it_breaks() {
 fn the_edges_of_ranges_and_of_ids_are_exact() {
     let former = |first, last| FormerKey::try_new(first, last, key(1)).unwrap();
     assert_eq!(former(5, 5).first(), 5);
-    assert_eq!(
-        RefList::try_new(
+    assert!(matches!(
+        FormerKeys::sign(
             repository(),
-            key(0),
+            &key(0),
             vec![former(5, 20), former(1, 10)],
-            Vec::new()
-        )
-        .unwrap_err(),
-        RefListError::OverlappingRanges(5)
-    );
+            &signer(0),
+        ),
+        Err(FormerKeysError::List(RefListError::OverlappingRanges(5)))
+    ));
     assert_eq!(
         "0g112233445566778899aabbccddeeff".parse::<RepositoryId>(),
         Err(RepositoryIdParseError::NotHex(1))

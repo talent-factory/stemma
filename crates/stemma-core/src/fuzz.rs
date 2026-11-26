@@ -164,8 +164,8 @@ const PROTOCOL_MAX_OBJECT_LEN: u64 = 1 << 16;
 pub fn protocol(input: &[u8]) {
     use crate::protocol::record::Stale;
     use crate::protocol::{
-        ErrorMessage, FetchRequest, FormerKey, ObjectStreamReader, ObjectStreamWriter, ParseError,
-        Reason, RefList, Spoken, StreamError,
+        ErrorMessage, FetchRequest, FormerKey, FormerKeys, ObjectStreamReader, ObjectStreamWriter,
+        ParseError, Reason, RefList, Spoken, StreamError,
     };
     // A refusal is answered with a message that the reader of the error accepts.
     let check_refusal = |error: &ParseError| {
@@ -189,6 +189,14 @@ pub fn protocol(input: &[u8]) {
                 .map(|key| FormerKey::try_new(key.first(), key.last(), key.key().clone()))
                 .collect::<Result<Vec<_>, _>>()
                 .expect("the reader took a range that the writer refuses");
+            // The reader checked the signature over the former keys, so they build again.
+            let former = match list.former_keys().signature() {
+                None => FormerKeys::none(),
+                Some(signature) => {
+                    FormerKeys::try_new(list.repository(), list.key(), former, signature.clone())
+                        .expect("the reader took former keys that the writer refuses")
+                }
+            };
             let rebuilt = RefList::try_new(
                 list.repository(),
                 list.key().clone(),
