@@ -1646,7 +1646,9 @@ pub fn enter_enforcing(repository: &Repository, register: &Register) -> io::Resu
     let mut marker = fs::File::create(&marker_path)?;
     io::Write::write_all(&mut marker, MARKER_CONTENT.as_bytes())?;
     marker.sync_all()?;
-    fs::File::open(&metadata)?.sync_all()?;
+    // The flush of the store: Windows opens a directory only with `FILE_FLAG_BACKUP_SEMANTICS`,
+    // and a plain `File::open` of it is denied (ADR-007).
+    crate::store::flush_directory(&metadata)?;
     let path = repository.path().join(FILE);
     // As long as no register file exists, this call can take its own marker back. A failure after
     // the file exists leaves both in place: the repository is then damaged, not open.
@@ -2398,6 +2400,44 @@ mod tests {
         fs::write(dir.path().join(".stemma-actors"), "in the way").unwrap();
         assert!(enter_enforcing(&repository, &register()).is_err());
         assert!(!is_enforcing(&repository.metadata_dir()).unwrap());
+    }
+
+    #[test]
+    fn the_marker_is_made_durable_through_the_flush_of_the_store() {
+        let dir = crate::testutil::TempDir::new();
+        let repository = Repository::init(
+            dir.path(),
+            &crate::repository::InitOptions::default(),
+            &daniel(),
+            &crate::AllowAll,
+        )
+        .unwrap();
+        let since = crate::store::flush_count();
+        enter_enforcing(&repository, &register()).unwrap();
+        assert_eq!(
+            crate::store::flushed_since(since),
+            vec![repository.metadata_dir()]
+        );
+    }
+
+    #[test]
+    fn a_marker_whose_directory_cannot_be_flushed_fails_the_step_and_writes_no_register() {
+        let dir = crate::testutil::TempDir::new();
+        let repository = Repository::init(
+            dir.path(),
+            &crate::repository::InitOptions::default(),
+            &daniel(),
+            &crate::AllowAll,
+        )
+        .unwrap();
+        let _failure = crate::store::fail_flush_of(&repository.metadata_dir());
+        assert_eq!(
+            enter_enforcing(&repository, &register())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(!dir.path().join(FILE).exists());
     }
 
     #[test]
