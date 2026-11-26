@@ -1804,7 +1804,8 @@ impl HubKeys {
         &self.former
     }
 
-    /// The key that signed the entry with this number.
+    /// The key that signed the entry with this number in the repository of the former keys
+    /// ([`FormerKeys::repository`]).
     pub fn at(&self, number: u64) -> &PublicKey {
         self.former()
             .iter()
@@ -1812,9 +1813,16 @@ impl HubKeys {
             .map_or(&self.current, FormerKey::key)
     }
 
-    /// Whether the key for the number of the entry signed it.
+    /// Whether the key for the number of the entry signed it. The former keys count only for
+    /// an entry of the repository that they were signed for; an entry of another repository is
+    /// checked against the current key alone.
     pub fn signed(&self, entry: &RecordEntry) -> bool {
-        &entry.hub_key() == self.at(entry.number)
+        let key = if self.former.of(entry.update.payload.repository) {
+            self.at(entry.number)
+        } else {
+            &self.current
+        };
+        &entry.hub_key() == key
     }
 
     /// Whether two entries prove that the hub rewrote its record (ADR-026): both are of one

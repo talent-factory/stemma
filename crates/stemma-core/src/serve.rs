@@ -119,6 +119,9 @@ pub enum ListError {
     /// A reference of the store has no record entry in the facts of the caller, so the list
     /// cannot name it.
     NoRecordEntry(QualifiedName),
+    /// The former keys of the facts were signed for another repository than the one of the
+    /// facts (ADR-026).
+    FormerKeysOfOtherRepository,
 }
 
 impl ListError {
@@ -127,7 +130,7 @@ impl ListError {
     pub fn store_error(&self) -> Option<&StoreError> {
         match self {
             Self::Refs(source) => source.store_error(),
-            Self::NoRecordEntry(_) => None,
+            Self::NoRecordEntry(_) | Self::FormerKeysOfOtherRepository => None,
         }
     }
 
@@ -136,7 +139,7 @@ impl ListError {
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
             Self::Refs(source) => source.io_error(),
-            Self::NoRecordEntry(_) => None,
+            Self::NoRecordEntry(_) | Self::FormerKeysOfOtherRepository => None,
         }
     }
 }
@@ -148,6 +151,9 @@ impl fmt::Display for ListError {
             Self::NoRecordEntry(name) => {
                 write!(f, "the reference {name} has no entry in the record")
             }
+            Self::FormerKeysOfOtherRepository => {
+                f.write_str("the former keys of the hub were signed for another repository")
+            }
         }
     }
 }
@@ -158,7 +164,7 @@ impl Error for ListError {
         // the crate documentation).
         match self {
             Self::Refs(source) => source.source(),
-            Self::NoRecordEntry(_) => None,
+            Self::NoRecordEntry(_) | Self::FormerKeysOfOtherRepository => None,
         }
     }
 }
@@ -615,8 +621,10 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`ListError::Refs`] if the references cannot be read, and [`ListError::NoRecordEntry`]
-    /// for the first reference that `facts` names no entry for, the branches before the tags.
+    /// [`ListError::Refs`] if the references cannot be read, [`ListError::NoRecordEntry`]
+    /// for the first reference that `facts` names no entry for, the branches before the tags,
+    /// and [`ListError::FormerKeysOfOtherRepository`] if the former keys of the hub are those of
+    /// another repository.
     pub fn answer_refs(&self, facts: &ListFacts<'_>) -> Result<RefList, ListError> {
         let refs = self.refs();
         let branches = refs.branches()?.into_iter().map(|at| (RefKind::Branch, at));
@@ -628,6 +636,9 @@ impl Repository {
                 return Err(ListError::NoRecordEntry(name));
             };
             references.push(Reference::new(name, commit, entry));
+        }
+        if !facts.keys.former_keys().of(facts.repository) {
+            return Err(ListError::FormerKeysOfOtherRepository);
         }
         // The keys of a hub hold former keys that their current key signed, and a store lists a
         // name once per kind.

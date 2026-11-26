@@ -32,7 +32,7 @@ fn signer(index: usize) -> record::tests::Seeded {
 
 /// The former keys, signed by the key of `signer(current)`.
 fn signed(current: usize, keys: Vec<FormerKey>) -> FormerKeys {
-    record::tests::signed_former(&signer(current), keys)
+    record::tests::signed_former_of(repository(), &signer(current), keys)
 }
 
 /// The text of an ID whose bytes are all `byte`.
@@ -878,6 +878,23 @@ fn a_list_of_references_refuses_values_that_are_not_canonical() {
         RefList::parse(text.replacen(&original_line, &resigned_line, 1).as_bytes()).unwrap_err(),
         signature_problem(FormerKeysProblem::Signature)
     );
+    // The repository is part of what the current key signed: the block of one repository does
+    // not pass in the list of another.
+    let other_repository = text.replacen(REPOSITORY, "ffeeddccbbaa99887766554433221100", 1);
+    assert_eq!(
+        RefList::parse(other_repository.as_bytes()).unwrap_err(),
+        signature_problem(FormerKeysProblem::Signature)
+    );
+    assert_eq!(
+        RefList::try_new(
+            "ffeeddccbbaa99887766554433221100".parse().unwrap(),
+            key(0),
+            example_refs().former_keys().clone(),
+            Vec::new(),
+        )
+        .unwrap_err(),
+        RefListError::FormerKeysOfOtherRepository
+    );
     for problem in [
         FormerKeysProblem::Signature,
         FormerKeysProblem::SignatureForm,
@@ -1010,6 +1027,7 @@ fn a_list_of_references_refuses_references_that_are_repeated_or_out_of_order() {
     );
     assert!(matches!(
         FormerKeys::sign(
+            repository(),
             &key(0),
             vec![former(10, 20).unwrap(), former(1, 10).unwrap()],
             &signer(0),
@@ -1032,6 +1050,7 @@ fn a_list_of_references_refuses_references_that_are_repeated_or_out_of_order() {
         RefListError::OverlappingRanges(10),
         RefListError::DuplicateReference(name("heads/main")),
         RefListError::FormerKeysOfOtherKey,
+        RefListError::FormerKeysOfOtherRepository,
     ] {
         assert!(!error.to_string().is_empty());
     }
@@ -1576,7 +1595,7 @@ fn generated_refs(rng: &mut Rng) -> RefList {
     let former = if former.is_empty() {
         FormerKeys::none()
     } else {
-        signed(current, former)
+        record::tests::signed_former_of(RepositoryId::from_bytes(bytes), &signer(current), former)
     };
     RefList::try_new(
         RepositoryId::from_bytes(bytes),
@@ -1880,7 +1899,12 @@ fn the_edges_of_ranges_and_of_ids_are_exact() {
     let former = |first, last| FormerKey::try_new(first, last, key(1)).unwrap();
     assert_eq!(former(5, 5).first(), 5);
     assert!(matches!(
-        FormerKeys::sign(&key(0), vec![former(5, 20), former(1, 10)], &signer(0)),
+        FormerKeys::sign(
+            repository(),
+            &key(0),
+            vec![former(5, 20), former(1, 10)],
+            &signer(0),
+        ),
         Err(FormerKeysError::List(RefListError::OverlappingRanges(5)))
     ));
     assert_eq!(

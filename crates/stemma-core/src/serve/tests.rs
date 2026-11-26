@@ -605,7 +605,11 @@ fn the_list_names_the_facts_of_the_caller_and_refuses_a_reference_without_an_ent
     let rotated = crate::protocol::record::tests::Seeded::new(0x40);
     let with_former = HubKeys::try_new(
         rotated.public(),
-        crate::protocol::record::tests::signed_former(&rotated, vec![former(5, 9), former(1, 4)]),
+        crate::protocol::record::tests::signed_former_of(
+            repository_id(),
+            &rotated,
+            vec![former(5, 9), former(1, 4)],
+        ),
     )
     .unwrap();
     let named = ListFacts::new(repository_id(), &with_former, entries);

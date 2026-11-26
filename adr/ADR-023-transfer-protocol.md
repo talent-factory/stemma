@@ -383,7 +383,7 @@ want <commit>
 - **List of references.** A key is an Ed25519 public key in the OpenSSH form without a comment.
   A former key names the range of record numbers that it signed (ADR-026); the ranges ascend and
   share no number. The current key signs the former keys, and the line `former-signature`
-  follows them; the reader checks it against the `key` line (ADR-026). The references stand in the order of the bytes of their qualified names, each
+  follows them; the reader checks it against the `repository` and `key` lines (ADR-026). The references stand in the order of the bytes of their qualified names, each
   once; the record entry is the hash of the last record entry of the name (ADR-025), in the form
   of an object ID. The list holds the references that exist: a deleted name is not listed, and a
   client that creates it again learns its chain from the `Stale` answer.

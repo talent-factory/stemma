@@ -59,21 +59,28 @@ How it is built (STEMMA-297):
   form only.
 - **The list of former keys** stands in the list of references as the `former` lines, followed
   by one line `former-signature <SSHSIG signature on one line>` if there is a former key, and by
-  none otherwise. The signature is a proof of its own type, `former-keys`, over the `key` line of
-  the current key and the `former` lines, in the order of the ranges:
+  none otherwise. The signature is a proof of its own type, `former-keys`, over the `repository`
+  line, the `key` line of the current key and the `former` lines, in the order of the ranges:
 
   ```text
+  repository <32 lowercase hexadecimal digits>
   key ssh-ed25519 <base64>
   former <first> <last> ssh-ed25519 <base64>      one or more
   ```
 
   The current key is part of the payload, so a list that one key signed is never the list of
-  another. The reader of the list checks the signature against the `key` line; a changed range,
-  an exchanged key and a missing signature are refused there. Whether the `key` line is the key of
-  the hub is decided by the comparison with the pinned key. A hub signs the list once, when it
+  another. The repository is part of it as well: the hub has one key for all its repositories,
+  but the ranges count the record numbers of one, so the signed block of one repository must not
+  pass in the list of another (a holder of a stolen former key could otherwise widen its range).
+  The former keys count only for entries of the repository they were signed for. The reader of
+  the list checks the signature against the `repository` and `key` lines; a changed range, an
+  exchanged key, a moved block and a missing signature are refused there. Whether the `key` line
+  is the key of the hub and the repository the one of the remote is decided by the comparison
+  with the configuration of the remote. A hub signs the list once, when it
   rotates its key; the core builds the list from what the hub hands it and never signs.
 - **The first contact** pins the key of the list in the line `hub-key` of the configuration and
-  returns its fingerprint for the command to show. With an expected fingerprint, a key with
+  returns its fingerprint for the command to show. The list of another repository than the one
+  of the configuration is a typed error. With an expected fingerprint, a key with
   another fingerprint is a typed error and nothing is pinned. A configuration that holds a key
   keeps it: the same key is no change, another key is the error below.
 - **A different key later** is a typed error that names both fingerprints; the remote references

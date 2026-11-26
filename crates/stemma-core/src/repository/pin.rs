@@ -39,10 +39,13 @@ impl Repository {
     /// [`PinError::NotHuman`] for an agent, [`PinError::Unexpected`] if the key of the list does
     /// not have the fingerprint `expected`, [`PinError::Denied`] if the authorizer refuses,
     /// [`PinError::Refs`] for the lock, [`PinError::Remote`] if the configuration cannot be
-    /// read, [`PinError::NoRemote`] if there is no remote of that name, and [`PinError::Log`] if
-    /// the entry cannot be written; nothing is changed then. After [`PinError::Io`] the entry is
-    /// in the log and the configuration may still hold the old key: pinning again writes a
-    /// second entry.
+    /// read, [`PinError::NoRemote`] if there is no remote of that name,
+    /// [`PinError::OtherRepository`] if the list is that of another repository, and
+    /// [`PinError::Log`] if the entry cannot be written; nothing is pinned then. The repository
+    /// may have moved to the current format before the log refused the entry, as every entry
+    /// moves it first (ADR-009). After [`PinError::Log`] with [`OpLogError::NotFlushed`] and
+    /// after [`PinError::Io`] the entry is in the log and the configuration may still hold the
+    /// old key: pinning again writes a second entry.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -78,6 +81,9 @@ impl Repository {
         let mut config = self
             .remote(remote)?
             .ok_or_else(|| PinError::NoRemote(remote.clone()))?;
+        if list.repository() != config.repository {
+            return Err(PinError::OtherRepository(remote.clone()));
+        }
         if config.hub_key.as_ref() == Some(list.key()) {
             return Ok(None);
         }
@@ -130,8 +136,9 @@ impl Repository {
     }
 }
 
-/// Why the key of a hub could not be pinned again. Each variant before [`Io`](Self::Io) changed
-/// nothing.
+/// Why the key of a hub could not be pinned again. Each variant before [`Log`](Self::Log) changed
+/// nothing; after [`Log`](Self::Log) with [`OpLogError::NotFlushed`] and after
+/// [`Io`](Self::Io) the entry is in the log and the configuration holds the old key.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PinError {
@@ -154,6 +161,8 @@ pub enum PinError {
     },
     /// The repository has no remote of this name.
     NoRemote(RemoteName),
+    /// The list of references is that of another repository than the one of the remote.
+    OtherRepository(RemoteName),
     /// The lock of the references could not be taken, or the repository is bare.
     Refs(RefError),
     /// The configuration of the remote could not be read.
@@ -213,7 +222,8 @@ impl PinError {
             Self::NotHuman { .. }
             | Self::Unexpected { .. }
             | Self::Denied { .. }
-            | Self::NoRemote(_) => None,
+            | Self::NoRemote(_)
+            | Self::OtherRepository(_) => None,
         }
     }
 }
@@ -236,8 +246,16 @@ impl fmt::Display for PinError {
                 )
             }
             Self::NoRemote(remote) => write!(f, "there is no remote `{remote}`"),
+            Self::OtherRepository(remote) => write!(
+                f,
+                "the list of references is that of another repository than the one of the \
+                 remote `{remote}`; nothing was pinned"
+            ),
             Self::Refs(error) => error.fmt(f),
             Self::Remote(error) => error.fmt(f),
+            Self::Log(error @ OpLogError::NotFlushed { .. }) => {
+                write!(f, "{error}; the configuration still holds the old key")
+            }
             Self::Log(error) => error.fmt(f),
             Self::Io {
                 operation,
@@ -263,7 +281,8 @@ impl Error for PinError {
             Self::NotHuman { .. }
             | Self::Unexpected { .. }
             | Self::Denied { .. }
-            | Self::NoRemote(_) => None,
+            | Self::NoRemote(_)
+            | Self::OtherRepository(_) => None,
         }
     }
 }
@@ -292,7 +311,7 @@ mod tests {
 
     use super::*;
     use crate::oplog::{Entry, Record};
-    use crate::protocol::record::tests::{signed_former, Seeded};
+    use crate::protocol::record::tests::{signed_former_of, Seeded};
     use crate::protocol::{FormerKey, FormerKeys};
     use crate::remote::RemoteAddress;
     use crate::repository::InitOptions;
@@ -329,7 +348,11 @@ mod tests {
         RefList::try_new(
             "0123456789abcdef0123456789abcdef".parse().unwrap(),
             new_hub().public(),
-            signed_former(&new_hub(), former),
+            signed_former_of(
+                "0123456789abcdef0123456789abcdef".parse().unwrap(),
+                &new_hub(),
+                former,
+            ),
             Vec::new(),
         )
         .unwrap()
@@ -512,6 +535,21 @@ mod tests {
             assert!(error.io_error().is_none());
             crate::fuzz::check_rejection(error);
         }
+        assert_eq!(entries(&repository).len(), before);
+        assert_eq!(repository.remote(&origin()).unwrap(), config);
+        // The list of another repository of the hub is refused as well.
+        let other = RefList::try_new(
+            "ffeeddccbbaa99887766554433221100".parse().unwrap(),
+            new_hub().public(),
+            FormerKeys::none(),
+            Vec::new(),
+        )
+        .unwrap();
+        let error = repository
+            .pin_hub_key_again(&origin(), &other, &expected, &daniel(), &AllowAll)
+            .unwrap_err();
+        assert!(matches!(error, PinError::OtherRepository(_)), "{error:?}");
+        assert!(!error.to_string().is_empty());
         assert_eq!(entries(&repository).len(), before);
         assert_eq!(repository.remote(&origin()).unwrap(), config);
     }

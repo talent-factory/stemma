@@ -785,14 +785,18 @@ impl RemoteConfig {
     ///
     /// # Errors
     ///
-    /// [`HubKeyError::Unexpected`] if the key of the list does not have the fingerprint
-    /// `expected`, and [`HubKeyError::Changed`] if the configuration pinned another key. The
-    /// configuration is unchanged then.
+    /// [`HubKeyError::OtherRepository`] if the list is that of another repository than the one
+    /// of the configuration, [`HubKeyError::Unexpected`] if the key of the list does not have
+    /// the fingerprint `expected`, and [`HubKeyError::Changed`] if the configuration pinned
+    /// another key. The configuration is unchanged then.
     pub fn pin_first_contact(
         &mut self,
         list: &RefList,
         expected: Option<&KeyFingerprint>,
     ) -> Result<KeyFingerprint, HubKeyError> {
+        if list.repository() != self.repository {
+            return Err(HubKeyError::OtherRepository);
+        }
         let offered = list.key().fingerprint();
         if let Some(expected) = expected.filter(|expected| **expected != offered) {
             return Err(HubKeyError::Unexpected {
@@ -833,12 +837,20 @@ impl RemoteConfig {
     /// as a former key: a statement of rotation is worthless once the old key is stolen
     /// (ADR-026). A human pins the new key again.
     ///
+    /// The list must be one of the repository of the remote: its former keys were signed for
+    /// that repository, and their ranges count its record numbers.
+    ///
     /// # Errors
     ///
-    /// [`HubKeyError::NotPinned`] if the configuration holds no key, and [`HubKeyError::Changed`]
-    /// if the list names another key than the pinned one. Nothing may move then.
+    /// [`HubKeyError::NotPinned`] if the configuration holds no key,
+    /// [`HubKeyError::OtherRepository`] if the list is that of another repository, and
+    /// [`HubKeyError::Changed`] if the list names another key than the pinned one. Nothing may
+    /// move then.
     pub fn hub_keys(&self, list: &RefList) -> Result<HubKeys, HubKeyError> {
         let pinned = self.pinned_key()?;
+        if list.repository() != self.repository {
+            return Err(HubKeyError::OtherRepository);
+        }
         if pinned != list.key() {
             return Err(HubKeyError::Changed {
                 pinned: pinned.fingerprint(),
@@ -866,6 +878,8 @@ pub enum HubKeyError {
         /// The fingerprint of the key that the hub names.
         offered: KeyFingerprint,
     },
+    /// The list of references is that of another repository than the one of the remote.
+    OtherRepository,
     /// The key that the hub names does not have the fingerprint that was expected.
     Unexpected {
         /// The fingerprint that the caller passed.
@@ -881,6 +895,9 @@ impl fmt::Display for HubKeyError {
             Self::NotPinned => {
                 f.write_str("the configuration of the remote pinned no key of the hub")
             }
+            Self::OtherRepository => f.write_str(
+                "the hub answers with the list of another repository than the one of the remote",
+            ),
             Self::Changed { pinned, offered } => write!(
                 f,
                 "the hub names the key {offered}, but the key {pinned} is pinned; compare the \

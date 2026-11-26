@@ -1,12 +1,17 @@
 //! The tests of the pinning of the key of a hub in the configuration of a remote (ADR-026).
 
 use super::*;
-use crate::protocol::record::tests::{example_receipt, example_update, signed_former, Seeded};
+use crate::protocol::record::tests::{example_receipt, example_update, signed_former_of, Seeded};
+use crate::protocol::record::HubKeys;
 use crate::protocol::record::ReceiptError;
 use crate::protocol::{FormerKey, FormerKeys, ParseError};
 
 const ADDRESS: &str = "https://hub.example/talent-factory/stemma";
-const ID: &str = "0123456789abcdef0123456789abcdef";
+/// The repository of the example receipt.
+const ID: &str = "00112233445566778899aabbccddeeff";
+
+/// Another repository of the same hub.
+const OTHER_ID: &str = "ffeeddccbbaa99887766554433221100";
 
 /// The key of the hub that signed the example receipt (entry 98).
 fn old_hub() -> Seeded {
@@ -30,7 +35,7 @@ fn list(current: &Seeded, former: Vec<FormerKey>) -> RefList {
     let former = if former.is_empty() {
         FormerKeys::none()
     } else {
-        signed_former(current, former)
+        signed_former_of(ID.parse().unwrap(), current, former)
     };
     let list = RefList::try_new(ID.parse().unwrap(), current.public(), former, Vec::new()).unwrap();
     // What the clone pins is what it read, so every list goes through the reader.
@@ -206,4 +211,58 @@ fn a_forged_list_of_former_keys_is_refused() {
         config.hub_keys(&foreign),
         Err(HubKeyError::Changed { .. })
     ));
+}
+
+#[test]
+fn the_list_of_another_repository_is_refused_and_its_former_keys_do_not_pass() {
+    // The hub has one key for all repositories, but the ranges count the record numbers of one.
+    let mut config = config();
+    config.hub_key = Some(new_hub().public());
+    let other = RefList::try_new(
+        OTHER_ID.parse().unwrap(),
+        new_hub().public(),
+        signed_former_of(
+            OTHER_ID.parse().unwrap(),
+            &new_hub(),
+            vec![FormerKey::try_new(1, 400, old_hub().public()).unwrap()],
+        ),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        config.hub_keys(&other).unwrap_err(),
+        HubKeyError::OtherRepository
+    );
+    let mut fresh = self::config();
+    assert_eq!(
+        fresh.pin_first_contact(&other, None),
+        Err(HubKeyError::OtherRepository)
+    );
+    assert_eq!(fresh.hub_key, None);
+    crate::fuzz::check_rejection(&HubKeyError::OtherRepository);
+
+    // The signed block of the other repository, moved into a list of this one, is forged.
+    let own = list(
+        &new_hub(),
+        vec![FormerKey::try_new(1, 10, old_hub().public()).unwrap()],
+    );
+    let own_text = String::from_utf8(own.encode()).unwrap();
+    let other_text = String::from_utf8(other.encode()).unwrap();
+    let block = |text: &str| -> String {
+        text.lines()
+            .filter(|line| line.starts_with("former"))
+            .map(|line| format!("{line}\n"))
+            .collect()
+    };
+    let spliced = own_text.replacen(&block(&own_text), &block(&other_text), 1);
+    assert_ne!(spliced, own_text);
+    assert!(matches!(
+        RefList::parse(spliced.as_bytes()).unwrap_err(),
+        ParseError::FormerKeys { line: 5, .. }
+    ));
+    // Nor do former keys of another repository count for an entry of this one: the keys of the
+    // hub fall back to the current key.
+    let keys = HubKeys::try_new(new_hub().public(), other.former_keys().clone()).unwrap();
+    assert_eq!(keys.at(98), &old_hub().public());
+    assert!(!keys.signed(&example_receipt()));
 }

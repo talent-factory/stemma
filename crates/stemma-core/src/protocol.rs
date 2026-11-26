@@ -393,6 +393,8 @@ pub enum RefListError {
     /// The former keys were signed by another key than the current key of the list or of the
     /// keys of a hub (ADR-026).
     FormerKeysOfOtherKey,
+    /// The former keys were signed for another repository than the one of the list (ADR-026).
+    FormerKeysOfOtherRepository,
 }
 
 impl fmt::Display for RefListError {
@@ -411,6 +413,9 @@ impl fmt::Display for RefListError {
             Self::FormerKeysOfOtherKey => {
                 f.write_str("the former keys were signed by another key than the current key")
             }
+            Self::FormerKeysOfOtherRepository => {
+                f.write_str("the former keys were signed for another repository")
+            }
         }
     }
 }
@@ -425,8 +430,9 @@ impl Error for RefListError {}
 /// deleted is not listed. The former keys stand in the order of their ranges, and the references
 /// in the order of their qualified names. The former keys are signed by the current key
 /// ([`FormerKeys`]): the line `former-signature` follows them if there is one, and is left out
-/// if there is none. The reader checks that the signature verifies for the `key` line; whether
-/// that key is the key of the hub is decided by what the clone pinned
+/// if there is none. The reader checks that the signature verifies for the `repository` and
+/// `key` lines; whether that key is the key of the hub and the repository the one of the remote
+/// is decided by the configuration of the clone
 /// ([`RemoteConfig::hub_keys`](crate::remote::RemoteConfig::hub_keys)).
 ///
 /// ```text
@@ -452,7 +458,8 @@ impl RefList {
     /// # Errors
     ///
     /// [`RefListError::FormerKeysOfOtherKey`] if the former keys were signed by another key than
-    /// `key`, and [`RefListError::DuplicateReference`] if a qualified name is listed twice.
+    /// `key`, [`RefListError::FormerKeysOfOtherRepository`] if they are those of another
+    /// repository, and [`RefListError::DuplicateReference`] if a qualified name is listed twice.
     pub fn try_new(
         repository: RepositoryId,
         key: PublicKey,
@@ -461,6 +468,9 @@ impl RefList {
     ) -> Result<Self, RefListError> {
         if !former.signed_by(&key) {
             return Err(RefListError::FormerKeysOfOtherKey);
+        }
+        if !former.of(repository) {
+            return Err(RefListError::FormerKeysOfOtherRepository);
         }
         references.sort_by(|a, b| a.name.cmp(&b.name));
         if let Some(pair) = references
@@ -572,7 +582,7 @@ impl RefList {
             let problem = |reason| ParseError::FormerKeys { line, reason };
             let signature =
                 signature_from_line(value).ok_or(problem(FormerKeysProblem::SignatureForm))?;
-            FormerKeys::try_new(&key, former, signature)
+            FormerKeys::try_new(repository, &key, former, signature)
                 .map_err(|_| problem(FormerKeysProblem::Signature))?
         };
         let mut references: Vec<Reference> = Vec::new();
@@ -620,6 +630,8 @@ impl RefList {
 pub struct FormerKeys {
     keys: Vec<FormerKey>,
     signature: Option<Signature>,
+    /// The repository whose record numbers the ranges count, `None` for no key.
+    repository: Option<RepositoryId>,
 }
 
 impl FormerKeys {
@@ -628,25 +640,35 @@ impl FormerKeys {
         Self {
             keys: Vec::new(),
             signature: None,
+            repository: None,
         }
     }
 
     /// The bytes that the current key signs, a proof of the type [`PayloadKind::FormerKeys`]: the
-    /// `key` line of the current key and the `former` lines of the list of references, in the
-    /// order of the ranges. The current key is part of the payload, so a list that one key signed
-    /// is never the list of another.
+    /// `repository` and `key` lines and the `former` lines of the list of references, in the
+    /// order of the ranges.
     ///
     /// ```text
+    /// repository <32 lowercase hexadecimal digits>
     /// key ssh-ed25519 <base64>
     /// former <first> <last> ssh-ed25519 <base64>      one or more
     /// ```
-    pub fn payload(current: &PublicKey, keys: &[FormerKey]) -> Vec<u8> {
+    ///
+    /// The current key is part of the payload, so a list that one key signed is never the list
+    /// of another. The repository is part of it too: a hub has one key for all its repositories
+    /// (ADR-026), but the ranges count the record numbers of one repository, so the signed list
+    /// of one repository must not pass in the list of another.
+    pub fn payload(repository: RepositoryId, current: &PublicKey, keys: &[FormerKey]) -> Vec<u8> {
         let mut sorted = keys.to_vec();
         sorted.sort_by_key(FormerKey::first);
-        format!("key {current}\n{}", former_lines(&sorted)).into_bytes()
+        format!(
+            "repository {repository}\nkey {current}\n{}",
+            former_lines(&sorted)
+        )
+        .into_bytes()
     }
 
-    /// Signs the former keys with the current key of the hub.
+    /// Signs the former keys of `repository` with the current key of the hub.
     ///
     /// # Errors
     ///
@@ -655,6 +677,7 @@ impl FormerKeys {
     /// [`FormerKeysError::Sign`] with the error of the signer, and [`FormerKeysError::Verify`] if
     /// its signature does not verify for `current`, for example because it holds another key.
     pub fn sign(
+        repository: RepositoryId,
         current: &PublicKey,
         keys: Vec<FormerKey>,
         signer: &dyn Signer,
@@ -663,10 +686,10 @@ impl FormerKeys {
         let signature = signature::sign(
             signer,
             PayloadKind::FormerKeys,
-            &Self::payload(current, &keys),
+            &Self::payload(repository, current, &keys),
         )
         .map_err(FormerKeysError::Sign)?;
-        Self::try_new(current, keys, signature)
+        Self::try_new(repository, current, keys, signature)
     }
 
     /// The former keys with a signature that was made before, such as the one that a list of
@@ -675,8 +698,9 @@ impl FormerKeys {
     /// # Errors
     ///
     /// As [`sign`](Self::sign), without [`FormerKeysError::Sign`]: [`FormerKeysError::Verify`] if
-    /// the signature is not one of `current` over these keys.
+    /// the signature is not one of `current` over these keys of `repository`.
     pub fn try_new(
+        repository: RepositoryId,
         current: &PublicKey,
         keys: Vec<FormerKey>,
         signature: Signature,
@@ -686,13 +710,14 @@ impl FormerKeys {
             current,
             PayloadKind::FormerKeys,
             signature::FORMAT_VERSION,
-            &Self::payload(current, &keys),
+            &Self::payload(repository, current, &keys),
             &signature,
         )
         .map_err(FormerKeysError::Verify)?;
         Ok(Self {
             keys,
             signature: Some(signature),
+            repository: Some(repository),
         })
     }
 
@@ -706,11 +731,21 @@ impl FormerKeys {
         self.signature.as_ref()
     }
 
+    /// The repository whose record numbers the ranges count, or `None` for no key.
+    pub fn repository(&self) -> Option<RepositoryId> {
+        self.repository
+    }
+
     /// Whether `current` signed the list. An empty list has no signature and fits every key.
     pub(crate) fn signed_by(&self, current: &PublicKey) -> bool {
         self.signature
             .as_ref()
             .is_none_or(|signature| &signature.signing_key() == current)
+    }
+
+    /// Whether the list is one of `repository`. An empty list fits every repository.
+    pub(crate) fn of(&self, repository: RepositoryId) -> bool {
+        self.repository.is_none_or(|own| own == repository)
     }
 }
 
@@ -781,8 +816,8 @@ impl Error for FormerKeysError {}
 pub enum FormerKeysProblem {
     /// The signature is not an SSHSIG signature of an Ed25519 key on one line.
     SignatureForm,
-    /// The signature does not verify for the `key` line and the `former` lines: the list was
-    /// changed, or another key signed it.
+    /// The signature does not verify for the `repository`, `key` and `former` lines: the list
+    /// was changed, another key signed it, or it is the list of another repository.
     Signature,
 }
 
@@ -793,7 +828,8 @@ impl fmt::Display for FormerKeysProblem {
                 "the signature is not an SSHSIG signature of an Ed25519 key on one line"
             }
             Self::Signature => {
-                "the signature over the former keys does not verify for the key of the list"
+                "the signature over the former keys does not verify for the repository and the \
+                 key of the list"
             }
         })
     }

@@ -192,8 +192,10 @@ pub fn protocol(input: &[u8]) {
             // The reader checked the signature over the former keys, so they build again.
             let former = match list.former_keys().signature() {
                 None => FormerKeys::none(),
-                Some(signature) => FormerKeys::try_new(list.key(), former, signature.clone())
-                    .expect("the reader took former keys that the writer refuses"),
+                Some(signature) => {
+                    FormerKeys::try_new(list.repository(), list.key(), former, signature.clone())
+                        .expect("the reader took former keys that the writer refuses")
+                }
             };
             let rebuilt = RefList::try_new(
                 list.repository(),

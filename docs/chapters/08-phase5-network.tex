@@ -1173,22 +1173,27 @@ dann die Konfiguration.
 
 Ein Hub, der seinen Schlüssel wechselt, führt die früheren Schlüssel mit dem Bereich der
 Nummern, die jeder signiert hat.
-Der aktuelle Schlüssel signiert diese Liste, und die Signatur deckt auch seine eigene Zeile
-\type{key}.
+Der aktuelle Schlüssel signiert diese Liste, und die Signatur deckt auch die Zeilen
+\type{repository} und \type{key}.
 So bleiben alte Einträge für einen Klon prüfbar, der nur den neuen Schlüssel kennt:
 
 \starttyping
+repository 00112233445566778899aabbccddeeff
 key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBuk...
 former 1 40 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEgH...
 former 41 97 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF4h...
 former-signature U1NIU0lHAAAAAQAAADMAAAALc3No...
 \stoptyping
 
-Der Leser der Liste prüft die Signatur gegen die Zeile \type{key}.
+Der Leser der Liste prüft die Signatur gegen die Zeilen \type{repository} und \type{key}.
 Wer eine Zeile \type{former} ändert, einen Schlüssel austauscht oder die Signatur entfernt,
 bekommt eine Liste, die schon der Leser ablehnt.
-Ob die Zeile \type{key} der richtige Schlüssel ist, entscheidet erst der Vergleich mit dem
-festgehaltenen.
+Die Repository-ID gehört dazu, weil ein Hub einen Schlüssel für alle Repositories hat, die
+Bereiche aber die Nummern eines einzigen zählen.
+Ohne sie könnte, wer einen früheren Schlüssel gestohlen hat, den signierten Block eines anderen
+Repositorys mit grösserem Bereich einsetzen.
+Ob die Zeile \type{key} der richtige Schlüssel ist und die Liste zum Repository des Remote
+gehört, entscheidet erst der Vergleich mit der Konfiguration.
 Eine Liste, die ein fremder Schlüssel ganz neu signiert hat, liest sich also, scheitert aber dort.
 
 \startinfobox

@@ -104,9 +104,18 @@ fn keys() -> HubKeys {
     HubKeys::try_new(hub().public(), FormerKeys::none()).unwrap()
 }
 
-/// The former keys, signed by `current`.
+/// The former keys of `repository`, signed by `current`.
+pub(crate) fn signed_former_of(
+    repository: RepositoryId,
+    current: &Seeded,
+    keys: Vec<FormerKey>,
+) -> FormerKeys {
+    FormerKeys::sign(repository, &current.public(), keys, current).unwrap()
+}
+
+/// The former keys of the repository of these tests, signed by `current`.
 pub(crate) fn signed_former(current: &Seeded, keys: Vec<FormerKey>) -> FormerKeys {
-    FormerKeys::sign(&current.public(), keys, current).unwrap()
+    signed_former_of(repository(), current, keys)
 }
 
 /// The text of an ID whose bytes are all `byte`.
@@ -832,7 +841,12 @@ fn a_record_is_refused_for_an_entry_that_the_key_of_the_hub_did_not_sign() {
     // The ranges of the former keys share no number, in whatever order they are given.
     let range = |first, last| FormerKey::try_new(first, last, Seeded::new(8).public()).unwrap();
     assert!(matches!(
-        FormerKeys::sign(&hub().public(), vec![range(5, 9), range(1, 5)], &hub()),
+        FormerKeys::sign(
+            repository(),
+            &hub().public(),
+            vec![range(5, 9), range(1, 5)],
+            &hub()
+        ),
         Err(FormerKeysError::List(RefListError::OverlappingRanges(5)))
     ));
     let sorted = HubKeys::try_new(
