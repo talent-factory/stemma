@@ -278,10 +278,11 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     `have`, and checks every listed commit for connectivity before it takes the lock. Under the
     lock it writes the entry `fetch` with every remote reference of the remote whose state
     changes, the commit or only the record entry, and moves them, the deletions first, so that
-    `a` gives way to `a/b`, `a/b` to `a`, and `main` to `Main`. A name below `refs/remotes`
-    that is in the way and that the fetch does not remove is `RefError::RemoteConflict`, and
-    so are two listed names of which one lies below the other or that differ in case alone:
-    one file system cannot hold both, so the list is refused before the entry. The names to
+    `a` gives way to `a/b`, `a/b` to `a`, `main` to `Main`, and `Feature/x` to `feature/x`. A
+    name below `refs/remotes` that is in the way and that the fetch does not remove is
+    `RefError::RemoteConflict`, and so are two listed names of which one lies below the other,
+    that differ in case alone, or whose directories do (`Feature/x` and `feature/y`): one file
+    system cannot hold both, so the list is refused before the entry. The names to
     remove are read under the lock. A purge entry or a stub after the start of
     the fetch makes it check the listed commits once more under the lock (ADR-023). A fetch
     whose references have their state already writes no entry. A clone reads the list first,
@@ -291,7 +292,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     own entry.
   - **Level and target** *(STEMMA-295)*. The code of `fetch` and `clone` is level 2 by
     ADR-004 (network, references, the operation log). At run time the operation asks the
-    authorizer for `fetch` with the target `remote <name>`, and a clone asks for `init` first.
+    authorizer for `fetch` with the target `remote <name>`; a clone asks for `fetch` first,
+    before it makes anything, and for `init` when it makes the repository.
   - **Remote references are roots of the reachability.** The level and the target for the
     authorizer are set by the slice according to ADR-004. The plan of a purge walks from them as
     it does from a branch (STEMMA-285). A purge neither moves nor removes one, so it is refused

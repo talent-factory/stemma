@@ -19,8 +19,10 @@
 //!    commit and record entry), and then they move. A remote reference that the list no longer
 //!    names is removed, because the list is whole (ADR-008); `op restore` of the entry brings it
 //!    back. A purge that wrote its entry since the fetch began may have removed an object that
-//!    the check of step 5 saw, and so may the abort of a purge that had stopped, so the check is
-//!    made once more under the lock in both cases.
+//!    the check of step 5 saw, and so may the abort of a purge that had stopped before the fetch
+//!    began, so the check is made once more under the lock in both cases. A purge that starts,
+//!    stops, and is aborted while the fetch receives leaves no trace; its abort removes only
+//!    objects that it wrote itself, which the stream would have to bring with the same content.
 //! 7. The journal is removed.
 //!
 //! A fetch that stops before step 6 leaves the journal, and the next fetch resumes from it. A
@@ -151,8 +153,10 @@ impl Repository {
     ///
     /// [`CloneError::Before`] for a failure of the list, before anything was made;
     /// [`CloneError::Init`] if the repository cannot be made; and [`CloneError::After`] for a
-    /// failure after the repository was made, which stays where it is with what it holds: a
-    /// [`fetch`](Self::fetch) of `remote` there goes on, once the configuration is written.
+    /// failure after the repository was made, which stays where it is with what it holds. Its
+    /// `configured` says whether the configuration of the remote was written: then a
+    /// [`fetch`](Self::fetch) of `remote` there goes on, and otherwise the directory holds an
+    /// empty repository without the remote.
     pub fn clone_remote(
         path: impl AsRef<Path>,
         options: &InitOptions,
@@ -167,8 +171,9 @@ impl Repository {
         let allowed = authorize_fetch(remote, actor, authorizer).map_err(CloneError::Before)?;
         let list = read_list(transport).map_err(CloneError::Before)?;
         let repository = Self::init(path, options, actor, authorizer).map_err(CloneError::Init)?;
-        let after = |source| CloneError::After {
+        let after = |configured, source| CloneError::After {
             path: path.to_path_buf(),
+            configured,
             source: Box::new(source),
         };
         {
@@ -177,7 +182,7 @@ impl Repository {
             let _lock = repository
                 .refs_store()
                 .lock_writer(&allowed)
-                .map_err(|error| after(FetchError::Update(UpdateError::Refs(error))))?;
+                .map_err(|error| after(false, FetchError::Update(UpdateError::Refs(error))))?;
             // The key of the hub is pinned by its own slice (ADR-026); until then it stays `-`.
             let config = RemoteConfig::new(address, list.repository());
             remote::write_config(
@@ -186,11 +191,11 @@ impl Repository {
                 remote,
                 &config,
             )
-            .map_err(|error| after(FetchError::Remote(error)))?;
+            .map_err(|error| after(false, FetchError::Remote(error)))?;
         }
         let fetched = repository
             .fetch_listed(remote, &list, transport, actor, &allowed)
-            .map_err(after)?;
+            .map_err(|error| after(true, error))?;
         Ok((repository, fetched))
     }
 
@@ -548,6 +553,9 @@ pub enum CloneError {
     After {
         /// The directory of the new repository.
         path: PathBuf,
+        /// Whether the configuration of the remote was written, so that the failure is one of the
+        /// fetch and a fetch there goes on.
+        configured: bool,
         /// What failed, boxed, as the unboxed error is too large for clippy's
         /// `result_large_err` lint.
         source: Box<FetchError>,
@@ -555,6 +563,14 @@ pub enum CloneError {
 }
 
 impl CloneError {
+    /// The entry `fetch` of the clone, if it was written.
+    pub fn entry(&self) -> Option<&Entry> {
+        match self {
+            Self::After { source, .. } => source.entry(),
+            Self::Before(_) | Self::Init(_) => None,
+        }
+    }
+
     /// The error of the file system, if that is what failed (see the crate documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
         match self {
@@ -570,10 +586,25 @@ impl fmt::Display for CloneError {
         match self {
             Self::Before(error) => error.fmt(f),
             Self::Init(error) => error.fmt(f),
-            Self::After { path, source } => write!(
+            Self::After {
+                path,
+                configured: false,
+                source,
+            } => write!(
                 f,
-                "the clone in `{}` was made, but not filled: {source}; a fetch there goes on if \
-                 the remote is configured, otherwise remove the directory and clone again",
+                "the repository in `{}` was made, but its remote could not be configured: \
+                 {source}; remove the directory and clone again",
+                path.display()
+            ),
+            Self::After { path, source, .. }
+                if matches!(**source, FetchError::JournalLeft { .. }) =>
+            {
+                write!(f, "the clone in `{}` is made, but {source}", path.display())
+            }
+            Self::After { path, source, .. } => write!(
+                f,
+                "the clone in `{}` was made, but its fetch did not finish: {source}; a fetch \
+                 there goes on",
                 path.display()
             ),
         }

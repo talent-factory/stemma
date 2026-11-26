@@ -529,7 +529,13 @@ fn no_remote_reference_moves_before_the_connectivity_check_has_passed() {
         &AllowAll,
     )
     .unwrap_err();
-    let CloneError::After { path, source } = error else {
+    assert!(error.entry().is_none());
+    let CloneError::After {
+        path,
+        configured: true,
+        source,
+    } = error
+    else {
         panic!("{error}");
     };
     assert!(matches!(*source, FetchError::Connectivity(_)), "{source}");
@@ -763,6 +769,8 @@ fn names_of_one_state_that_collide_are_refused_before_anything_is_written() {
         (["a", "a/b"], ConflictKind::Reference),
         (["x/y", "x/y/z"], ConflictKind::Reference),
         (["Main", "main"], ConflictKind::CaseVariant),
+        (["Feature/x", "feature/y"], ConflictKind::CaseVariant),
+        (["A", "a/b"], ConflictKind::Reference),
     ] {
         let targets: Vec<_> = names.iter().map(|name| target(name)).collect();
         let error = repository
@@ -966,5 +974,77 @@ fn the_commits_of_a_fetch_entry_are_roots_and_its_outcome_is_judged() {
     assert_eq!(
         crate::oplog::outcomes(&entries, Some(&blind))[position(second.number())],
         Outcome::Unknown
+    );
+}
+
+#[test]
+fn a_directory_renamed_in_case_alone_moves_the_references_below_it() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/Feature/x", main);
+    hub.set("heads/Release/1", main);
+    let (repository, _) = clone(&dir, &hub);
+
+    let heads = hub.repository.metadata_dir().join("refs/heads");
+    hub.remove("heads/Feature/x");
+    hub.remove("heads/Release/1");
+    fs::remove_dir(heads.join("Feature")).unwrap();
+    fs::remove_dir(heads.join("Release")).unwrap();
+    hub.set("heads/feature/x", main);
+    hub.set("heads/release/2", main);
+    let fetched = repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap();
+
+    assert_eq!(fetched.entry.unwrap().change().unwrap().remotes().len(), 4);
+    assert_eq!(
+        remote_refs(&repository),
+        vec![
+            ("remotes/origin/heads/feature/x".to_owned(), main),
+            ("remotes/origin/heads/release/2".to_owned(), main),
+        ]
+    );
+}
+
+#[test]
+fn a_case_variant_of_a_directory_that_stays_is_in_the_way() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let main = hub.line(1)[0];
+    hub.set("heads/Feature/x", main);
+    let (repository, _) = clone(&dir, &hub);
+    // `Feature/x` stays, so `feature/y` cannot be written beside it.
+    let targets = vec![
+        (branch("Feature/x"), Some(value(main, hub.entry))),
+        (branch("other"), Some(value(main, hub.entry))),
+    ];
+    repository
+        .refs_store()
+        .plan_remote_moves(&targets, repository.objects())
+        .unwrap();
+    let targets = vec![
+        (branch("Feature/x"), None),
+        (branch("feature/y"), Some(value(main, hub.entry))),
+    ];
+    // Here every reference below `Feature` goes, so the variant is cleared.
+    repository
+        .refs_store()
+        .plan_remote_moves(&targets, repository.objects())
+        .unwrap();
+    let targets = vec![(branch("feature/y"), Some(value(main, hub.entry)))];
+    let error = repository
+        .refs_store()
+        .plan_remote_moves(&targets, repository.objects())
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            RefError::RemoteConflict {
+                kind: ConflictKind::CaseVariant,
+                ..
+            }
+        ),
+        "{error}"
     );
 }

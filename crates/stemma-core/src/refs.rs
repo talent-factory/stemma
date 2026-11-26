@@ -3835,18 +3835,25 @@ impl FsRefStore {
         let mut empty_directories = Vec::new();
         for ((name, target), current) in targets.iter().zip(currents) {
             if let Some((with, kind)) = &current.in_the_way {
+                // The remote references below a directory that is in the way, if the moves
+                // delete every one of them, and there is one.
+                let emptied = |with: &str| -> Result<bool, RefError> {
+                    let prefix = format!("{with}/");
+                    let below: Vec<String> = self
+                        .list_remotes()?
+                        .iter()
+                        .map(|(other, _)| remote_relative(other))
+                        .filter(|path| path.starts_with(&prefix))
+                        .collect();
+                    Ok(!below.is_empty() && below.iter().all(|path| deleted.contains(path)))
+                };
                 let cleared = match kind {
                     ConflictKind::Reference => deleted.contains(with),
-                    ConflictKind::Directory => {
-                        let prefix = format!("{with}/");
-                        self.list_remotes()?
-                            .iter()
-                            .map(|(other, _)| remote_relative(other))
-                            .filter(|path| path.starts_with(&prefix))
-                            .all(|path| deleted.contains(&path))
-                    }
-                    // A variant that the moves delete goes before the write, as a reference does.
-                    ConflictKind::CaseVariant => deleted.contains(with),
+                    ConflictKind::Directory => emptied(with)?,
+                    // A variant that the moves delete goes before the write, as a reference does:
+                    // the last component (`Main` for `main`), or a directory (`Feature` for
+                    // `feature/x`) whose references the moves all delete.
+                    ConflictKind::CaseVariant => deleted.contains(with) || emptied(with)?,
                 };
                 if target.is_some() && !cleared {
                     return Err(RefError::RemoteConflict {
@@ -3882,15 +3889,31 @@ impl FsRefStore {
                 return Err(conflict(name, other, ConflictKind::CaseVariant));
             }
         }
-        // A name below another: one of its directories is a written name.
+        // A name below another: one of its directories is a written name. Two names whose
+        // directories differ in case alone (`Feature/x` and `feature/y`) would share one
+        // directory on a file system that ignores case, so a directory has one spelling.
+        let mut directories: std::collections::BTreeMap<String, (String, &RemoteRefName)> =
+            std::collections::BTreeMap::new();
         for (path, name) in &written {
-            let mut prefix = path.as_str();
+            let exact = remote_relative(name);
+            let mut prefix = exact.as_str();
             while let Some((parent, _)) = prefix.rsplit_once('/') {
-                if let Some(other) = written.get(parent) {
+                let lower = parent.to_ascii_lowercase();
+                if let Some(other) = written.get(&lower) {
                     return Err(conflict(name, other, ConflictKind::Reference));
+                }
+                match directories.get(&lower) {
+                    Some((spelled, other)) if spelled != parent => {
+                        return Err(conflict(name, other, ConflictKind::CaseVariant));
+                    }
+                    Some(_) => {}
+                    None => {
+                        directories.insert(lower, (parent.to_owned(), name));
+                    }
                 }
                 prefix = parent;
             }
+            debug_assert_eq!(*path, exact.to_ascii_lowercase());
         }
         Ok(())
     }

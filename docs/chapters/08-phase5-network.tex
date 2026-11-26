@@ -187,8 +187,9 @@ Er verlangt jeden Commit der Liste, der kein \type{have} ist; kennt er alle, ste
 zweite Anfrage.
 Erst wenn jeder Commit der Liste die Prüfung der Verbindung bestanden hat, schreibt er unter der
 Sperre der Referenzen einen Eintrag \type{fetch} und bewegt danach die Remote-Referenzen.
-Hat seit dem Beginn ein Purge einen Eintrag geschrieben, prüft er unter der Sperre noch einmal,
-denn der Purge kann ein Objekt entfernt haben, das die erste Prüfung sah.
+Hat seit dem Beginn ein Purge einen Eintrag geschrieben oder lag beim Beginn das Journal eines
+Purge vor, prüft er unter der Sperre noch einmal, denn der Purge oder sein Abbruch kann ein
+Objekt entfernt haben, das die erste Prüfung sah.
 Ein Klon liest zuerst die Liste, sodass ein Fehler dort nichts anlegt.
 Dann legt er das Repository an, schreibt die Konfiguration des Remote mit der Adresse und der
 ID aus der Liste und holt mit derselben Liste, also mit denselben zwei Anfragen.
