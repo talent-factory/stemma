@@ -195,7 +195,7 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   `.stemma/`. Each slice that adds one raises `stemma-repository` by the rule above; the names and
   the strict forms are set by the slices.
   - The configuration of remotes: per remote its address, the ID of the repository on the hub
-    (ADR-025), the pinned public key of the hub (ADR-026), an additional CA file (ADR-028), and
+    (ADR-025), the pinned public key of the hub (ADR-026), a CA file of its own (ADR-028), and
     whether a sign-in is needed (ADR-023).
     It is one file per remote, `remotes/<remote>` *(STEMMA-285)*, in the metadata directory that
     every worktree shares. The name of the file is the name of the remote, one component by the

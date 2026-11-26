@@ -2,7 +2,8 @@
 //! [`Transport`](stemma_core::transport::Transport) of the core (ADR-022, ADR-028).
 //!
 //! The crate holds I/O and nothing else. The core writes every request and reads every answer
-//! with the types of [`stemma_core::protocol`]; this crate carries the bytes over HTTP/1.1 with
+//! with the types of [`stemma_core::protocol`], except the token answer of a sign-in, which the
+//! transport reads to keep the token (ADR-022); this crate carries the bytes over HTTP/1.1 with
 //! `ureq`, blocking and without an async runtime, and TLS with rustls on `ring` and the Mozilla
 //! roots of `webpki-roots` (ADR-028). The command line wires the two.
 //!
@@ -21,8 +22,10 @@
 //! answer with a 4xx or 5xx status and the media type of an error. Everything else is
 //! [`TransportError::NoAnswer`](stemma_core::transport::TransportError::NoAnswer) with the
 //! status in its words: another 2xx, the page of a proxy, a redirect, a body with a content
-//! encoding or with a transfer encoding other than chunks, a body without a length, and an
-//! answer that is no HTTP. The status itself is the coarse class only ([`Status`]); the typed
+//! encoding or with a transfer encoding other than chunks, and a body without a length (chunks
+//! count in HTTP/1.1 alone). An answer that is no HTTP, such as another service behind the port,
+//! a head that is too large, or a proxy that refuses the tunnel, is `NoAnswer` too, in the words
+//! of the failure, without a status. The status itself is the coarse class only ([`Status`]); the typed
 //! error stands in the body, which the core reads. The transport follows no redirect and relies
 //! on no `Cache-Control` header.
 //!
@@ -50,8 +53,8 @@
 //! The tests of this crate run without a hub. A scripted responder on a loopback socket, written
 //! for the tests with the standard library, answers each request with bytes that a test sets, and
 //! records what the client sent; with the test CA under `tests/data` it speaks TLS through
-//! rustls. So the mapping of every status, the refused redirect, the timeouts, the loopback rule,
-//! the CA file, and the absence of the token from errors and logs are tested here. The end-to-end
+//! rustls. So the mapping of every status, the refused redirect, the idle timeouts, the loopback
+//! rule, the proxy rule for `http://`, the CA file, and the absence of the token from errors and logs are tested here. The end-to-end
 //! tests against a real hub live in stemma-hub (ADR-022).
 //!
 //! # Errors

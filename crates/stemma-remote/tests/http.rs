@@ -279,7 +279,10 @@ fn http_is_refused_towards_a_host_that_is_not_loopback() {
     ] {
         let error = HttpTransport::new(&remote(address, None), Timeouts::DEFAULT).unwrap_err();
         assert!(matches!(&error, ClientError::PlainHttp(found) if found == address));
-        assert!(error.to_string().contains("http://"), "{error}");
+        assert!(
+            error.to_string().contains("not a loopback address"),
+            "{error}"
+        );
     }
     for address in [
         "http://127.0.0.1:1/ns/repo",
@@ -314,8 +317,12 @@ fn a_connection_closed_without_an_answer_is_a_failure_of_the_carrier() {
     }
 }
 
+/// The idle time of the tests that wait for a timeout.
+const IDLE: Duration = Duration::from_millis(300);
+
+/// A short idle time and a long time to connect, so that a timeout that fires is the idle one.
 fn short() -> Timeouts {
-    Timeouts::new(Duration::from_secs(5), Duration::from_millis(300))
+    Timeouts::new(Duration::from_secs(30), IDLE)
 }
 
 #[test]
@@ -329,7 +336,8 @@ fn an_answer_that_does_not_begin_ends_after_the_idle_time() {
         }
         other => panic!("expected a timeout, got {other:?}"),
     }
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(start.elapsed() >= IDLE, "{:?}", start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(10));
 }
 
 #[test]
@@ -338,7 +346,13 @@ fn a_body_that_stops_ends_after_the_idle_time_with_an_error_of_its_reader() {
     // The head and half the body; then the responder holds the connection.
     bytes.truncate(bytes.len() - 500);
     let responder = Responder::start(vec![Action::Partial(bytes)]);
-    let mut transport = HttpTransport::new(&responder.remote(), short()).unwrap();
+    // The head must arrive within the idle time, on a loaded runner too.
+    let idle = Duration::from_secs(1);
+    let mut transport = HttpTransport::new(
+        &responder.remote(),
+        Timeouts::new(Duration::from_secs(30), idle),
+    )
+    .unwrap();
     let Answer::Message(mut body) = transport.refs().unwrap() else {
         panic!("expected a message");
     };
@@ -347,14 +361,18 @@ fn a_body_that_stops_ends_after_the_idle_time_with_an_error_of_its_reader() {
     let error = body.read_to_end(&mut read).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
     assert_eq!(read.len(), 500);
-    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(start.elapsed() >= idle, "{:?}", start.elapsed());
+    assert!(start.elapsed() < Duration::from_secs(10));
+    // The error stays: a second read does not report an end.
+    let again = body.read(&mut [0; 16]).unwrap_err();
+    assert_eq!(again.kind(), io::ErrorKind::TimedOut);
 }
 
 #[test]
 fn the_idle_time_counts_per_read_and_not_for_the_whole_answer() {
     // The answer begins at once and every read finds bytes, so a body whose reading takes more
     // than twice the idle time as a whole still arrives.
-    let idle = Duration::from_millis(500);
+    let idle = Duration::from_secs(1);
     let body = vec![b'y'; 4 * 1024 * 1024];
     let responder = Responder::start(vec![Action::Respond(message(&body))]);
     let mut transport = HttpTransport::new(
@@ -394,6 +412,7 @@ fn a_request_body_that_the_other_side_does_not_read_ends_after_the_idle_time() {
         }
         other => panic!("expected a timeout, got {other:?}"),
     }
+    assert!(start.elapsed() >= IDLE, "{:?}", start.elapsed());
     assert!(start.elapsed() < Duration::from_secs(10));
 }
 
@@ -522,4 +541,87 @@ fn another_service_behind_the_port_is_no_answer() {
         Err(TransportError::NoAnswer { .. }) => {}
         other => panic!("expected no answer, got {other:?}"),
     }
+}
+
+#[test]
+fn an_http_1_0_answer_with_chunks_is_no_answer() {
+    // `ureq` reads chunks in HTTP/1.1 alone; in HTTP/1.0 the body would end at the close.
+    let bytes = format!(
+        "HTTP/1.0 200 OK\r\nContent-Type: {MESSAGE_MEDIA_TYPE}\r\nTransfer-Encoding: chunked\r\n\r\n\
+         5\r\nhello\r\n0\r\n\r\n"
+    );
+    let responder = Responder::start(vec![Action::Respond(bytes.into_bytes())]);
+    let detail = no_answer(transport(&responder).refs());
+    assert!(detail.contains("without a length"), "{detail}");
+}
+
+#[test]
+fn chunks_cut_before_the_last_chunk_are_an_error_of_the_reader_that_stays() {
+    let bytes = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {MESSAGE_MEDIA_TYPE}\r\nTransfer-Encoding: chunked\r\n\
+         Connection: close\r\n\r\n5\r\nhello\r\n"
+    );
+    let responder = Responder::start(vec![Action::Respond(bytes.into_bytes())]);
+    let mut transport = transport(&responder);
+    let Answer::Message(mut body) = transport.refs().unwrap() else {
+        panic!("expected a message");
+    };
+    let mut read = Vec::new();
+    let error = body.read_to_end(&mut read).unwrap_err();
+    assert_eq!(read, b"hello");
+    // A second read reports the error again, not an end.
+    let again = body.read(&mut [0; 16]).unwrap_err();
+    assert_eq!(again.kind(), error.kind());
+}
+
+/// A reader that is interrupted before every byte it gives.
+struct Interrupting {
+    left: usize,
+    interrupt: bool,
+}
+
+impl Read for Interrupting {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.interrupt = !self.interrupt;
+        if self.interrupt {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        if self.left == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        buf[0] = b'i';
+        self.left -= 1;
+        Ok(1)
+    }
+}
+
+#[test]
+fn a_request_body_that_is_interrupted_is_read_again() {
+    let responder = Responder::start(vec![Action::Respond(message(example("objects")))]);
+    let mut transport = transport(&responder);
+    let mut body = Interrupting {
+        left: 5,
+        interrupt: false,
+    };
+    assert!(matches!(
+        transport.fetch(&mut body).unwrap(),
+        Answer::Message(_)
+    ));
+    assert_eq!(responder.requests()[0].body, b"iiiii");
+}
+
+#[test]
+fn a_token_answer_above_the_bound_is_no_answer_and_gives_no_token() {
+    let mut long = b"stemma-protocol 1\ntoken ".to_vec();
+    long.resize(64 * 1024 + 1, b'a');
+    let responder = Responder::start(vec![Action::Respond(message(&long))]);
+    let mut transport = transport(&responder);
+    let error = transport
+        .answer_challenge(&mut &example("signed-challenge")[..])
+        .unwrap_err();
+    match &error {
+        TransportError::NoAnswer { detail } => assert!(detail.contains("longer than"), "{detail}"),
+        other => panic!("expected no answer, got {other:?}"),
+    }
+    assert!(!transport.holds_token());
 }

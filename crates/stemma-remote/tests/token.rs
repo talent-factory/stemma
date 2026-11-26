@@ -65,6 +65,10 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
     // no number.
     let broken = format!("stemma-protocol 1\ntoken {SECRET}\nlifetime soon\n");
     let page: &[u8] = b"<html>Unauthorized</html>";
+    // A second responder as the target of the redirect: were the redirect followed, the token
+    // would arrive there.
+    let elsewhere = Responder::start(vec![Action::Respond(message(example("refs")))]);
+    let elsewhere_refs = format!("{}/refs", elsewhere.address());
     let responder = Responder::start(vec![
         Action::Respond(message(broken.as_bytes())),
         Action::Respond(message(example("challenge"))),
@@ -78,11 +82,7 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
             ],
             page,
         )),
-        Action::Respond(response(
-            302,
-            &[("Location", "https://elsewhere.example/x")],
-            b"",
-        )),
+        Action::Respond(response(302, &[("Location", elsewhere_refs.as_str())], b"")),
         Action::Close,
         // A second sign-in that is refused keeps the token of the first.
         Action::Respond(response(
@@ -138,6 +138,28 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
 
     // The two requests of a sign-in carry no token; every other request after it carries it.
     let requests = responder.requests();
+    assert!(elsewhere.requests().is_empty(), "the redirect was followed");
+    // The methods and the media type of the bodies.
+    let content_type = Some(stemma_remote::MESSAGE_MEDIA_TYPE);
+    for request in &requests {
+        let endpoint = request.path.rsplit('/').next().unwrap();
+        match endpoint {
+            "challenge" => {
+                assert_eq!(request.method, "POST");
+                assert!(request.body.is_empty());
+            }
+            "token" | "fetch" => {
+                assert_eq!(request.method, "POST");
+                assert_eq!(request.header("content-type"), content_type);
+            }
+            "refs" if request.method == "POST" => {
+                assert_eq!(request.header("content-type"), content_type);
+                assert_eq!(request.body, example("ref-update"));
+            }
+            "refs" => assert_eq!(request.method, "GET"),
+            other => panic!("unexpected endpoint {other}"),
+        }
+    }
     let authorization: Vec<(String, Option<&str>)> = requests
         .iter()
         .map(|request| (request.path.clone(), request.header("authorization")))
@@ -167,9 +189,9 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         assert!(!holds_token(text), "the token is in `{text}`");
     }
     let records = RECORDS.lock().unwrap();
-    // The logger saw the requests of `ureq`; the check depends on the form of its records at the
-    // level debug, which an update of `ureq` may change, with the header of the token redacted, so the check
-    // below has something to look at.
+    // The logger saw the requests of `ureq` at the level debug, with the header of the token
+    // redacted, so the check below has records to look at. It depends on the form of these
+    // records, which an update of `ureq` may change.
     assert!(records
         .iter()
         .any(|(_, text)| text.contains("Request {") && text.contains("REDACTED")));

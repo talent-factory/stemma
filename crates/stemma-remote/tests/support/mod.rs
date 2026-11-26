@@ -37,6 +37,9 @@ pub enum Action {
     /// Reads the head of the request alone and holds the connection, so that the body of the
     /// client fills the buffers of the socket and its writes wait.
     StallAfterHead,
+    /// Accepts the connection and holds it without reading or writing a byte, so that a client
+    /// with TLS waits in its handshake.
+    Mute,
 }
 
 /// A request as the responder received it.
@@ -179,6 +182,11 @@ fn serve<S: Read + Write>(
     action: Action,
     recorded: &Mutex<Vec<Recorded>>,
 ) -> io::Result<()> {
+    if let Action::Mute = action {
+        thread::sleep(HOLD);
+        drop(stream);
+        return Ok(());
+    }
     let mut reader = BufReader::new(stream);
     if let Action::StallAfterHead = action {
         if let Some(head) = read_head(&mut reader) {
@@ -208,7 +216,7 @@ fn serve<S: Read + Write>(
             Ok(())
         }
         Action::Close => Ok(()),
-        Action::StallAfterHead => unreachable!("handled before the request is read"),
+        Action::StallAfterHead | Action::Mute => unreachable!("handled before the request is read"),
     }
 }
 

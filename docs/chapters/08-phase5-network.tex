@@ -501,8 +501,9 @@ In jedem Fall ändert sich keine Objekt-ID.
 Ein eigenes Crate (\type{stemma-remote}) trägt die Anfragen über HTTP/1.1 zum Hub (ADR-028).
 Der Client arbeitet blockierend und ohne asynchrone Laufzeit, wie der Kern, die Befehlszeile und
 die Oberfläche im Terminal.
-Er liest keine Nachricht: Der Kern schreibt die Anfrage und liest die Antwort, der Client trägt
-die Bytes und sagt, ob eine Antwort die verlangte Nachricht ist oder ein Fehler an ihrer Stelle.
+Er liest keine Nachricht ausser der Antwort mit dem Token: Der Kern schreibt die Anfrage und
+liest die Antwort, der Client trägt die Bytes und sagt, ob eine Antwort die verlangte Nachricht
+ist oder ein Fehler an ihrer Stelle.
 TLS ist rustls mit den Wurzelzertifikaten von Mozilla, die im Programm enthalten sind, sodass sich
 der Client auf jeder Plattform gleich verhält und nichts vom Vertrauensspeicher des Systems
 braucht.
@@ -524,7 +525,8 @@ Ein Status 4xx oder 5xx mit dem Medientyp eines Fehlers (\type{application/vnd.s
 ist ein Fehler, dessen Art der Kern aus dem Rumpf liest.
 Alles andere ist keine Antwort des Protokolls, etwa die Seite eines Proxys, eine Weiterleitung,
 ein komprimierter Rumpf, um den der Client nicht gebeten hat, oder ein Rumpf ohne Länge, dessen
-Ende sich nicht von einem Abbruch unterscheiden lässt; der Fehler nennt den Status.
+Ende sich nicht von einem Abbruch unterscheiden lässt; der Fehler nennt den Status, falls die
+Antwort einen hat.
 \stopitemize
 
 Der Client folgt keiner Weiterleitung und nennt stattdessen die neue Adresse, falls die Antwort
@@ -831,7 +833,7 @@ Remote-Referenzen sind Wurzeln der Erreichbarkeit.
 Gebaut ist davon, was ein Klon ablegt und liest; \type{fetch} und \type{push} folgen.
 Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
 fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
-dem festgehaltenen Schlüssel des Hubs, einer zusätzlichen CA-Datei und der Angabe, ob der Hub
+dem festgehaltenen Schlüssel des Hubs, einer eigenen CA-Datei und der Angabe, ob der Hub
 eine Anmeldung verlangt.
 Der Pfad der CA-Datei ist absolut, denn alle Worktrees teilen die Konfiguration,
 und ein relativer Pfad meinte je nach Verzeichnis eine andere Datei.

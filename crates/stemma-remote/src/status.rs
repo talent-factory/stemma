@@ -7,8 +7,8 @@ use std::time::Duration;
 /// stands in the body ([`ErrorMessage`](stemma_core::protocol::ErrorMessage)); the class is what
 /// a command needs beyond it, such as the exit code of a busy hub or that a sign-in is needed.
 ///
-/// [`HttpTransport::last_status`](crate::HttpTransport::last_status) returns it, for an answer
-/// that is a message, an error message, or no answer of the protocol alike.
+/// [`HttpTransport::last_status`](crate::HttpTransport::last_status) returns it for every answer
+/// with an HTTP status: a message, an error message, or no answer of the protocol alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Status {
@@ -38,7 +38,7 @@ pub enum Status {
     /// [`RateLimited`](Self::RateLimited).
     Busy(Option<Duration>),
     /// 3xx: a redirect, which the client does not follow. Carries the code and the new address
-    /// of `Location`, if the header is there and is text.
+    /// of `Location` if the header is there, with a sequence that is no UTF-8 replaced.
     Redirect(u16, Option<String>),
     /// Any other code, which has no meaning in the protocol.
     Other(u16),
@@ -97,13 +97,35 @@ impl Status {
 /// Whether the values of `WWW-Authenticate` name the scheme `Bearer` in one of their challenges.
 /// A value may hold several challenges, each a scheme and its parameters, separated by commas;
 /// an element that begins with a word without `=` begins a challenge, and that word is its scheme.
+/// A comma inside a quoted string separates nothing.
 pub(crate) fn names_bearer<'a>(values: impl IntoIterator<Item = &'a str>) -> bool {
     values.into_iter().any(|value| {
-        value.split(',').any(|element| {
+        elements(value).into_iter().any(|element| {
             let word = element.trim_start().split([' ', '\t']).next().unwrap_or("");
             !word.contains('=') && word.eq_ignore_ascii_case("bearer")
         })
     })
+}
+
+/// The elements of a list of a header, split at the commas outside a quoted string. A backslash
+/// in a quoted string escapes the next character.
+fn elements(value: &str) -> Vec<&str> {
+    let mut elements = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    for (index, c) in value.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                elements.push(&value[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    elements.push(&value[start..]);
+    elements
 }
 
 /// A `Retry-After` of a number of seconds: decimal digits alone. The form of a date is not read.
@@ -198,6 +220,8 @@ mod tests {
             vec!["Bearerish"],
             vec![r#"Basic realm="Bearer""#],
             vec![r#"Basic realm=x, error=Bearer"#],
+            vec![r#"Basic realm="a, Bearer b""#],
+            vec![r#"Basic realm="a \", Bearer b""#],
         ] {
             assert!(!names_bearer(values.iter().copied()), "{values:?}");
         }

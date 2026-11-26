@@ -12,7 +12,7 @@ use stemma_core::transport::{
     Answer, Body, SignedIn, Transport, TransportError, MAX_SIGN_IN_MESSAGE,
 };
 use ureq::config::AutoHeaderValue;
-use ureq::http::{header, HeaderMap, Response};
+use ureq::http::{header, HeaderMap, Response, Version};
 use ureq::{Agent, Proxy, ProxyProtocol, SendBody};
 
 use crate::address::{Base, Endpoint, Scheme};
@@ -45,7 +45,9 @@ pub struct Timeouts {
     pub connect: Duration,
     /// The longest time that one read or one write on the connection may wait for the other
     /// side: for the answer to begin, and for every further part of a body in either direction.
-    /// It begins again with every read and every write.
+    /// It begins again with every read and every write. It covers the reads and writes of the
+    /// handshake of TLS and of a `CONNECT` as well, so a connection is set up within the shorter
+    /// of the two times as long as the other side stays silent.
     pub idle: Duration,
 }
 
@@ -173,10 +175,12 @@ impl HttpTransport {
     /// Without a CA file the roots of trust are the Mozilla roots that are compiled in; with one
     /// they are the certificates of the file alone. A connection with `https://` uses an HTTP or
     /// HTTPS proxy that the environment names, through `CONNECT`, so the proxy sees no token: the
-    /// first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (or their names in lower case) that
-    /// is set, unless `NO_PROXY` names the host. The variables are read here, once. A SOCKS proxy
-    /// in the environment is not used, and the connection goes without a proxy. A connection with
-    /// `http://` uses no proxy.
+    /// first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (each also in lower case) that holds
+    /// a valid proxy address, unless `NO_PROXY` names the host; this holds for an `https://`
+    /// address towards a loopback host as well. The variables are read here, once. If that first
+    /// variable names a SOCKS proxy, no proxy is used, and the later variables are not tried. An
+    /// HTTPS proxy is checked against the same roots as the hub, so against the CA file if the
+    /// remote names one. A connection with `http://` uses no proxy.
     ///
     /// # Errors
     ///
@@ -220,16 +224,17 @@ impl HttpTransport {
     }
 
     /// Whether the transport holds a token, because a sign-in was answered with one. It says
-    /// nothing about the lifetime: a sign-in that is refused later leaves the token of the
-    /// earlier one where it is.
+    /// nothing about the lifetime: a later sign-in that does not succeed (refused, without an
+    /// answer, or with a failure of the carrier) leaves the token of the earlier one where it is.
     pub fn holds_token(&self) -> bool {
         self.token.is_some()
     }
 
-    /// The status of the answer to the last request, or `None` if the last request got no
-    /// answer at all (the carrier failed, or the body of the request could not be read) or none
-    /// was sent yet. It is set for an answer that is a message, an error message, or no answer
-    /// of the protocol alike.
+    /// The status of the answer to the last request, if that answer had an HTTP status: for an
+    /// answer that is a message, an error message, or no answer of the protocol alike. It is
+    /// `None` if no request was sent yet, if the carrier failed, if the body of the request could
+    /// not be read, and if what came back was no HTTP answer with a status (another service
+    /// behind the port, a head that is too large, a proxy that refused the tunnel).
     pub fn last_status(&self) -> Option<&Status> {
         self.last_status.as_ref()
     }
@@ -324,11 +329,14 @@ impl HttpTransport {
                 encoding.escape_debug()
             ));
         }
+        // `ureq` reads chunks in HTTP/1.1 alone; an HTTP/1.0 answer with the header is read to the
+        // close of the connection, so the header counts for nothing there.
+        let http11 = response.version() == Version::HTTP_11;
         let mut chunked = false;
         for value in headers.get_all(header::TRANSFER_ENCODING).iter().map(lossy) {
             for part in value.split(',').map(str::trim) {
                 if part.eq_ignore_ascii_case("chunked") {
-                    chunked = true;
+                    chunked = http11;
                 } else {
                     return no_answer(format!(
                         "{status}, with the transfer encoding `{}`",
@@ -368,7 +376,10 @@ impl HttpTransport {
             ));
         }
         let body = response.into_body();
-        Ok(case(Box::new(BufReader::new(Stream(body.into_reader())))))
+        Ok(case(Box::new(BufReader::new(Stream {
+            reader: body.into_reader(),
+            failed: None,
+        }))))
     }
 
     /// Sends a request and sorts its answer.
@@ -419,7 +430,11 @@ impl Transport for HttpTransport {
         let mut bytes = Vec::new();
         body.take(MAX_SIGN_IN_MESSAGE + 1)
             .read_to_end(&mut bytes)
-            .map_err(TransportError::Carrier)?;
+            .map_err(|error| match protocol_error(&error) {
+                // Chunks that cannot be read came back from the other side.
+                Some(detail) => TransportError::NoAnswer { detail },
+                None => TransportError::Carrier(error),
+            })?;
         if bytes.len() as u64 > MAX_SIGN_IN_MESSAGE {
             return Err(TransportError::NoAnswer {
                 detail: format!(
@@ -442,15 +457,18 @@ fn text(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
-/// The text of a header value, with a byte that is no visible ASCII replaced, for a message and a
-/// comparison.
+/// The text of a header value, with every sequence that is no UTF-8 replaced by U+FFFD, for a
+/// message and a comparison.
 fn lossy(value: &header::HeaderValue) -> String {
     String::from_utf8_lossy(value.as_bytes()).into_owned()
 }
 
-/// Why a request failed in `ureq`: a failure of the carrier, or no answer of the protocol when
-/// something answered that is no HTTP answer of the other side, such as another service behind
-/// the port, a head that is too large, or a proxy that refused the tunnel.
+/// Why a request failed in `ureq`: no answer of the protocol when something answered that is no
+/// HTTP answer of the other side (another service behind the port, a head that is too large, a
+/// proxy that refused the tunnel, a body that stalled), and a failure of the carrier for every
+/// other error, among them the errors of I/O and of TLS. A request of this crate cannot meet the
+/// errors of `ureq` that a malformed request would give (a bad address or header), because its
+/// address and its headers are checked before.
 fn failure(error: ureq::Error) -> TransportError {
     match error {
         ureq::Error::Io(error) => TransportError::Carrier(error),
@@ -476,35 +494,61 @@ struct Tracked<'r> {
 
 impl Read for Tracked<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.inner.read(buf) {
-            Err(error) if error.kind() != io::ErrorKind::Interrupted => {
-                let kind = error.kind();
-                self.error = Some(error);
-                Err(io::Error::new(
-                    kind,
-                    "the body of the request could not be read",
-                ))
+        loop {
+            match self.inner.read(buf) {
+                // `ureq` does not read again after `Interrupted`, so the reader is asked here.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    let kind = error.kind();
+                    self.error = Some(error);
+                    return Err(io::Error::new(
+                        kind,
+                        "the body of the request could not be read",
+                    ));
+                }
+                result => return result,
             }
-            result => result,
         }
     }
 }
 
-/// The body of an answer, whose timeout is an error of the kind `TimedOut`.
-struct Stream(ureq::BodyReader<'static>);
+/// The text of an error of `ureq` for a part of an answer that is no HTTP, such as chunks that
+/// cannot be read, if the error of I/O is one.
+fn protocol_error(error: &io::Error) -> Option<String> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+        .filter(|inner| matches!(inner, ureq::Error::Protocol(_)))
+        .map(ToString::to_string)
+}
+
+/// The body of an answer. A timeout is an error of the kind `TimedOut`, and an error stays: every
+/// read after the first error fails with the same kind and text, because `ureq` would answer it
+/// with an end, which a reader could take for the end of the body.
+struct Stream {
+    reader: ureq::BodyReader<'static>,
+    failed: Option<(io::ErrorKind, String)>,
+}
 
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf).map_err(|error| {
+        if let Some((kind, text)) = &self.failed {
+            return Err(io::Error::new(*kind, text.clone()));
+        }
+        self.reader.read(buf).map_err(|error| {
             let timed_out = error
                 .get_ref()
                 .and_then(|inner| inner.downcast_ref::<ureq::Error>())
                 .is_some_and(|inner| matches!(inner, ureq::Error::Timeout(_)));
-            if timed_out {
+            let error = if timed_out {
                 io::Error::new(io::ErrorKind::TimedOut, error)
             } else {
                 error
+            };
+            if error.kind() != io::ErrorKind::Interrupted {
+                self.failed = Some((error.kind(), error.to_string()));
             }
+            error
         })
     }
 }

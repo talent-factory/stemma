@@ -407,7 +407,7 @@ impl fmt::Display for RemoteAddress {
     }
 }
 
-/// The path of an additional CA file of a remote, for a hub with a certificate of an own CA
+/// The path of the CA file of a remote, for a hub with a certificate of an own CA
 /// (ADR-028). It is text that fits a line; whether the file exists is the business of the client
 /// that reads it. The path is absolute by the rule of the platform
 /// ([`Path::is_absolute`]): the configuration is shared by every worktree, and a relative path
@@ -461,7 +461,8 @@ pub struct RemoteConfig {
     /// Whether a command ever leaves a remote without a key is the decision of the slice that
     /// writes the configuration; a `fetch` or a `push` must not trust a hub while it is `None`.
     pub hub_key: Option<PublicKey>,
-    /// An additional CA file for the connection (ADR-028).
+    /// A CA file for the connection, whose certificates replace the compiled-in roots of the
+    /// client for this remote (ADR-028).
     pub ca_file: Option<CaFile>,
     /// Whether the hub asks for a sign-in, which the client learns once (ADR-023).
     pub sign_in: bool,
