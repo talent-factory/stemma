@@ -76,6 +76,11 @@ pub enum PayloadKind {
     /// signed by the current key of the hub (ADR-026). The payload is that of
     /// [`FormerKeys::payload`](crate::protocol::FormerKeys::payload).
     FormerKeys,
+    // The statements that a hub holds (ADR-025, STEMMA-299).
+    /// The lines of a hub for a statement that it holds, signed by the key of the hub (ADR-025,
+    /// ADR-026). The payload is the text of the hash of the held statement
+    /// ([`HeldStatement`](crate::protocol::held::HeldStatement)).
+    HeldStatement,
 }
 
 impl PayloadKind {
@@ -95,6 +100,7 @@ impl PayloadKind {
             Self::OwnerOverride => "owner-override",
             Self::Challenge => "challenge",
             Self::FormerKeys => "former-keys",
+            Self::HeldStatement => "held-statement",
         }
     }
 }

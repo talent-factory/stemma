@@ -11,7 +11,8 @@ was decided on 2026-10-24 (STEMMA-84). The anchor
 that the actor cannot change, the statement about what a hub sees, and the entries that name a
 signed statement were decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, STEMMA-274,
 STEMMA-56; see "The log and a hub"). The entries that name a signed statement are implemented
-(STEMMA-290, see "The entries that name a signed statement"); the rest is not yet.
+(STEMMA-290, see "The entries that name a signed statement"), and so is the entry `fetch` with
+its remote references (STEMMA-295); the rest is not yet.
 
 ## Context
 
@@ -238,7 +239,7 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   entries, version 10 with the approval entry, version 11 with the check entry, version 12
   with the kind in the stub (below), version 13 with the line `former-owner` (below), and
   version 16 with the entries that name a signed statement (below; the versions 14 and 15
-  changed no entry, ADR-009).
+  changed no entry, ADR-009), and version 17 with the line `remote` (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change and a `purge` entry; a new stub has version 4
@@ -765,7 +766,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     the number of its `pr-open` entry, so the name holds in every clone. Built in STEMMA-290;
     `pr-close` names its statement as well, since a closing is one.
   - **`fetch` and `push` are operations with one entry each.** A `fetch` entry names the remote
-    references it moves and removes, with their old and new state, and the statements received. A
+    references it moves and removes, with their old and new state, and the statements received
+    (the statements come with their slice). A
     `push` entry is written after the receipt and names the remote references it moved and the
     number and hash of the receipt (ADR-008). `pr-merge` is written after the receipt as well,
     in a repository whose `main` follows a remote. Pinning the key of a hub again writes an
@@ -785,6 +787,16 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     lock decides and not an age. The operation needs no lock of the references because it
     names nothing: its objects stay unnamed until a ref update or the move of a remote
     reference names them, and those moves hold the lock.
+  - **The line `remote`** *(STEMMA-295)*. A change names the remote references after its tags,
+    one line each, sorted by the remote, the branches before the tags, and the name, and each
+    once: `remote remotes/<remote>/heads/<name> <old> <new>`, where a state is the commit and
+    the hash of the record entry, two tokens, and `- -` stands for a reference that does not
+    exist. A state with one token `-` is refused. The entry `fetch` writes the lines, and the
+    restore of a `fetch` entry writes them into its own entry. The outcome of a line is judged
+    as that of a branch, against the remote references of the clone (`Current::with_remotes`),
+    and the commits of the lines are roots like those of a branch. The line came with version
+    17 of the repository format (ADR-009): a program that knows only version 16 would call it
+    damage (`UnknownPointer`), so the repository rises with its next entry.
   - **A purge leaves a confirmed anchor valid**, because a stub keeps the hash of the entry it
     replaces. The purge sends nothing; its entry is anchored with the next push or by the
     command (ADR-026).

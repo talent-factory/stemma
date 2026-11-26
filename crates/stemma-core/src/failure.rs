@@ -156,6 +156,7 @@ impl Classify for RefError {
             Self::PurgePending { .. }
             | Self::Io { .. }
             | Self::Conflict { .. }
+            | Self::RemoteConflict { .. }
             | Self::NotFlushed { .. }
             | Self::NoHead { .. }
             | Self::NoWorkingCopy { .. } => FailureKind::Other,
@@ -643,6 +644,38 @@ impl Classify for JournalError {
         match self {
             Self::Malformed { .. } => FailureKind::Damaged,
             Self::Io { .. } | Self::NotFlushed { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for crate::repository::FetchError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Refs(error) => error.kind(),
+            Self::Update(error) => error.kind(),
+            Self::Remote(error) => error.kind(),
+            Self::Receive(error) => error.kind(),
+            Self::Connectivity(error) => error.kind(),
+            Self::JournalLeft { source, .. } => source.kind(),
+            // The other side and the carrier: nothing of this repository is damaged or locked.
+            Self::NoSuchRemote(_)
+            | Self::Transport(_)
+            | Self::Body(_)
+            | Self::TooLarge
+            | Self::List(_)
+            | Self::Refused(_)
+            | Self::Unreadable(_)
+            | Self::OtherRepository { .. } => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for crate::repository::CloneError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Before(error) => error.kind(),
+            Self::After { source, .. } => source.kind(),
+            Self::Init(error) => error.kind(),
         }
     }
 }

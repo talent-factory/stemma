@@ -1093,6 +1093,20 @@ impl Register {
                 .iter()
                 .any(|held| &held.key == key && held.state == KeyState::Active)
         })?;
+        Some(Verified {
+            actor: self.actor_of(&entry.identity)?,
+            key: key.clone(),
+        })
+    }
+
+    // The statements on a hub (ADR-025, STEMMA-299).
+
+    /// The actor that an identity of this register stands for where a message names no actor,
+    /// as a ref update and a statement do: the model and the session of an agent, which are no
+    /// part of the identity, are `-`, and the sponsor is the one of the entry. `None` if the
+    /// register has no entry of the identity.
+    pub fn actor_of(&self, identity: &Identity) -> Option<Actor> {
+        let entry = self.entry(identity)?;
         let id = entry.identity.id();
         let actor = match (entry.identity.kind(), &entry.sponsor) {
             (IdentityKind::Human, _) => Actor::human(id),
@@ -1100,10 +1114,25 @@ impl Register {
             // An agent without a sponsor is no entry that the reader of a register accepts.
             (IdentityKind::Agent, None) => return None,
         };
-        Some(Verified {
-            actor: actor.ok()?,
-            key: key.clone(),
-        })
+        actor.ok()
+    }
+
+    /// The actor that a signed statement speaks for on a hub (ADR-025): the entry that holds
+    /// the key of the statement as an active key, with the signature checked by
+    /// [`verify_statement`](Self::verify_statement). A statement names no actor, and a key
+    /// stands once in a register, so the key alone names the identity. `None` for an unsigned
+    /// statement, a key that no entry holds as an active key, and a signature that the register
+    /// does not accept; a retired or revoked key signs nothing new.
+    pub fn verify_statement_key(&self, statement: &Statement) -> Option<Verified> {
+        let key = statement.key()?;
+        let entry = self.entries.iter().find(|entry| {
+            entry
+                .keys
+                .iter()
+                .any(|held| &held.key == key && held.state == KeyState::Active)
+        })?;
+        let actor = self.actor_of(&entry.identity)?;
+        self.verify_statement(&actor, statement, None).ok()
     }
 
     /// Whether `key` is an active key of `identity`: a retired or revoked key signs nothing new.

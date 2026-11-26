@@ -2876,6 +2876,14 @@ fn plan_text(number: u64, plan: Option<&RestorePlan>) -> String {
             value(moved.after())
         ));
     }
+    for (name, moved) in plan.remotes() {
+        text.push_str(&format!(
+            "    remote {}  {} -> {}\n",
+            name.to_string().escape_debug(),
+            value(moved.before().map(|reference| &reference.commit)),
+            value(moved.after().map(|reference| &reference.commit))
+        ));
+    }
     if let Some(checkout) = plan.checkout().filter(|checkout| !checkout.is_empty()) {
         for write in checkout.writes() {
             text.push_str(&format!("    write {}\n", escape_path(write.path())));
@@ -3007,22 +3015,23 @@ fn show_op_log(args: OpLogArgs, out: &mut dyn Write) -> Result<(), CliError> {
                 tags.push(((*name).clone(), commit));
             }
         }
+        let remotes = refs.remote_refs()?;
         let locked_after = refs.is_locked()?;
         Ok((
             head,
             working_copy,
             owner,
-            branches,
-            tags,
+            (branches, tags, remotes),
             locked_before || locked_after,
         ))
     };
     let current = match read() {
-        Ok((head, working_copy, owner, branches, tags, locked)) => {
+        Ok((head, working_copy, owner, (branches, tags, remotes), locked)) => {
             let unchanged = log.numbers().map_err(CliError::OpLog)? == numbers;
             let current = oplog::Current::new(head, branches, !locked && unchanged)
                 .in_worktree(repository.worktree_name().unwrap_or("main"))
-                .with_tags(tags);
+                .with_tags(tags)
+                .with_remotes(remotes);
             Some(match working_copy {
                 Some(commit) => current.with_working_copy(Some(commit)).with_owner(owner),
                 None => {

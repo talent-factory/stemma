@@ -2542,6 +2542,19 @@ den neuesten Eintrag eines anderen als des Worktrees, in dem er läuft, nennt er
     branch feature  - -> b3:2222...2222
 \stoptyping
 
+{\bf Remote-Referenzen.} Ein Eintrag \type{fetch} und die Wiederherstellung eines solchen
+zeigen nach den Tags je eine Zeile \type{remote} mit dem alten und dem neuen Commit einer
+Remote-Referenz, \type{-} für eine, die es nicht gab oder nicht mehr gibt (ADR-008, ADR-011).
+Den Eintrag der Aufzeichnung zeigt die Zeile nicht; die JSON-Form nennt ihn.
+Einen solchen Eintrag schreibt noch kein Befehl, nur der Kern
+(\in{Kapitel}[chap:phase5]).
+
+\starttyping
+7  2023-11-14T22:35:00Z  human daniel  fetch
+    remote remotes/origin/heads/main  b3:2222...2222 -> b3:4444...4444
+    remote remotes/origin/heads/feat/x  b3:3333...3333 -> -
+\stoptyping
+
 {\bf Übernahme.} Der Eintrag von \type{take-over} macht seinen Akteur zum Eigentümer der
 Arbeitskopie (ADR-010). Der Eigentümer ist kein Zeiger, also folgt keine eingerückte Zeile;
 die JSON-Form hat \type{head} und \type{working_copy} mit \type{null} und \type{branches}
@@ -2650,7 +2663,7 @@ ein Purge hat \type{time}, \type{actor}, \type{operation}, \type{commits}, \type
 der Tags, die er bewegt hat; das Feld kam ohne neues \type{schema} dazu) und \type{stubs}, eine
 Liste von Bereichen \type{[start, end]}. Für eine Änderung sind die weiteren Felder \type{time}
 (Sekunden seit dem 1.1.1970, wie im Eintrag), \type{actor}, \type{operation}, \type{head},
-\type{working_copy}, \type{branches}, \type{tags}, \type{purge_pending}
+\type{working_copy}, \type{branches}, \type{tags}, \type{remotes}, \type{purge_pending}
 (\type{true}, wenn ein unfertiger Purge
 den Eintrag nennt) und \type{took_effect}. \type{took_effect} ist \type{true}, wenn die
 Zeigerbewegung stattfand, \type{false}, wenn sie nicht stattfand, und \type{null}, wenn das Log und
@@ -2665,7 +2678,11 @@ hinzuzufügen ändert es nicht (ADR-018). \type{worktree} und \type{location} ka
 \type{location} ist der Pfad seines Verzeichnisses bei \type{worktree-add} und
 \type{worktree-remove}, sonst \type{null}. \type{former_owner} kam ebenso dazu: der Eigentümer
 der Arbeitskopie, die ein Mensch mit \type{worktree remove --take-over} entfernt hat, sonst
-\type{null}. Ein Wert, den es nicht gibt, ist \type{null}.
+\type{null}. \type{remotes} kam ebenso dazu: eine Liste von Objekten mit \type{name}
+(\type{remotes/<Remote>/heads/<Name>} oder \type{remotes/<Remote>/tags/<Name>}),
+\type{old} und \type{new}, deren Wert ein Objekt mit \type{commit} und \type{entry} ist, dem
+Hash des Eintrags der Aufzeichnung auf dem Hub; leer, wenn der Eintrag keine Remote-Referenz
+nennt. Ein Wert, den es nicht gibt, ist \type{null}.
 HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
@@ -2879,8 +2896,10 @@ denn ein Probelauf schreibt nichts.
 \stopitemize
 
 {\bf Was zurückkommt.} Das Restore setzt jeden Zeiger, den der Eintrag bewegt hat,
-auf den Wert vor dem Eintrag: HEAD, den Working-Copy-Commit und die Branches.
-Ein Branch, den der Eintrag angelegt hat, wird gelöscht.
+auf den Wert vor dem Eintrag: HEAD, den Working-Copy-Commit, die Branches und die
+Remote-Referenzen eines Eintrags \type{fetch} (ADR-008).
+Ein Branch, den der Eintrag angelegt hat, wird gelöscht; eine Remote-Referenz, die ein Fetch
+entfernt hat, kommt zurück, und \type{--dry-run} zeigt sie als Zeile \type{remote}.
 Zeiger, die der Eintrag nicht nennt, bleiben, und ein Zeiger, der den alten Wert schon hat,
 wird nicht angefasst.
 HEAD und der Working-Copy-Commit gehören zu einem Worktree: Das Restore setzt die des Worktrees

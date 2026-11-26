@@ -5,11 +5,14 @@ for the format, STEMMA-272 for the mapping to HTTP, with the addenda of STEMMA-5
 STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 `stemma_core::protocol` exists with the first number and the first four messages (STEMMA-283, see
 "The first number is 1"), with the ref update and its receipt (STEMMA-291, ADR-025) and with the
-two errors that answer a ref update (STEMMA-296), and the
+two errors that answer a ref update (STEMMA-296), with the submission of a statement, the
+reading of the statements and of the record by a range, and their two errors (STEMMA-299,
+ADR-025), and the
 receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
 receiving side"), and the answering side of the list of references and of a fetch exists in
-`stemma_core::serve` (STEMMA-288, see "The answering side"); nothing else of it is implemented
-yet. The numbers under "Basis" give a direction, not a threshold.
+`stemma_core::serve` (STEMMA-288, see "The answering side"), and the fetch and the clone of a
+clone exist as `Repository::fetch` and `Repository::clone_remote` (STEMMA-295); nothing else of
+it is implemented yet. The numbers under "Basis" give a direction, not a threshold.
 
 ## Context
 
@@ -229,8 +232,11 @@ for the upload on a hub, `Repository::check_connectivity` for the check of a ref
 - **The check and the lock.** `Fetch::check` does not read a commit again that the fetch found
   complete before, at its start from the journal or while it received, without the lock of the
   references. A purge between that read
-  and the move of a remote reference is not seen by it; the slice that moves the references
-  under the lock decides whether it checks once more there.
+  and the move of a remote reference is not seen by it. The fetch of STEMMA-295 checks once
+  more under the lock when a purge entry or a stub was written since the fetch began, or when
+  `purge-pending` existed then, as its `--abort` removes objects and writes no entry. It trusts
+  the first check otherwise: a purge writes its entry before it removes an object, and no purge
+  runs while the fetch holds the lock (ADR-014).
 
 Known limit: a process that is killed loses the objects that were not yet flushed. A batch is
 closed only at a commit, so that is fewer than 1024 objects and less than 64 MiB, and on top
@@ -405,7 +411,14 @@ want <commit>
   no tag of the repository reaches, with one line `want <commit>` for the first such commit in the
   order of the IDs (STEMMA-288, see "The answering side"). A ref update that is not accepted is
   answered with `stale` or with `refused`; their lines stand in ADR-025 ("The accepting operation
-  as built"). The refusals of a statement and of the bounds add their kinds with their slices.
+  as built"). A refused statement is answered with `statement-refused` and one line
+  `refused <reason> <facts>`, and a reading request of a requester that may not read the
+  repository with `not-readable` without a further line; both stand in ADR-025 ("The statements
+  on a hub as built"). The refusals of the bounds add their kinds with their slice.
+- **Statements and ranges.** The held statement that answers a submission, and the range by
+  which the statements and the record are read, are messages of number 1 as well; their lines
+  and rules stand in ADR-025 ("The statements on a hub as built"). The answer to a range is the
+  held statements or the record entries of the range one after the other.
 - **Ref update and receipt.** The ref update and the record entry that answers it are messages
   of number 1 as well; their lines and rules stand in ADR-025 ("The formats as built").
 - **Sign-in.** The challenge, the signed challenge and the token answer are messages of number

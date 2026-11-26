@@ -9,18 +9,16 @@
 
 use std::error::Error;
 use std::fmt;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::PathBuf;
 
 use super::{now, Repository};
-use crate::fault;
 use crate::oplog::{Entry, OpLogError, OperationName, RemotePinEntry, REMOTE_PIN};
 use crate::protocol::RefList;
 use crate::refs::{RefError, WriteLock};
 use crate::register::{Identity, IdentityKind};
-use crate::remote::{RemoteConfig, RemoteError, RemoteName, REMOTES_DIR};
+use crate::remote::{self, RemoteConfig, RemoteError, RemoteName};
 use crate::signature::KeyFingerprint;
-use crate::store::{create_dirs_synced, create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, Authorizer};
 
 impl Repository {
@@ -101,8 +99,8 @@ impl Repository {
         Ok(Some(entry))
     }
 
-    /// Replaces the configuration file of a remote as a whole: a temporary file that is flushed,
-    /// a rename, and a flush of the directory. The caller holds the lock of the references.
+    /// Replaces the configuration file of a remote as a whole, with the writer that a clone
+    /// uses ([`remote::write_config`]). The caller holds the lock of the references.
     fn write_remote_config(
         &self,
         _lock: &WriteLock,
@@ -110,29 +108,20 @@ impl Repository {
         config: &RemoteConfig,
     ) -> Result<(), PinError> {
         let metadata = self.metadata_dir();
-        let dir = metadata.join(REMOTES_DIR);
-        create_dirs_synced(&metadata, &dir).map_err(PinError::store(&dir))?;
-        let temp_dir = metadata.join("tmp");
-        create_dirs_synced(&metadata, &temp_dir).map_err(PinError::store(&temp_dir))?;
-        let (mut file, mut temp) =
-            create_temp(&temp_dir, &mut unique_temp_name).map_err(PinError::store(&temp_dir))?;
-        file.write_all(&config.encode()).map_err(PinError::io(
-            "write the configuration of the remote",
-            &temp.path,
-        ))?;
-        file.sync_all().map_err(PinError::io(
-            "flush the configuration of the remote",
-            &temp.path,
-        ))?;
-        drop(file);
-        let path = dir.join(remote.as_str());
-        fault::rename(&temp.path, &path).map_err(PinError::io(
-            "replace the configuration of the remote",
-            &path,
-        ))?;
-        temp.disarm();
-        sync_directory(&dir).map_err(PinError::store(&dir))?;
-        Ok(())
+        remote::write_config(&metadata, &metadata.join("tmp"), remote, config).map_err(|error| {
+            match error {
+                RemoteError::Io {
+                    operation,
+                    path,
+                    source,
+                } => PinError::Io {
+                    operation,
+                    path,
+                    source,
+                },
+                other => PinError::Remote(other),
+            }
+        })
     }
 }
 
@@ -181,36 +170,6 @@ pub enum PinError {
 }
 
 impl PinError {
-    fn io(operation: &'static str, path: &Path) -> impl FnOnce(io::Error) -> Self {
-        let path = path.to_path_buf();
-        move |source| Self::Io {
-            operation,
-            path,
-            source,
-        }
-    }
-
-    /// The error of a helper of the store while the configuration is replaced in `path`. An
-    /// error of the file system keeps its own operation and path.
-    fn store(path: &Path) -> impl FnOnce(StoreError) -> Self + '_ {
-        move |error| match error {
-            StoreError::Io {
-                operation,
-                path,
-                source,
-            } => Self::Io {
-                operation,
-                path,
-                source,
-            },
-            other => Self::Io {
-                operation: "replace the configuration of the remote in",
-                path: path.to_path_buf(),
-                source: io::Error::other(other.to_string()),
-            },
-        }
-    }
-
     /// Returns the error of the file system, if that is what failed (see the crate
     /// documentation).
     pub fn io_error(&self) -> Option<&io::Error> {
@@ -367,7 +326,7 @@ mod tests {
             "0123456789abcdef0123456789abcdef".parse().unwrap(),
         );
         config.hub_key = key.map(Seeded::public);
-        let remotes = repository.metadata_dir().join(REMOTES_DIR);
+        let remotes = repository.metadata_dir().join(crate::remote::REMOTES_DIR);
         fs::create_dir_all(&remotes).unwrap();
         fs::write(remotes.join("origin"), config.encode()).unwrap();
         repository
@@ -382,6 +341,9 @@ mod tests {
         let dir = TempDir::new();
         let repository = repository(&dir, Some(&old_hub()));
         let before = entries(&repository).len();
+        // A repository of the version before: the entry moves it to the version that knows it.
+        let format = repository.metadata_dir().join("format");
+        fs::write(&format, "stemma-repository 17\n").unwrap();
         let list = rotated();
         let expected = new_hub().public().fingerprint();
         let entry = repository
@@ -408,6 +370,10 @@ mod tests {
         assert_eq!(keys.at(40), &old_hub().public());
         assert_eq!(keys.at(41), &new_hub().public());
         // The entry moved the repository to the current format, and the log verifies.
+        assert_eq!(
+            fs::read_to_string(&format).unwrap(),
+            "stemma-repository 18\n"
+        );
         assert!(repository.oplog().verify().is_ok());
 
         // The same key again changes nothing and writes nothing.
@@ -427,7 +393,7 @@ mod tests {
         let before = entries(&repository).len();
         let list = rotated();
         let expected = new_hub().public().fingerprint();
-        let remotes = repository.metadata_dir().join(REMOTES_DIR);
+        let remotes = repository.metadata_dir().join(crate::remote::REMOTES_DIR);
         let error = {
             let _guard = crate::fault::deny_writes_in(&remotes);
             repository

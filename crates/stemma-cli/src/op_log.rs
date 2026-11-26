@@ -8,6 +8,7 @@ use stemma_core::oplog::{
     RemotePinEntry, CHECK, REMOTE_PIN,
 };
 use stemma_core::refs::Head;
+use stemma_core::remote::RemoteRef;
 
 /// The `schema` of every JSON object the program writes (ADR-018). One number covers all of them:
 /// removing, renaming, or retyping a field of any object raises it.
@@ -221,6 +222,14 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             value(moved.after()),
         );
     }
+    // A remote reference shows its commit; the record entry is in the entry itself.
+    for (name, moved) in change.remotes() {
+        line(
+            format!("remote {}", name.to_string().escape_debug()),
+            value(moved.before().map(|reference| &reference.commit)),
+            value(moved.after().map(|reference| &reference.commit)),
+        );
+    }
     match outcome {
         Outcome::Took => {}
         Outcome::NotTaken => out.push_str("    ! the move did not take effect\n"),
@@ -266,7 +275,9 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// An entry for a program: one line of JSON. `took_effect` is `true`, `false`, or `null` if it is
 /// not known (see [`stemma_core::oplog::outcomes`]). `head` and `working_copy` are `null` if the
 /// operation did not change them, and `branches` is a list, empty if no branch changed. A pointer
-/// that did not exist or does not exist any more has `null` as its old or new value.
+/// that did not exist or does not exist any more has `null` as its old or new value. `remotes`
+/// lists the remote references of a `fetch` and of the restore of one, each with `name`, and
+/// `old` and `new` as an object with `commit` and `entry`, or `null`.
 ///
 /// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`,
 /// `lease`, `pull`, or `check`. A check has `time`, `actor`, `operation` (`check`), `commit`,
@@ -433,11 +444,37 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
             )
         })
         .collect();
+    // A remote reference has the commit and the record entry as its value (ADR-008).
+    let remote = |value: Option<&RemoteRef>| {
+        value.map_or_else(
+            || "null".to_owned(),
+            |reference| {
+                format!(
+                    "{{\"commit\":{},\"entry\":{}}}",
+                    quote(&reference.commit.to_string()),
+                    quote(&reference.entry.to_string())
+                )
+            },
+        )
+    };
+    let remotes: Vec<String> = change
+        .remotes()
+        .iter()
+        .map(|(name, moved)| {
+            format!(
+                "{{\"name\":{},\"old\":{},\"new\":{}}}",
+                quote(&name.to_string()),
+                remote(moved.before()),
+                remote(moved.after())
+            )
+        })
+        .collect();
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"worktree\":{},\"location\":{},\"former_owner\":{},\
          \"head\":{head},\
-         \"working_copy\":{working_copy},\"branches\":[{}],\"tags\":[{}],\"purge_pending\":{pending},\
+         \"working_copy\":{working_copy},\"branches\":[{}],\"tags\":[{}],\"remotes\":[{}],\
+         \"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",
         entry.number(),
         change.time(),
@@ -449,7 +486,8 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
             .former_owner()
             .map_or_else(|| "null".to_owned(), |owner| quote(&owner.to_string())),
         branches.join(","),
-        tags.join(",")
+        tags.join(","),
+        remotes.join(",")
     )
 }
 

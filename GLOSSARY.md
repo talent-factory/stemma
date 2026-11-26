@@ -532,7 +532,8 @@ order of its own: the entries of the log order it in a clone, the lines of the h
 What a hub adds when it accepts something, signed with the key of the hub. For a record entry: a
 running number, its time, the register commit, the policy commits, whether each move was a
 fast-forward, the actor, and the hash of the previous entry. For a statement: a running number,
-its time, the register commit, and the number of the last record entry. (Zeilen des Hubs)
+its time, the register commit, the number of the last record entry, and the actor; the statement
+with these lines is a held statement (ADR-025). (Zeilen des Hubs)
 
 **Order of the hub**:
 The order that the numbers in the lines of the hub fix across clones. A revocation acts from the
@@ -542,8 +543,9 @@ record number (ADR-026). (Ordnung des Hubs)
 **Accepting operation**:
 The operation of the core that judges a ref update or a statement on a bare repository and fixes
 the order of the checks, so that a hub composes none itself (ADR-025). For a ref update it writes
-the record entry, moves the references, all or none, and returns the receipt or a typed refusal.
-(annehmende Operation)
+the record entry, moves the references, all or none, and returns the receipt or a typed refusal;
+for a statement it keeps the statement with the lines of the hub and returns it, or a typed
+refusal. (annehmende Operation)
 
 **Key of the hub**:
 The one Ed25519 key of a hub instance. It signs only what the hub itself says (record entries,

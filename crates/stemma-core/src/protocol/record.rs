@@ -59,7 +59,7 @@
 //! Not part of this module: the accepting operation that decides whether an update may be written
 //! ([`Repository::accept_ref_update`](crate::repository::Repository::accept_ref_update),
 //! ADR-025), the errors that answer a stale and a refused update ([`refusal`](super::refusal)),
-//! and the request that reads a range of the record, which comes with the slice that builds it.
+//! and the request that reads a range of the record ([`Range`](super::held::Range)).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;

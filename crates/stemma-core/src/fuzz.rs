@@ -244,6 +244,11 @@ pub fn protocol(input: &[u8]) {
                 ErrorMessage::Refused(refused) => {
                     Ok(ErrorMessage::Refused(rebuilt_refusal(refused)))
                 }
+                // The statements on a hub (STEMMA-299).
+                ErrorMessage::StatementRefused(refusal) => Ok(ErrorMessage::StatementRefused(
+                    rebuilt_statement_refusal(refusal),
+                )),
+                ErrorMessage::NotReadable => Ok(ErrorMessage::NotReadable),
             };
             assert_eq!(
                 rebuilt.as_ref(),
@@ -256,6 +261,7 @@ pub fn protocol(input: &[u8]) {
     protocol_record(input, &check_refusal);
     protocol_statement(input, &check_refusal);
     protocol_sign_in(input, &check_refusal);
+    protocol_held(input, &check_refusal);
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
         loop {
@@ -290,6 +296,72 @@ pub fn protocol(input: &[u8]) {
                 );
             }
         }
+    }
+}
+
+/// The part of [`protocol`] for a statement as a hub holds it and for a range (ADR-025,
+/// STEMMA-299). A fuzzer makes no signature, so the held statement is read as the ref update is
+/// ([`protocol_record`]): its form without the check of the signatures, and with the check the
+/// same value or a refusal for a signature alone. A range is written back unchanged and is a
+/// value that its constructor builds.
+fn protocol_held(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseError)) {
+    use crate::protocol::held::{HeldProblem, HeldStatement, Range};
+    use crate::protocol::statement::StatementProblem;
+    use crate::protocol::ParseError;
+    match HeldStatement::parse_unverified(input) {
+        Ok(held) => {
+            assert_eq!(held.encode(), input, "a second spelling was accepted");
+            match HeldStatement::parse(input) {
+                Ok(verified) => assert_eq!(verified, held),
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error,
+                            ParseError::Held {
+                                reason: HeldProblem::HubSignature,
+                                ..
+                            } | ParseError::Statement {
+                                reason: StatementProblem::Key | StatementProblem::Signature,
+                                ..
+                            }
+                        ),
+                        "a message whose form is right was refused for its form: {error}"
+                    );
+                    check_refusal(&error);
+                }
+            }
+        }
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(HeldStatement::parse(input).as_ref(), Err(&error));
+        }
+    }
+    match Range::parse(input) {
+        Ok(range) => {
+            assert_eq!(range.encode(), input, "a second spelling was accepted");
+            assert_eq!(
+                Range::try_new(range.first(), range.last()),
+                Ok(range),
+                "the reader and the writer disagree"
+            );
+        }
+        Err(error) => check_refusal(&error),
+    }
+}
+
+/// The value that the constructors build from the parts of a refused statement that the reader
+/// of the error read (STEMMA-299).
+fn rebuilt_statement_refusal(
+    refusal: &crate::protocol::held::StatementRefusal,
+) -> crate::protocol::held::StatementRefusal {
+    use crate::protocol::held::StatementRefusal;
+    use crate::protocol::Reason;
+    match refusal {
+        StatementRefusal::Policy(reason) => StatementRefusal::Policy(
+            Reason::try_new(reason.as_str())
+                .expect("the reader took a reason that the writer refuses"),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -724,11 +796,14 @@ pub(crate) mod tests {
                 crate::policy::Policy::parse(b).is_ok()
             }),
             ("protocol", super::protocol, |b| {
+                use crate::protocol::held::{HeldStatement, Range};
                 use crate::protocol::record::{RecordEntry, RefUpdate};
                 use crate::protocol::sign_in::{Challenge, SignedChallenge, TokenAnswer};
                 use crate::protocol::statement::Statement;
                 use crate::protocol::{ErrorMessage, FetchRequest, ObjectStreamReader, RefList};
                 RefList::parse(b).is_ok()
+                    || HeldStatement::parse(b).is_ok()
+                    || Range::parse(b).is_ok()
                     || Statement::parse(b).is_ok()
                     || Challenge::parse(b).is_ok()
                     || SignedChallenge::parse(b).is_ok()

@@ -1,7 +1,7 @@
 //! Restoring the state before an entry of the operation log (ADR-013).
 //!
 //! A restore puts back the old values of the pointers that one entry moved: HEAD, the
-//! working-copy commit, and the branches. It writes an entry of its own, so a restore never
+//! working-copy commit, the branches, and the remote references of a `fetch` (ADR-008). It writes an entry of its own, so a restore never
 //! rewrites the log (only a purge replaces entries by stubs, ADR-014) and a restore can itself be
 //! restored. Because the working copy is a commit that
 //! stands for the directory (ADR-010), a restore that moves it also brings the files of the
@@ -18,9 +18,10 @@ use super::{now, Repository, UpdateError};
 use crate::object::{CommitId, TreeId};
 use crate::oplog::{
     outcomes, pending_stubs, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome,
-    Pointer, Record,
+    Pointer, Pointers, Record,
 };
-use crate::refs::{BranchName, Head, Logged, RefError, RestoreMoves, RestoreTargets};
+use crate::refs::{BranchName, Head, Logged, RefError, RefStore, RestoreMoves, RestoreTargets};
+use crate::remote::{RemoteRef, RemoteRefName};
 use crate::{Actor, Allowed, Authorizer};
 
 /// The operation that the log records for a restore.
@@ -37,6 +38,7 @@ pub struct RestorePlan {
     head: Option<Moved<Head>>,
     working_copy: Option<Moved<CommitId>>,
     branches: Vec<(BranchName, Moved<CommitId>)>,
+    remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
     checkout: Option<CheckoutPlan>,
 }
 
@@ -60,6 +62,12 @@ impl RestorePlan {
     /// before, and one that it deletes has no value after.
     pub fn branches(&self) -> &[(BranchName, Moved<CommitId>)] {
         &self.branches
+    }
+
+    /// The remote references that move, sorted by name (ADR-008). One that the restore brings back
+    /// has no value before, and one that it removes has no value after.
+    pub fn remotes(&self) -> &[(RemoteRefName, Moved<RemoteRef>)] {
+        &self.remotes
     }
 
     /// The files to write and to remove. `None` if the working-copy commit does not move, so that
@@ -113,6 +121,7 @@ struct Prepared {
     head: Option<Head>,
     working_copy: Option<CommitId>,
     branches: Vec<(BranchName, Option<CommitId>)>,
+    remotes: Vec<(RemoteRefName, Option<RemoteRef>)>,
     /// The plan, or `None` if every pointer has its old value already.
     plan: Option<RestorePlan>,
     /// The proof that the authorizer allowed the restore, for the lock.
@@ -125,6 +134,7 @@ impl Prepared {
             head: self.head.as_ref(),
             working_copy: self.working_copy,
             branches: &self.branches,
+            remotes: &self.remotes,
         }
     }
 }
@@ -255,13 +265,17 @@ impl Repository {
             self.refs_store()
                 .restore_after(&lock, &prepared.targets(), self.objects(), |moves| {
                     let plan = self.make_plan(number, moves)?;
-                    let change = Change::try_new(
+                    let change = Change::build(
                         now(),
                         actor.clone(),
                         operation.clone(),
-                        plan.head.clone(),
-                        plan.working_copy.clone(),
-                        plan.branches.clone(),
+                        Pointers {
+                            head: plan.head.clone(),
+                            working_copy: plan.working_copy.clone(),
+                            branches: plan.branches.clone(),
+                            tags: Vec::new(),
+                            remotes: plan.remotes.clone(),
+                        },
                     )
                     .map_err(|error| {
                         RestoreError::Update(UpdateError::Log(OpLogError::Entry(error)))
@@ -359,6 +373,7 @@ impl Repository {
         if change.head().is_none()
             && change.working_copy().is_none()
             && change.branches().is_empty()
+            && change.remotes().is_empty()
             && !change.tags().is_empty()
         {
             return Err(RestoreError::TagsOnly { number });
@@ -437,10 +452,16 @@ impl Repository {
             .iter()
             .map(|(name, moved)| (name.clone(), moved.before().copied()))
             .collect();
+        let remotes = change
+            .remotes()
+            .iter()
+            .map(|(name, moved)| (name.clone(), moved.before().copied()))
+            .collect();
         let mut prepared = Prepared {
             head,
             working_copy,
             branches,
+            remotes,
             plan: None,
             allowed,
         };
@@ -479,6 +500,11 @@ impl Repository {
                 .map(|(old, new)| Moved::from_to(Some(*old), Some(*new))),
             branches: moves
                 .branches
+                .iter()
+                .map(|(name, old, new)| (name.clone(), Moved::from_to(*old, *new)))
+                .collect(),
+            remotes: moves
+                .remotes
                 .iter()
                 .map(|(name, old, new)| (name.clone(), Moved::from_to(*old, *new)))
                 .collect(),
@@ -525,11 +551,16 @@ impl Repository {
                 tags.push((name.clone(), commit));
             }
         }
+        let remotes = self
+            .refs_store()
+            .remote_refs()
+            .map_err(RestoreError::Refs)?;
         let locked_after = refs.is_locked().map_err(RestoreError::Refs)?;
         let current = Current::new(head, branches, !(locked_before || locked_after))
             .in_worktree(self.refs_store().worktree_name())
             .with_working_copy(Some(working_copy))
             .with_tags(tags)
+            .with_remotes(remotes)
             .with_owner(owner);
         Ok(outcomes(entries, Some(&current))[position])
     }
