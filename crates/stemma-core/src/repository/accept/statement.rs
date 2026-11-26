@@ -21,7 +21,7 @@ use crate::lease;
 use crate::object::CommitId;
 use crate::oplog::{OperationName, CHECK, PR_APPROVE, PR_CLOSE, PR_OPEN};
 use crate::protocol::held::{
-    read_held, whole_entries, HeldParseError, HeldStatement, HubLines, Range, StatementRefusal,
+    read_held, HeldParseError, HeldStatement, HubLines, Range, StatementRefusal,
 };
 use crate::protocol::record::{read_record, RecordEntry, RecordParseError, SealError};
 use crate::protocol::statement::{Body, Statement, StatementHash};
@@ -34,6 +34,7 @@ use crate::register::{
 use crate::repository::{PolicyError, Repository};
 use crate::signature::PublicKey;
 use crate::statements::SetError;
+use crate::store::ObjectStore;
 use crate::{Actor, AllowAll, Authorizer};
 
 /// The destination of the statements that a hub holds for one repository (ADR-025): the held
@@ -42,11 +43,19 @@ use crate::{Actor, AllowAll, Authorizer};
 /// way to them with every call, as it does for the record ([`RecordDestination`]).
 ///
 /// [`Repository::accept_statement`] calls both methods under the lock of the references. The
-/// reader of a range ([`held_in`]) calls [`read`](Self::read) without the lock, so it may meet
-/// a held statement that is still being written; it reads the whole ones before it.
+/// reader of a range ([`held_in`]) calls [`read`](Self::read) without the lock, beside a
+/// writer, so `read` answers what is durable and nothing that is still being written.
 pub trait StatementDestination {
-    /// The held statements: the bytes of every one that [`append`](Self::append) took, in their
-    /// order, and nothing else. A repository without an accepted statement has none.
+    /// The held statements: the bytes of every one whose [`append`](Self::append) returned
+    /// `Ok`, in their order, and nothing else. A repository without an accepted statement has
+    /// none.
+    ///
+    /// The call may run without the lock, while an `append` runs. It never returns bytes of an
+    /// append that has not returned, or that failed and was cut back: an implementation keeps
+    /// the length of the durable part, which it sets after the sync, and reads up to it. A
+    /// lock-free reader would otherwise serve a held statement that the hub then denies holding.
+    /// What `read` returns beyond the held statements, a part of one left by a crash, is damage,
+    /// which the readers report.
     ///
     /// # Errors
     ///
@@ -93,7 +102,9 @@ pub enum StatementError {
     },
     /// The held statements are damaged: one is refused by its reader.
     Statements(Box<HeldParseError>),
-    /// The held statements are damaged: one does not carry the number after the one before it.
+    /// The held statements are damaged: one breaks the order that the writer keeps. It carries
+    /// another number than its place, a `record` line or a time before the one of the statement
+    /// before it, or a `record` line after the last entry of the record.
     Order {
         /// The position of the held statement, from 1.
         position: usize,
@@ -161,8 +172,8 @@ impl fmt::Display for StatementError {
             Self::Statements(error) => write!(f, "the statements of the hub are damaged: {error}"),
             Self::Order { position, number } => write!(
                 f,
-                "the statements of the hub are damaged: held statement {position} carries the \
-                 number {number}"
+                "the statements of the hub are damaged: held statement {position}, number \
+                 {number}, breaks their order"
             ),
             Self::Time { now, last } => write!(
                 f,
@@ -221,9 +232,10 @@ pub enum RangeError {
     Held(Box<HeldParseError>),
     /// An entry of the record is damaged.
     Record(Box<RecordParseError>),
-    /// The held statements are damaged: one does not carry the number after the one before it.
+    /// The held statements or the record are damaged: an entry breaks the order that the writer
+    /// keeps (see [`StatementError::Order`]; for the record, its number alone).
     Order {
-        /// The position of the held statement, from 1.
+        /// The position of the held statement or the entry, from 1.
         position: usize,
         /// The number that it carries.
         number: u64,
@@ -250,8 +262,8 @@ impl fmt::Display for RangeError {
             Self::Record(error) => write!(f, "the record of ref updates is damaged: {error}"),
             Self::Order { position, number } => write!(
                 f,
-                "the statements of the hub are damaged: held statement {position} carries the \
-                 number {number}"
+                "the statements or the record of the hub are damaged: their entry {position}, \
+                 number {number}, breaks their order"
             ),
         }
     }
@@ -261,13 +273,15 @@ impl fmt::Display for RangeError {
 impl Error for RangeError {}
 
 /// The held statements of a range, for the request that reads them (ADR-025). The reading
-/// takes no lock: a held statement that is still being written is left out, and the whole ones
-/// before it are answered.
+/// takes no lock; the destination answers only what is durable
+/// ([`StatementDestination::read`]).
 ///
 /// # Errors
 ///
 /// [`RangeError::NotReadable`] for [`ReadAccess::Denied`], before the destination is read;
-/// [`RangeError::Io`] and [`RangeError::Held`] if the destination cannot be read or is damaged.
+/// [`RangeError::Io`] if the destination cannot be read, and [`RangeError::Held`] and
+/// [`RangeError::Order`] if it is damaged, which includes a part of a held statement that a
+/// crash left at its end.
 pub fn held_in(
     destination: &mut dyn StatementDestination,
     range: &Range,
@@ -277,9 +291,8 @@ pub fn held_in(
         return Err(RangeError::NotReadable);
     }
     let bytes = destination.read().map_err(RangeError::Io)?;
-    let held =
-        read_held(whole_entries(&bytes)).map_err(|error| RangeError::Held(Box::new(error)))?;
-    if let Some((position, number)) = out_of_order(&held) {
+    let held = read_held(&bytes).map_err(|error| RangeError::Held(Box::new(error)))?;
+    if let Some((position, number)) = out_of_order(&held, None) {
         return Err(RangeError::Order { position, number });
     }
     Ok(held
@@ -289,12 +302,15 @@ pub fn held_in(
 }
 
 /// The entries of the record in a range, for the request that reads them (ADR-025). It reads
-/// as [`held_in`] does, without the lock.
+/// as [`held_in`] does, without the lock ([`RecordDestination::read`]). The chains of the
+/// record are checked by the accepting operation and by the reader of the record in a clone;
+/// this reader checks that the numbers follow one another.
 ///
 /// # Errors
 ///
 /// [`RangeError::NotReadable`] for [`ReadAccess::Denied`], before the destination is read;
-/// [`RangeError::Io`] and [`RangeError::Record`] if the record cannot be read or is damaged.
+/// [`RangeError::Io`] if the record cannot be read, and [`RangeError::Record`] and
+/// [`RangeError::Order`] if it is damaged.
 pub fn record_in(
     destination: &mut dyn RecordDestination,
     range: &Range,
@@ -304,8 +320,11 @@ pub fn record_in(
         return Err(RangeError::NotReadable);
     }
     let bytes = destination.read().map_err(RangeError::Io)?;
-    let entries =
-        read_record(whole_entries(&bytes)).map_err(|error| RangeError::Record(Box::new(error)))?;
+    let entries = read_record(&bytes).map_err(|error| RangeError::Record(Box::new(error)))?;
+    let numbers: Vec<u64> = entries.iter().map(RecordEntry::number).collect();
+    if let Some((position, number)) = first_out_of_place(&numbers) {
+        return Err(RangeError::Order { position, number });
+    }
     Ok(entries
         .into_iter()
         .filter(|entry| range.contains(entry.number()))
@@ -324,12 +343,12 @@ fn branch_reference(branch: &BranchName) -> QualifiedName {
 ///
 /// A merge is an entry that moves `main` with the opening of a pull request as its evidence;
 /// its commit is the head that the opening names. The actor of a statement or of an entry is
-/// built from its identity ([`actor_for`]), so no step is left out: a closing or a merge of an
+/// built from its identity ([`Actors::of`]), so no step is left out: a closing or a merge of an
 /// actor that a later register no longer holds still ends its pull request.
 fn placed_in_order(
     held: &[HeldStatement],
     entries: &[RecordEntry],
-    register: &Register,
+    actors: &Actors<'_>,
 ) -> (Vec<Placed>, Vec<Merge>) {
     enum Step<'a> {
         Entry(&'a RecordEntry),
@@ -358,7 +377,7 @@ fn placed_in_order(
     for (number, (_, step)) in (1..).zip(steps) {
         match step {
             Step::Held(held) => {
-                let actor = actor_for(held.actor(), register);
+                let actor = actors.of(held.actor(), held.register());
                 let statement = held.statement().clone();
                 placed.push(Placed::new(number, held.time(), actor, statement));
             }
@@ -380,7 +399,7 @@ fn placed_in_order(
                         pull,
                         number,
                         time: entry.time(),
-                        by: actor_for(entry.actor(), register),
+                        by: actors.of(entry.actor(), entry.register()),
                         commit,
                     });
                 }
@@ -390,42 +409,68 @@ fn placed_in_order(
     (placed, merges)
 }
 
-/// The actor of an identity from the lines of the hub, for the fold. The rules of the fold and
-/// of the writers compare identities only, so the actor is built from the identity: the one
-/// that `register` names, and where it holds no entry of the identity any more, the identity
-/// itself, for an agent with its own ID in the place of the sponsor, which no rule reads. The
-/// lines of the hub name an identity of the register of their time, so dropping the step would
-/// change the state of a pull request.
-fn actor_for(identity: &Identity, register: &Register) -> Actor {
-    register.actor_of(identity).unwrap_or_else(|| {
-        let id = identity.id();
-        match identity.kind() {
-            IdentityKind::Human => Actor::human(id),
-            IdentityKind::Agent => Actor::agent(id, "-", "-", id),
-        }
-        .expect("an identity of the lines of the hub is a valid actor")
-    })
+/// Where the fold takes the actors of the identities in the lines of the hub from.
+struct Actors<'a> {
+    /// The register at the tip of `main`.
+    register: &'a Register,
+    /// The store, which holds the register commits that the lines name, as far as they are
+    /// not gone.
+    store: &'a dyn ObjectStore,
+}
+
+impl Actors<'_> {
+    /// The actor of `identity`, from the lines of a held statement or an entry that name the
+    /// register commit `at`. The lines name an identity of the register of their time, so the
+    /// step is never dropped: that would change the state of a pull request. The actor is the
+    /// one that the register at the tip of `main` names, else the one of the register at `at`,
+    /// whose sponsor of an agent is the one of its time. Where neither holds the identity, it is
+    /// the identity alone, an agent with its own ID in the place of the sponsor: the rules of
+    /// the fold and of the writers compare identities, but the independence of a check
+    /// ([`crate::check::is_independent`]) reads the sponsor, and the gate on a hub must ask the
+    /// register for such an agent itself.
+    fn of(&self, identity: &Identity, at: CommitId) -> Actor {
+        self.register
+            .actor_of(identity)
+            .or_else(|| {
+                Register::at_commit(self.store, &at)
+                    .ok()
+                    .flatten()
+                    .and_then(|register| register.actor_of(identity))
+            })
+            .unwrap_or_else(|| {
+                let id = identity.id();
+                match identity.kind() {
+                    IdentityKind::Human => Actor::human(id),
+                    IdentityKind::Agent => Actor::agent(id, "-", "-", id),
+                }
+                .expect("an identity of the lines of the hub is a valid actor")
+            })
+    }
 }
 
 /// What the held statements of a hub and its record add up to (see [`placed_in_order`]).
-fn evidence_of(held: &[HeldStatement], entries: &[RecordEntry], register: &Register) -> Evidence {
-    let (placed, merges) = placed_in_order(held, entries, register);
+fn evidence_of(held: &[HeldStatement], entries: &[RecordEntry], actors: &Actors<'_>) -> Evidence {
+    let (placed, merges) = placed_in_order(held, entries, actors);
     evidence::fold(&placed, &merges)
 }
 
-/// The held statements that belong to the open pull requests, in the order of their numbers:
-/// the openings, the approvals and the closings that name them, and the checks of their heads.
-/// A fetch brings these statements into the set of the clone (ADR-025); the rest is history
-/// that the clone does not need for a verdict.
+/// The held statements that a fetch brings into the set of the clone (ADR-025), in the order
+/// of their numbers: those of the open pull requests (the openings, the approvals that name
+/// them, and the checks of their heads) and every closing. A closing ends a pull request that
+/// a clone may hold from an earlier fetch, and the set of a clone only grows, so without it the
+/// clone would keep the pull request open. The rest is history that the clone does not need for
+/// a verdict.
 ///
 /// `held` and `record` are what the hub answered to the two reading requests from number 1 on,
-/// and `register` is the one at the tip of `main`, which names the actors of the identities.
+/// `register` is the one at the tip of `main`, and `store` the store of the clone; both name
+/// the actors of the identities.
 pub fn statements_of_open_pulls(
     held: &[HeldStatement],
     record: &[RecordEntry],
     register: &Register,
+    store: &dyn ObjectStore,
 ) -> Vec<HeldStatement> {
-    let evidence = evidence_of(held, record, register);
+    let evidence = evidence_of(held, record, &Actors { register, store });
     let open: Vec<_> = evidence
         .pulls
         .iter()
@@ -435,7 +480,7 @@ pub fn statements_of_open_pulls(
         .filter(|held| match held.statement().body() {
             Body::Opening(_) => open.iter().any(|pull| pull.id() == held.hash()),
             Body::Approval(approval) => open.iter().any(|pull| pull.id() == approval.pull()),
-            Body::Closing(closing) => open.iter().any(|pull| pull.id() == closing.pull()),
+            Body::Closing(_) => true,
             Body::Check(checked) => open.iter().any(|pull| *pull.head() == checked.commit()),
             Body::Override(_) => false,
         })
@@ -503,8 +548,10 @@ impl Repository {
     /// not accept.
     ///
     /// A statement that the hub holds already is answered with the lines that it holds it with,
-    /// and nothing is written: the same opening is not accepted twice, and a sender whose
-    /// answer was lost can submit again.
+    /// and nothing is written, so a sender whose answer was lost can submit again. The one
+    /// exception is an opening whose pull request ended: it is final, and the same opening
+    /// submitted again is refused as [`StatementRefusal::NotOpen`], as the local writer refuses
+    /// it.
     ///
     /// # Errors
     ///
@@ -561,12 +608,7 @@ impl Repository {
             self.complete(&mut lock, last)?;
         }
         self.require_agreement(&record)?;
-        let held = read_destination(statements)?;
-        let hash = statement.hash();
-        if let Some(same) = held.iter().find(|held| held.hash() == hash) {
-            return Ok(same.clone());
-        }
-
+        let held = read_destination(statements, record.chain.last_number())?;
         let tip = self.main_tip()?.ok_or(StatementRefusal::NoMain)?;
         // A hub holds enforcing repositories only, so a `main` without a register is no state
         // that an accepted update left.
@@ -574,6 +616,26 @@ impl Repository {
         let register = Register::at_commit(self.objects(), &tip)
             .map_err(unreadable)?
             .ok_or_else(|| unreadable(ModeError::RegisterMissing))?;
+        let actors = Actors {
+            register: &register,
+            store: self.objects(),
+        };
+        let evidence = evidence_of(&held, &record.entries, &actors);
+        let hash = statement.hash();
+        if let Some(same) = held.iter().find(|held| held.hash() == hash) {
+            // An opening whose pull request ended is final: the same opening submitted again
+            // is refused as the local writer refuses it, so the sender does not take a pull
+            // request for open that is not.
+            let ended = matches!(statement.body(), Body::Opening(_))
+                && evidence
+                    .pulls
+                    .iter()
+                    .any(|pull| pull.id() == hash && !pull.is_open());
+            if ended {
+                return Err(StatementRefusal::NotOpen.into());
+            }
+            return Ok(same.clone());
+        }
         let verified = register
             .verify_statement_key(statement)
             .ok_or(StatementRefusal::Key { register: tip })?;
@@ -593,7 +655,7 @@ impl Repository {
             register: &register,
             verified: &verified,
             identity: Identity::of(actor),
-            evidence: evidence_of(&held, &record.entries, &register),
+            evidence,
             now: context.time,
         };
         self.judge(statement, &state)?;
@@ -870,6 +932,7 @@ pub(crate) enum ReceivedError {
 /// The held statements of the destination, checked for their numbers.
 fn read_destination(
     statements: &mut dyn StatementDestination,
+    last_entry: u64,
 ) -> Result<Vec<HeldStatement>, StatementError> {
     let bytes = statements
         .read()
@@ -878,20 +941,39 @@ fn read_destination(
             source,
         })?;
     let held = read_held(&bytes).map_err(|error| StatementError::Statements(Box::new(error)))?;
-    if let Some((position, number)) = out_of_order(&held) {
+    if let Some((position, number)) = out_of_order(&held, Some(last_entry)) {
         return Err(StatementError::Order { position, number });
     }
     Ok(held)
 }
 
-/// The position, from 1, and the number of the first held statement that does not carry the
-/// number of its place.
-fn out_of_order(held: &[HeldStatement]) -> Option<(usize, u64)> {
-    (1u64..)
-        .zip(held)
+/// The position, from 1, and the number of the first held statement that breaks a rule of the
+/// writer: it carries another number than its place, a `record` line before the one of the
+/// statement before it or after `last_entry`, the last number of the record where the caller
+/// knows it, or a time before the one of the statement before it. The writer never writes such
+/// a statement, so the order of the hub stays the order of the numbers.
+fn out_of_order(held: &[HeldStatement], last_entry: Option<u64>) -> Option<(usize, u64)> {
+    let numbers: Vec<u64> = held.iter().map(HeldStatement::number).collect();
+    if let Some(found) = first_out_of_place(&numbers) {
+        return Some(found);
+    }
+    held.iter()
         .enumerate()
-        .find(|(_, (expected, held))| held.number() != *expected)
-        .map(|(position, (_, held))| (position + 1, held.number()))
+        .find(|(index, one)| {
+            let before = index.checked_sub(1).map(|before| &held[before]);
+            before
+                .is_some_and(|before| one.record() < before.record() || one.time() < before.time())
+                || last_entry.is_some_and(|last| one.record() > last)
+        })
+        .map(|(index, one)| (index + 1, one.number()))
+}
+
+/// The position, from 1, and the number of the first number that is not its position.
+fn first_out_of_place(numbers: &[u64]) -> Option<(usize, u64)> {
+    (1u64..)
+        .zip(numbers)
+        .position(|(expected, number)| *number != expected)
+        .map(|index| (index + 1, numbers[index]))
 }
 
 #[cfg(test)]

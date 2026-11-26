@@ -37,10 +37,16 @@ use crate::{lease, AllowAll, Authorizer};
 /// and passes the way to it with every call.
 ///
 /// The accepting operation calls both methods under the lock of the references, so no other
-/// writer of the same repository runs between them.
+/// writer of the same repository runs between them. The reader of a range
+/// ([`record_in`](crate::repository::record_in)) calls [`read`](Self::read) without the lock.
 pub trait RecordDestination {
-    /// The whole record: the bytes of every entry that [`append`](Self::append) took, in their
-    /// order, and nothing else. A repository without an accepted update has an empty record.
+    /// The whole record: the bytes of every entry whose [`append`](Self::append) returned `Ok`,
+    /// in their order, and nothing else. A repository without an accepted update has an empty
+    /// record.
+    ///
+    /// The call may run without the lock, while an `append` runs. It never returns bytes of an
+    /// append that has not returned, or that failed and was cut back: an implementation keeps
+    /// the length of the durable part, which it sets after the sync, and reads up to it.
     ///
     /// # Errors
     ///

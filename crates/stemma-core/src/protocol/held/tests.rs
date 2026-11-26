@@ -107,25 +107,18 @@ fn the_reader_refuses_what_the_writer_does_not_write() {
 }
 
 #[test]
-fn held_statements_one_after_the_other_are_read_and_cut_to_whole_entries() {
+fn held_statements_one_after_the_other_are_read_and_a_cut_one_is_refused() {
     let one = example_held();
     let two = HeldStatement::seal(example(StatementKind::Closing), lines(4, 98), &hub()).unwrap();
     let mut bytes = one.encode();
     bytes.extend_from_slice(&two.encode());
     assert_eq!(read_held(&bytes).unwrap(), [one.clone(), two.clone()]);
     assert_eq!(read_held(b"").unwrap(), []);
-    // A held statement that is still being written is cut away, also within its last line.
+    // A part of a held statement, also within its last line, is refused at its position.
     for cut in 1..two.encode().len() {
         let partial = &bytes[..one.encode().len() + cut];
-        assert_eq!(whole_entries(partial), one.encode(), "{cut}");
-        assert_eq!(
-            read_held(partial).unwrap_err().position,
-            2,
-            "a cut entry is refused"
-        );
+        assert_eq!(read_held(partial).unwrap_err().position, 2, "{cut}");
     }
-    assert_eq!(whole_entries(&bytes), bytes);
-    assert_eq!(whole_entries(b""), b"");
 }
 
 #[test]

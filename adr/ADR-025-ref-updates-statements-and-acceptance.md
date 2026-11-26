@@ -658,8 +658,10 @@ error not-readable                                             may not read
   a kind of its own (`kind owner-override`) until the slice of the override on a hub. Under the
   lock the call reads the record, completes an update that stopped, checks that the references
   agree with the record, as the ref update does, and reads the held statements. A statement that
-  the hub holds already is answered with the lines that it holds it with: the same opening is
-  not accepted twice, and a sender whose answer was lost submits again. Then the key must be an
+  the hub holds already is answered with the lines that it holds it with, so a sender whose
+  answer was lost submits again; an opening whose pull request ended is final, and the same
+  opening submitted again is refused with `not-open`, as the local writer refuses it. Then the
+  key must be an
   active key of the register at the tip of `main`, the authorizer must allow `pr-open`,
   `pr-approve`, `pr-close` or `check`, and the rules of the kind hold:
   - an opening: the opener is none of its reviewers, the branch is at the head of the opening on
@@ -687,12 +689,21 @@ error not-readable                                             may not read
   (`held_in`, `record_in`). Whether the requester may read the repository is an input of the
   caller, which knows its sign-in and its namespaces (ADR-024, ADR-027); a requester that may
   not is answered `not-readable`, which says as little about a repository that does not exist.
-  The reading takes no lock: what follows the last whole `hub-signature` line is an entry that
-  is being written, and is left out. A held statement that does not carry the number of its
-  place is damage, for the reader as for the writer.
+  The reading takes no lock. The destination of the statements and that of the record answer
+  only what an append made durable, never the bytes of an append that runs or that failed, so a
+  reader never serves a held statement or an entry that the hub then denies holding; a part of
+  an entry that a crash left is damage, which the reader reports. A held statement or an entry
+  that does not carry the number of its place is damage too, for the reader as for the
+  writer, and so is a held statement whose `record` line or time lies before the one of the
+  statement before it, or whose `record` line names an entry that the record does not hold.
 - **The fetch.** `statements_of_open_pulls` selects from the held statements and the record the
-  openings of the open pull requests, the approvals and the closings that name them, and the
-  checks of their heads. The clone puts them into its set after it checked that the pinned key
+  openings of the open pull requests, the approvals that name them, the checks of their heads,
+  and every closing: the set of a clone only grows, so a clone that holds an opening from an
+  earlier fetch learns its end only from the closing. That a merge ended a pull request the
+  clone learns from the record, which the entry `fetch` reads as well. The actor of a step is
+  the one that the register at the tip of `main` names for its identity, else the one of the
+  register commit in its lines; where neither holds it, the identity alone, which the gate on
+  a hub asks the register about itself. The clone puts them into its set after it checked that the pinned key
   of the hub signed them, for the entry `fetch` that names them (ADR-011). That entry and the
   wiring into `fetch` come with the fetch in the core (STEMMA-295). The lines of the hub are not
   kept in the clone yet: the entry `fetch` places the statements in the order of the clone.

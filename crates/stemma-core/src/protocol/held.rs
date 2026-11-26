@@ -370,21 +370,6 @@ fn read_form(bytes: &[u8]) -> Result<(HeldStatement, usize), ParseError> {
     Ok((held, hub_line))
 }
 
-/// The bytes of the whole entries at the start of `bytes`: up to the end of the last whole line
-/// that begins with `hub-signature`, or nothing. A held statement and a record entry end with
-/// that line, so what follows it is the part of an entry that is still being written. A reader
-/// that takes no lock reads a destination that a writer appends to, and cuts what it read here.
-pub fn whole_entries(bytes: &[u8]) -> &[u8] {
-    let mut end = 0;
-    let mut rest = bytes;
-    // The first entry has no line feed before its first line, so the search starts in it.
-    while let Some(len) = line_end(rest, LAST_LINE) {
-        end += len;
-        rest = &bytes[end..];
-    }
-    &bytes[..end]
-}
-
 /// Why a held statement of a list is refused by [`read_held`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldParseError {

@@ -881,8 +881,9 @@ Eine Erklärung, die er schon hält, beantwortet er mit ihren alten Zeilen.
 und der Authorizer muss \type{pr-open}, \type{pr-approve}, \type{pr-close} oder \type{check}
 erlauben.
 \item Dann gelten die Regeln der Art.
-Eine Eröffnung kommt vom Schreibinhaber, dessen Lease noch läuft; der Branch steht auf dem Hub am
-Kopf der Eröffnung, hat keinen offenen Pull Request, und jeder Reviewer steht im Register.
+Eine Eröffnung kommt, wo eine Lease gilt, vom Schreibinhaber, dessen Lease noch läuft;
+der Branch steht auf dem Hub am Kopf der Eröffnung, hat keinen offenen Pull Request,
+und jeder Reviewer steht im Register.
 Eine Freigabe gilt nur dem aktuellen Kopf eines offenen Pull Requests und nie dem eigenen: Wer
 ihn eröffnet, einen seiner Commits geschrieben oder ihn als Erster unter eine Referenz gebracht
 hat, gibt ihn nicht frei.
@@ -897,18 +898,21 @@ Er signiert den Hash von Erklärung und Zeilen, legt das Ergebnis dauerhaft ab u
 Die Erklärungen und die Aufzeichnung liest ein Klon mit einem Bereich von Nummern.
 Ob der Anfragende lesen darf, entscheidet der Hub aus Anmeldung und Namespace; der Kern bekommt
 die Antwort als Eingabe und antwortet sonst \type{not-readable}.
-Das Lesen nimmt keine Sperre und lässt eine Erklärung weg, die gerade geschrieben wird.
+Das Lesen nimmt keine Sperre; der Ablageort liefert nur, was ein Schreiben dauerhaft gemacht
+hat, also nie eine Erklärung, die der Hub danach doch nicht hält.
 
 Nach der Annahme gilt: Jede gehaltene Erklärung trägt eine Signatur, die das Register an der
 Spitze von \type{main} zu diesem Zeitpunkt angenommen hat, und die Zeilen des Hubs unter dessen
 Signatur.
-Eine Ablehnung schreibt nichts, und weil Erklärungen und Ref-Updates dieselbe Sperre nehmen,
-haben beide eine Ordnung.
+Eine Ablehnung schreibt nichts, ausser dass sie vorher ein unterbrochenes Ref-Update
+vollenden kann, und weil Erklärungen und Ref-Updates dieselbe Sperre nehmen, haben beide eine
+Ordnung.
 Die Nummer der Aufzeichnung stellt eine Erklärung in diese Ordnung: Sie liegt nach dem Eintrag
 mit dieser Nummer und vor dem nächsten, also vor einem Rückzug oder Widerruf eines Schlüssels,
 den ein späterer Eintrag nach \type{main} bringt.
 Ein Klon, der die Antwort verliert, reicht dieselbe Erklärung noch einmal ein und bekommt
-dieselben Zeilen.
+dieselben Zeilen; nur eine Eröffnung, deren Pull Request beendet ist, lehnt der Hub dann mit
+\type{not-open} ab.
 
 \startinfobox
 {\bf Grenzfälle eingereichter Erklärungen.}

@@ -731,9 +731,10 @@ fn the_opener_or_an_owner_closes_and_an_ended_opening_is_final() {
         ),
         StatementRefusal::NotOpen
     );
-    // The same opening is the statement that the hub holds, and the pull request stays closed.
+    // The same opening is final: submitted again, it is refused as the local writer refuses
+    // it, and the pull request stays closed.
     let open = opening("feature", started.feature, &["daniel"], &mia());
-    assert_eq!(submit(&mut started.wire, &open).unwrap(), held);
+    assert_eq!(refused(&mut started.wire, &open), StatementRefusal::NotOpen);
     assert_eq!(
         refused(
             &mut started.wire,
@@ -793,19 +794,25 @@ fn the_reading_requests_answer_only_who_may_read() {
 }
 
 #[test]
-fn a_reader_without_the_lock_leaves_out_a_statement_that_is_being_written() {
+fn a_part_of_a_held_statement_at_the_end_is_damage_for_the_reader_of_a_range() {
     let (started, held) = opened();
     let mut memory = Memory {
         bytes: started.wire.side().held(),
         ..Memory::default()
     };
-    memory
-        .bytes
-        .extend_from_slice(b"stemma-protocol 1\nstatement pr-cl");
     assert_eq!(
         held_in(&mut memory, &Range::all(), ReadAccess::Granted).unwrap(),
         [held]
     );
+    // A crash left a part of a held statement: the destination answers it, and the reader
+    // reports it instead of serving the statements before it as if all were well.
+    memory
+        .bytes
+        .extend_from_slice(b"stemma-protocol 1\nstatement pr-cl");
+    assert!(matches!(
+        held_in(&mut memory, &Range::all(), ReadAccess::Granted),
+        Err(RangeError::Held(_))
+    ));
     memory.fail_read = true;
     assert!(matches!(
         held_in(&mut memory, &Range::all(), ReadAccess::Granted),
@@ -920,9 +927,11 @@ fn a_fetch_brings_the_statements_of_the_open_pull_requests() {
     let all = read_held(&read_range(&mut started.wire, Range::all(), false).unwrap()).unwrap();
     let record = read_record(&read_range(&mut started.wire, Range::all(), true).unwrap()).unwrap();
     assert_eq!(all.len(), 6);
-    let selected = statements_of_open_pulls(&all, &record, &register_of());
-    assert_eq!(selected, [held, approved, checked]);
-    assert!(!selected.contains(&rooted) && !selected.contains(&closed));
+    let store = started.wire.side().repository.objects();
+    let selected = statements_of_open_pulls(&all, &record, &register_of(), store);
+    // Every closing comes along, so a clone that holds the opening of `done` learns its end.
+    assert_eq!(selected, [held, approved, checked, closed]);
+    assert!(!selected.contains(&rooted) && !selected.contains(&done));
 
     // The clone keeps them in its set, for the entry of the fetch, if the pinned key signed
     // them.
@@ -1086,13 +1095,17 @@ fn a_step_of_an_identity_that_the_register_no_longer_holds_still_counts() {
         &opening("done", started.root, &[], &ana()),
     )
     .unwrap();
-    submit(&mut started.wire, &closing(done.hash(), &ana())).unwrap();
+    let closed = submit(&mut started.wire, &closing(done.hash(), &ana())).unwrap();
     let all = read_held(&read_range(&mut started.wire, Range::all(), false).unwrap()).unwrap();
     let record = read_record(&read_range(&mut started.wire, Range::all(), true).unwrap()).unwrap();
-    // A register without Ana and Mia: her closing still ends her pull request, and Mia's
-    // opening is still open.
+    // A register without Ana and Mia, and a store without the commits of the lines: her closing
+    // still ends her pull request, and Mia's opening is still open.
     let without = Register::with_owner(human("daniel"), daniel().public()).unwrap();
-    assert_eq!(statements_of_open_pulls(&all, &record, &without), [held]);
+    let empty = Hub::new();
+    assert_eq!(
+        statements_of_open_pulls(&all, &record, &without, empty.repository.objects()),
+        [held, closed]
+    );
 }
 
 #[test]
@@ -1137,5 +1150,90 @@ fn a_merge_in_the_record_ends_its_pull_request() {
         .append(&update, acceptance, &hub_key(), &mut Vec::new())
         .unwrap();
     record.push(entry);
-    assert_eq!(statements_of_open_pulls(&all, &record, &register_of()), []);
+    let store = started.wire.side().repository.objects();
+    assert_eq!(
+        statements_of_open_pulls(&all, &record, &register_of(), store),
+        []
+    );
+}
+
+#[test]
+fn the_reader_of_a_range_of_the_record_checks_the_numbers() {
+    let started = started();
+    let mut record = Memory {
+        bytes: started.wire.side().record.borrow().bytes.clone(),
+        ..Memory::default()
+    };
+    let entries = read_record(&record.bytes).unwrap();
+    assert_eq!(
+        record_in(&mut record, &Range::all(), ReadAccess::Granted).unwrap(),
+        entries
+    );
+    // The second entry alone: the first is missing.
+    record.bytes = entries[1].encode();
+    assert!(matches!(
+        record_in(&mut record, &Range::all(), ReadAccess::Granted),
+        Err(RangeError::Order {
+            position: 1,
+            number: 2
+        })
+    ));
+}
+
+#[test]
+fn held_statements_out_of_the_order_of_the_hub_are_damage() {
+    let (started, held) = opened();
+    let hub = started.wire.side();
+    let approved = approval(held.hash(), started.feature, &daniel());
+    let second = |lines: HubLines| {
+        let mut bytes = held.encode();
+        let next = HeldStatement::seal(approved.clone(), lines, &hub_key()).unwrap();
+        bytes.extend_from_slice(&next.encode());
+        bytes
+    };
+    let base = HubLines {
+        number: 2,
+        ..held.lines().clone()
+    };
+    let cases = [
+        // A `record` line before the one of the statement before it.
+        HubLines {
+            record: 1,
+            ..base.clone()
+        },
+        // A `record` line after the last entry of the record.
+        HubLines {
+            record: 3,
+            ..base.clone()
+        },
+        // A time before the one of the statement before it.
+        HubLines {
+            time: START - 1,
+            ..base.clone()
+        },
+    ];
+    let saved = hub.held();
+    for lines in cases {
+        hub.statements.borrow_mut().bytes = second(lines.clone());
+        assert!(
+            matches!(
+                hub.accept(&check(started.feature, CheckResult::Pass, &daniel())),
+                Err(StatementError::Order {
+                    position: 2,
+                    number: 2
+                })
+            ),
+            "{lines:?}"
+        );
+    }
+    // The reader of a range does not know the last entry, and judges the rest alike.
+    let mut memory = Memory {
+        bytes: second(HubLines { record: 1, ..base }),
+        ..Memory::default()
+    };
+    assert!(matches!(
+        held_in(&mut memory, &Range::all(), ReadAccess::Granted),
+        Err(RangeError::Order { position: 2, .. })
+    ));
+    hub.statements.borrow_mut().bytes = saved;
 }
