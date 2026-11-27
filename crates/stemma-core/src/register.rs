@@ -642,10 +642,12 @@ impl Register {
                 })
         });
         // A bound of another log was written before the cascade kept it (see `revoke_held`),
-        // so it lies before the revocation of the co-signing key.
+        // so it lies before the revocation of the co-signing key. A bound without a log counts
+        // in every log by its number, so it is compared.
         match bound {
             Some((bound, log)) => entry.keys.iter().all(|held| {
-                matches!(held.state, KeyState::Revoked { from } if held.log != log || from <= bound)
+                let other_log = held.log.is_some() && log.is_some() && held.log != log;
+                matches!(held.state, KeyState::Revoked { from } if other_log || from <= bound)
             }),
             None => true,
         }
@@ -2420,6 +2422,69 @@ mod tests {
             problem(&text.replace(" log ", " in ")),
             RegisterProblem::BadState
         );
+        assert_eq!(
+            problem(&text.replace(
+                " log abababababababababababababababab",
+                " log abababababababababababababababab x"
+            )),
+            RegisterProblem::BadState
+        );
+        // A retirement round-trips as well, beside a bound of version 1 in the same file.
+        let mut mixed = register.clone();
+        let owner = Seeded::new(1).public();
+        mixed
+            .add_key(&Identity::of(&daniel()), Seeded::new(4).public())
+            .unwrap();
+        mixed.retire(&Identity::of(&daniel()), &owner, 7).unwrap();
+        let mut both = super::tests::register();
+        both.add_key(&Identity::of(&daniel()), Seeded::new(4).public())
+            .unwrap();
+        both.retire(
+            &Identity::of(&daniel()),
+            &owner,
+            Bound::in_log(7, log(0xcd)),
+        )
+        .unwrap();
+        both.revoke(&mia(), &key, 20).unwrap();
+        for one in [mixed, both] {
+            let text = one.encode();
+            assert!(text.starts_with("stemma-register 2\n"), "{text}");
+            assert_eq!(Register::parse(text.as_bytes()).unwrap(), one);
+        }
+        let active = format!(
+            "{HEADER_2}\nentry human daniel owner\nkey {} active log {}\n",
+            owner,
+            log(0xab)
+        );
+        assert_eq!(problem(&active), RegisterProblem::BadState);
+    }
+
+    #[test]
+    fn a_bound_without_a_log_is_compared_with_the_revocation_of_the_cosigning_key() {
+        // The co-signing key of Mia is revoked from entry 5 in log `ab`. A key of the agent
+        // revoked from 1000 without a log would count in that log for entries 5 to 999, so a
+        // hand-written file with it is refused; from 5 it reads.
+        let mut register = with_bot();
+        register
+            .revoke(
+                &mia(),
+                &Seeded::new(2).public(),
+                Bound::in_log(5, log(0xab)),
+            )
+            .unwrap();
+        let text = register.encode();
+        let agent = Seeded::new(3).public();
+        let cascaded = format!("key {agent} revoked 5 log {}", log(0xab));
+        assert!(text.contains(&cascaded), "{text}");
+        assert!(Register::parse(text.as_bytes()).is_ok());
+        let later = text.replace(&cascaded, &format!("key {agent} revoked 1000"));
+        assert_eq!(problem(&later), RegisterProblem::SponsorRevoked);
+        // A bound of another log was written first and stands.
+        let other = text.replace(
+            &cascaded,
+            &format!("key {agent} revoked 1000 log {}", log(0xcd)),
+        );
+        assert!(Register::parse(other.as_bytes()).is_ok());
     }
 
     #[test]

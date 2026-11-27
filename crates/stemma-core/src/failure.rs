@@ -448,11 +448,20 @@ impl Classify for crate::repository::LogAnchorError {
             Self::LogIdDamaged { .. }
             | Self::ConfirmationDamaged { .. }
             | Self::Diverged(_)
-            | Self::Confirmation(_) => FailureKind::Damaged,
+            | Self::Confirmation(
+                crate::repository::AnchorFinding::Cut { .. }
+                | crate::repository::AnchorFinding::Rewritten { .. },
+            ) => FailureKind::Damaged,
+            // An anchor of another key, log, or repository: an answer of the hub, not the state
+            // of this repository.
+            Self::Confirmation(_) => FailureKind::Other,
             Self::Register(error) => match &**error {
                 crate::register::ModeError::Io(_) | crate::register::ModeError::Head(_) => {
                     FailureKind::Other
                 }
+                crate::register::ModeError::Store(error) => error
+                    .store_error()
+                    .map_or(FailureKind::Damaged, Classify::kind),
                 _ => FailureKind::Damaged,
             },
             Self::Io { .. }

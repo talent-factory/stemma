@@ -793,8 +793,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     `revoked 40 log <ID>` in version 2 of the register, which the command `register` writes
     with the ID of its own log. `Repository::register_for_log` gives the register as it counts
     in one log: a bound of another log becomes the number of the first `fetch` entry that
-    brought a commit whose register holds that bound, or 1 if none did, so no entry of the log
-    stands before it; `op verify` checks the proofs against it. A bound of version 1, without a
+    brought a commit whose register shows the key retired or revoked in that log, or 1 if none
+    did, so no entry of the log stands before it; `op verify` checks the proofs against it. A
+    retirement that a later fetch turns into a revocation counts from the first fetch, and a
+    fetched commit that the store no longer holds is damage. A bound of version 1, without a
     log, counts by its number in every log, as before.
   - **A receiving operation writes outside the lock**, the upload on a hub and the receiving
     side of a fetch alike (STEMMA-289). Its temporary files lie in a subdirectory of its own,

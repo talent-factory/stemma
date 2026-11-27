@@ -134,6 +134,22 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
     let other = TempDir::new();
     assert_ne!(self::repository(&other).log_id().unwrap(), new);
 
+    // From version 19 on a missing file is damage: the rise to 19 writes it.
+    fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        repository.log_id(),
+        Err(LogAnchorError::LogIdDamaged { .. })
+    ));
+    // Any rise to 19, such as the next entry, gives a repository of 18 its ID.
+    fs::write(
+        repository.metadata_dir().join("format"),
+        "stemma-repository 18\n",
+    )
+    .unwrap();
+    commit(&dir, &repository, "a.txt", "one\n");
+    assert!(path.exists());
+    assert_eq!(format_of(&repository), "stemma-repository 19\n");
+
     // A file that is not in canonical form is damage, not a reason for a new ID.
     fs::write(&path, format!("stemma-log-id 1\n{}\n", "A".repeat(32))).unwrap();
     assert!(matches!(
@@ -207,6 +223,45 @@ fn a_confirmation_that_does_not_hold_is_not_kept() {
             position: 1
         }))
     ));
+    // Another repository, and a remote without a pinned key.
+    let foreign_repository = AnchorPayload::try_new(
+        address(),
+        "ffffffffffffffffffffffffffffffff".parse().unwrap(),
+        repository.log_id().unwrap(),
+        anchor.payload().tip(),
+        None,
+        signer().public(),
+    )
+    .unwrap()
+    .sign(&signer())
+    .unwrap();
+    let foreign_repository = held_by(&hub(), foreign_repository, 1, 1, AnchorState::Confirmed);
+    assert!(matches!(
+        repository.keep_confirmation(&origin(), &foreign_repository),
+        Err(LogAnchorError::Confirmation(AnchorFinding::Other {
+            position: 1
+        }))
+    ));
+    let unpinned = RemoteName::try_new("unpinned").unwrap();
+    let metadata = repository.metadata_dir();
+    remote::write_config(
+        &metadata,
+        &metadata.join("tmp"),
+        &unpinned,
+        &RemoteConfig::new(
+            RemoteAddress::try_new("https://hub.example/stemma").unwrap(),
+            repository_id(),
+        ),
+    )
+    .unwrap();
+    let ours = held_by(&hub(), anchor.clone(), 1, 1, AnchorState::Confirmed);
+    assert!(matches!(
+        repository.keep_confirmation(&unpinned, &ours),
+        Err(LogAnchorError::HubKey(_))
+    ));
+    // The same confirmation twice is kept twice without harm.
+    repository.keep_confirmation(&origin(), &ours).unwrap();
+    repository.keep_confirmation(&origin(), &ours).unwrap();
     // An earlier entry than the kept one.
     let early = held_by(&hub(), anchor, 1, 1, AnchorState::Confirmed);
     commit(&dir, &repository, "a.txt", "two\n");
@@ -436,4 +491,35 @@ fn a_bound_of_another_log_counts_from_the_fetch_entry_that_brought_it() {
     let local = repository.register_for_log(&unknown, &entries).unwrap();
     let state = local.entry(&mia).unwrap().keys()[0].state;
     assert_eq!(state, KeyState::Revoked { from: 1 });
+}
+
+#[test]
+fn a_retirement_that_a_later_fetch_turns_into_a_revocation_counts_from_the_first_fetch() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    let mia = Identity::human("mia").unwrap();
+    let key = Seeded::new(3).public();
+    let mut register = Register::with_owner(Identity::of(&actor()), signer().public()).unwrap();
+    register
+        .add_human(mia.clone(), register::Role::Member, key.clone())
+        .unwrap();
+    let other = LogId::from_bytes([0xab; 16]);
+    let mut retired = register;
+    retired
+        .retire(&mia, &key, Bound::in_log(30, other))
+        .unwrap();
+    let first = fetch_entry(&repository, register_commit(&repository, &retired));
+    let mut revoked = retired;
+    revoked
+        .revoke(&mia, &key, Bound::in_log(20, other))
+        .unwrap();
+    let second = fetch_entry(&repository, register_commit(&repository, &revoked));
+    assert!(second > first);
+    let entries = repository.oplog().entries().unwrap();
+    let local = repository.register_for_log(&revoked, &entries).unwrap();
+    // The key stopped counting in this log with the first fetch, not with the second.
+    assert_eq!(
+        local.entry(&mia).unwrap().keys()[0].state,
+        KeyState::Revoked { from: first }
+    );
 }

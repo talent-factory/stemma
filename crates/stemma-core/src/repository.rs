@@ -220,7 +220,8 @@ const FORMAT_VERSION: u32 = 19;
 /// without a pointer, which is damage, so the repository rises with its next entry or purge.
 /// Version 19 adds the file `log-id` and the directory `anchors/` (STEMMA-300, ADR-026). `init`
 /// writes the ID; a repository of an older version rises to 19 when it gets its ID or keeps a
-/// confirmation, and with its next entry or purge. A program that knows only version 18 keeps no
+/// confirmation, and with its next entry or purge, and the rise writes the ID first, so every
+/// repository of 19 with a log has it. A program that knows only version 18 keeps no
 /// ID, so a second program of the same `.stemma` could give the log another one and the hub
 /// would see two logs; it refuses the repository instead. A bare repository has no log.
 const READ_VERSIONS: [u32; 18] = [
@@ -325,6 +326,19 @@ fn raise_format_with(
     }
     let temp_dir = dir.join("tmp");
     create_store_dirs(dir, &temp_dir)?;
+    // Version 19 knows the ID of the log (ADR-026): a repository with a log gets it before the
+    // file names 19, so that every repository of 19 has one. A bare repository has no log.
+    let bare = exists(&dir.join(BARE_MARKER)).map_err(|source| StoreError::Io {
+        operation: "inspect the marker of a bare repository",
+        path: dir.join(BARE_MARKER),
+        source,
+    })?;
+    if version >= anchor::LOG_ID_SINCE
+        && found.is_none_or(|found| found < anchor::LOG_ID_SINCE)
+        && !bare
+    {
+        anchor::ensure_log_id(dir)?;
+    }
     replace_format(
         &temp_dir,
         &path,

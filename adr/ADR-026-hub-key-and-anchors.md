@@ -184,9 +184,14 @@ How it is built (STEMMA-300):
   destination of the list of the log that the caller chose by its ID. It checks the address and
   the repository, takes the lock of the references, reads the record and completes an update
   that stopped, as the accepting operation of a statement does, and asks the register at the tip
-  of `main` for the key as an active key. Then it compares the anchor with the last confirmed
-  anchor of the list: the same entry returns that confirmation and appends nothing, a larger
-  number is confirmed, the same number with another hash or a smaller number contradicts.
+  of `main` for the key as an active key. An entry that a confirmed anchor of the list names
+  returns that confirmation and appends nothing, so an old anchor sent again, by its sender or
+  by anyone who read the list, is no contradiction. Otherwise it compares the anchor with the
+  last confirmed anchor: a larger number is confirmed, the same number with another hash or a
+  smaller number contradicts. The same contradicting anchor sent again is answered alike and
+  appended once. An anchor that two actors of one log build at the same time can thus arrive
+  after a later one and stand as contradicting; the rule of the hub cannot tell it from a cut
+  log, and the reader of the list sees both.
 - **The answers.** A refusal is the error `anchor-refused` with the reason `hub`,
   `repository`, `no-main`, `key`, or `contradicts <number> <hash>`, which names the last
   confirmed anchor of the log. The request `anchors <log ID>` reads the list of a log, answered
@@ -241,8 +246,10 @@ How it is built (STEMMA-300):
   so it lies earlier in the order of the hub, and two numbers of two logs are not compared.
 - **The bound in another log** is resolved by the core (`Register::for_log`,
   `Repository::register_for_log`): the number of the first `fetch` entry whose fetched commit
-  holds a register with the same bound. If no such entry exists, no entry of the log stands
-  before the bound. The checks of the proofs in `op verify` use this register.
+  holds a register that shows the key retired or revoked in that log, whatever the number, so a
+  retirement that a later fetch turned into a revocation counts from the first fetch. If no
+  such entry exists, no entry of the log stands before the bound; a fetched commit that the
+  store no longer holds is damage, as a purge does not rewrite what a remote reference names. The checks of the proofs in `op verify` use this register.
 - **The order across clones** is the function `stands_before` of the protocol module: an entry
   of another log lies before the record entry that brought a revocation if a confirmed anchor of
   that log covers it (its tip is the entry or a later one) and names a smaller record number.

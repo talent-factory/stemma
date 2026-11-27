@@ -48,6 +48,9 @@ const ANCHORS_DIR: &str = "anchors";
 /// The longest file of a confirmation that is read. A held anchor is far below it.
 const MAX_CONFIRMATION_LEN: u64 = 64 * 1024;
 
+/// The first version of the format that knows the file `log-id` (ADR-009).
+pub(super) const LOG_ID_SINCE: u32 = 19;
+
 /// The content of the file of the ID of the log.
 pub(super) fn log_id_content(log: LogId) -> String {
     format!("{LOG_ID_HEADER}\n{log}\n")
@@ -310,6 +313,12 @@ fn read_small(path: &Path, operation: &'static str) -> Result<Option<Vec<u8>>, L
         &mut bytes,
     )
     .map_err(io_error(operation, path))?;
+    if bytes.len() as u64 > MAX_CONFIRMATION_LEN {
+        return Err(io_error(operation, path)(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the file is larger than 64 KiB",
+        )));
+    }
     Ok(Some(bytes))
 }
 
@@ -413,14 +422,15 @@ impl Repository {
     }
 
     /// The ID of the operation log (ADR-026): read from the file `log-id`, which `init` and
-    /// `clone` write. A repository from before gets its ID here, when it is first needed: under
-    /// the lock of the references the file is read again, a random ID is made, the repository
-    /// moves to the format that knows the file (ADR-009), and the file is written. Every
-    /// worktree shares the log and so its ID.
+    /// `clone` write. A repository from before gets its ID when it is first needed: under the
+    /// lock of the references the file is read again, and the repository moves to version 19,
+    /// whose rise writes a random ID before the file `format` names 19 (ADR-009). From version
+    /// 19 on a missing file is damage. Every worktree shares the log and so its ID.
     ///
     /// # Errors
     ///
-    /// [`LogAnchorError::LogIdDamaged`] for a file that is not in canonical form,
+    /// [`LogAnchorError::LogIdDamaged`] for a file that is not in canonical form, or that is
+    /// missing in a repository of version 19 or later,
     /// [`LogAnchorError::Refs`] for the lock, [`LogAnchorError::Format`] if the format cannot
     /// be raised, and [`LogAnchorError::Io`] if the file cannot be read or written or the
     /// random source fails.
@@ -437,17 +447,17 @@ impl Repository {
         if let Some(log) = self.read_log_id()? {
             return Ok(log);
         }
+        // From version 19 on every repository has the file: the rise to 19 writes it
+        // (`raise_format`). A file that is missing then was removed, which would give the log
+        // another identity without a word.
         let path = self.shared_path(LOG_ID_FILE);
-        let log = LogId::generate().map_err(io_error("make the ID of the log for", &path))?;
+        if format_version(&self.shared).is_some_and(|version| version >= LOG_ID_SINCE) {
+            return Err(LogAnchorError::LogIdDamaged { path });
+        }
         raise_format(&self.shared, FORMAT_VERSION)
             .map_err(|error| LogAnchorError::Format(Box::new(error)))?;
-        write_atomic(
-            &self.shared,
-            &self.shared.join("tmp"),
-            LOG_ID_FILE,
-            log_id_content(log).as_bytes(),
-        )?;
-        Ok(log)
+        self.read_log_id()?
+            .ok_or(LogAnchorError::LogIdDamaged { path })
     }
 
     /// The ID of the log if the file names one, without making one.
@@ -505,7 +515,9 @@ impl Repository {
     /// errors of [`log_id`](Self::log_id) and of
     /// [`last_confirmation`](Self::last_confirmation), [`LogAnchorError::OpLog`] if the log or
     /// its chain cannot be read, [`LogAnchorError::Unchained`] if its last entry is outside the
-    /// chain, [`LogAnchorError::Diverged`] if it does not hold the last confirmation, and
+    /// chain, [`LogAnchorError::Diverged`] if it does not hold the last confirmation,
+    /// [`LogAnchorError::HubKey`] and [`LogAnchorError::Confirmation`] if the kept confirmation
+    /// is not one of the pinned key, this log, and the repository of the remote, and
     /// [`LogAnchorError::Seal`] if the signer fails.
     ///
     /// On a bare repository the call is refused before anything else, with the error
@@ -530,7 +542,19 @@ impl Repository {
         };
         let confirmed = match self.last_confirmation(remote)? {
             Some(kept) => {
-                holds(&entries, kept.tip()).map_err(LogAnchorError::Diverged)?;
+                // The kept file is checked again as when it was kept: a file of another hub,
+                // log, or repository confirms nothing here.
+                let key = config.pinned_key().map_err(LogAnchorError::HubKey)?;
+                let kept_one = std::slice::from_ref(&kept);
+                match check_anchors(&entries, log, config.repository, key, kept_one) {
+                    Ok(_) => {}
+                    Err(
+                        finding @ (AnchorFinding::Cut { .. } | AnchorFinding::Rewritten { .. }),
+                    ) => {
+                        return Err(LogAnchorError::Diverged(finding));
+                    }
+                    Err(finding) => return Err(LogAnchorError::Confirmation(finding)),
+                }
                 Some(kept.tip())
             }
             None => None,
@@ -644,9 +668,10 @@ impl Repository {
 
     /// The register as it counts for the entries of this log (ADR-026): a bound that the
     /// register names for another log is the number of the first `fetch` entry of `entries`
-    /// that brought a commit whose register holds that bound, so the entries before it count
-    /// and the ones from it on do not. If no `fetch` entry brought it, no entry of this log
-    /// stands before the bound. A bound of this log and a bound without a log (version 1 of the
+    /// that brought a commit whose register shows the key retired or revoked in that log, so
+    /// the entries before it count and the ones from it on do not; a retirement that a later
+    /// fetch turned into a revocation counts from the first fetch. If no `fetch` entry brought
+    /// it, no entry of this log stands before the bound. A bound of this log and a bound without a log (version 1 of the
     /// register) keep their number. `entries` are the entries of the log, which the caller
     /// verified. The ID of the log is read, not made: a log without one has every bound with a
     /// log as one of another log.
@@ -654,7 +679,8 @@ impl Repository {
     /// # Errors
     ///
     /// [`LogAnchorError::LogIdDamaged`] and [`LogAnchorError::Io`] for the file of the ID, and
-    /// [`LogAnchorError::Register`] if the register of a fetched commit cannot be read.
+    /// [`LogAnchorError::Register`] if the register of a fetched commit cannot be read, which
+    /// includes a fetched commit that the store no longer holds.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -694,13 +720,10 @@ impl Repository {
             if registers.contains_key(commit) {
                 continue;
             }
-            let read = match Register::at_commit(self.objects(), commit) {
-                Ok(read) => read,
-                // A fetched commit that the store no longer holds, as after a purge, brought
-                // nothing that can be shown.
-                Err(crate::register::ModeError::Missing) => None,
-                Err(error) => return Err(LogAnchorError::Register(Box::new(error))),
-            };
+            // A fetched commit stays in the store: a purge refuses to rewrite what a remote
+            // reference names (ADR-014), so a missing one is damage and no reason to look on.
+            let read = Register::at_commit(self.objects(), commit)
+                .map_err(|error| LogAnchorError::Register(Box::new(error)))?;
             registers.insert(*commit, read);
         }
         let brought = |identity: &Identity, held: &KeyEntry| -> u64 {
@@ -715,7 +738,7 @@ impl Repository {
                             entry.keys().iter().any(|other| {
                                 other.key == held.key
                                     && other.log == held.log
-                                    && same_bound(other.state, held.state)
+                                    && other.state != KeyState::Active
                             })
                         })
                 })
@@ -725,13 +748,51 @@ impl Repository {
     }
 }
 
-/// Whether two states are the same bound: both retired or both revoked, from the same number.
-fn same_bound(fetched: KeyState, wanted: KeyState) -> bool {
-    match (fetched, wanted) {
-        (KeyState::Retired { from: a }, KeyState::Retired { from: b })
-        | (KeyState::Revoked { from: a }, KeyState::Revoked { from: b }) => a == b,
-        _ => false,
+/// The version that the file `format` in `dir` names, or `None` if it cannot be read as one.
+fn format_version(dir: &Path) -> Option<u32> {
+    let bytes = fault::read(&dir.join("format")).ok()?;
+    super::parse_format(&bytes)?.parse().ok()
+}
+
+/// Writes the file `log-id` with a new ID into the metadata directory `dir` if it has none: the
+/// rise of a repository to version 19 calls it before the file `format` names 19, so that every
+/// repository of version 19 has its ID. The caller holds the lock of the references.
+pub(super) fn ensure_log_id(dir: &Path) -> Result<(), StoreError> {
+    let path = dir.join(LOG_ID_FILE);
+    let to_store = |error: LogAnchorError| match error {
+        LogAnchorError::Io {
+            operation,
+            path,
+            source,
+        } => StoreError::Io {
+            operation,
+            path,
+            source,
+        },
+        other => StoreError::Io {
+            operation: "write the ID of the log",
+            path: path.clone(),
+            source: io::Error::other(other.to_string()),
+        },
+    };
+    if read_small(&path, "read the ID of the log in")
+        .map_err(to_store)?
+        .is_some()
+    {
+        return Ok(());
     }
+    let log = LogId::generate().map_err(|source| StoreError::Io {
+        operation: "make the ID of the log for",
+        path: path.clone(),
+        source,
+    })?;
+    write_atomic(
+        dir,
+        &dir.join("tmp"),
+        LOG_ID_FILE,
+        log_id_content(log).as_bytes(),
+    )
+    .map_err(to_store)
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@ use crate::change::ChangeId;
 use crate::index::Index;
 use crate::object::{Blob, Commit, CommitId, FileMode};
 use crate::oplog::EntryHash;
-use crate::protocol::anchor::{AnchorPayload, Point};
+use crate::protocol::anchor::{AnchorLines, AnchorPayload, AnchorState, Point};
 use crate::protocol::record::tests::Seeded;
 use crate::protocol::record::{HubAddress, Move, RecordEntry, RefUpdate, RefUpdatePayload};
 use crate::protocol::RepositoryId;
@@ -240,6 +240,11 @@ fn an_anchor_is_confirmed_with_the_time_and_the_number_of_the_last_record_entry(
     assert_eq!(second.number(), 2);
     assert_eq!(hub.held(), vec![first.clone(), second.clone()]);
 
+    // An older confirmed anchor sent again, as anyone who reads the list can, is answered with
+    // its confirmation and is no contradiction.
+    assert_eq!(hub.send(first.anchor()).unwrap(), first);
+    assert_eq!(hub.held().len(), 2);
+
     // The same entry again is the same anchor: its confirmation is returned, nothing is added.
     let again = hub
         .send(&anchor(point(7, 0x07), Some(point(3, 0x03))))
@@ -393,6 +398,44 @@ fn a_damaged_list_a_clock_that_steps_back_and_a_failing_append_are_failures_of_t
     assert!(matches!(
         hub.send(&anchor(point(4, 0x04), None)),
         Err(AnchorError::Anchors(_))
+    ));
+    // A list whose numbers do not follow one another is damage.
+    let one = HeldAnchor::seal(
+        anchor(point(3, 0x03), None),
+        AnchorLines {
+            number: 1,
+            time: START,
+            register: hub
+                .repository
+                .refs()
+                .branch(&"main".parse().unwrap())
+                .unwrap()
+                .unwrap(),
+            record: 1,
+            actor: Identity::human("mia").unwrap(),
+            state: AnchorState::Confirmed,
+        },
+        &hub_key(),
+    )
+    .unwrap();
+    let renumbered = HeldAnchor::seal(
+        one.anchor().clone(),
+        AnchorLines {
+            number: 3,
+            ..one.lines().clone()
+        },
+        &hub_key(),
+    )
+    .unwrap();
+    let mut bytes = one.encode();
+    bytes.extend_from_slice(&renumbered.encode());
+    let mut gap = Memory {
+        bytes,
+        ..Memory::default()
+    };
+    assert!(matches!(
+        anchors_in(&mut gap, log(), repository_id(), ReadAccess::Granted),
+        Err(AnchorError::Order { position: 2 })
     ));
     // A reader who may not read the repository gets nothing.
     assert!(anchors_in(

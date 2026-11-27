@@ -204,8 +204,9 @@ impl Repository {
     ///   operation of a statement does. The key of the anchor must be an active key of the
     ///   register at the tip of `main`.
     /// - **The list of the log** is read from `anchors`, which the caller chose by the log ID of
-    ///   the anchor. The anchor is compared with the last confirmed anchor of the list: the same
-    ///   entry is the same anchor, and its confirmation is returned again without a new entry; a
+    ///   the anchor. An entry that a confirmed anchor of the list names is the same anchor, and
+    ///   its confirmation is returned again without a new entry, so an old anchor sent again is
+    ///   no contradiction. Otherwise the anchor is compared with the last confirmed anchor: a
     ///   larger number is confirmed; the same number with another hash, or a smaller number,
     ///   contradicts it.
     ///
@@ -272,6 +273,15 @@ impl Repository {
             .ok_or(AnchorRefusal::Key { register: tip })?;
 
         let held = read_list(anchors, payload.log(), context.repository)?;
+        // An entry that the hub confirmed before is the same anchor, also when it is not the
+        // last one: an old anchor sent again, by its sender or by anyone who read the list, is
+        // answered with its confirmation and is no evidence of a rewritten log.
+        if let Some(same) = held
+            .iter()
+            .find(|one| one.is_confirmed() && one.tip() == payload.tip())
+        {
+            return Ok(same.clone());
+        }
         let confirmed = held.iter().rev().find(|held| held.is_confirmed());
         // A contradiction that the list holds already is evidence enough: the same anchor sent
         // again is answered alike and not appended twice.
@@ -284,7 +294,6 @@ impl Repository {
             }
         }
         let state = match confirmed {
-            Some(last) if last.tip() == payload.tip() => return Ok(last.clone()),
             Some(last) if payload.tip().number <= last.tip().number => AnchorState::Contradicts,
             _ => AnchorState::Confirmed,
         };

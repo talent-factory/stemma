@@ -144,7 +144,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   Version 19 adds the file `log-id` and the directory `anchors/` (ADR-026, see "The layout in
   Phase 5"). `init` and `clone` write the ID; a repository of version 18 or before rises to 19
   when it gets its ID or keeps a confirmation, and with its next entry or purge, as every
-  version does. A program that knows only version 18 would keep no ID: a second program of the
+  version does. The rise writes the ID before the file `format` names 19, so every repository
+  of version 19 with a log has the file, and a missing one is damage, not a reason for a new
+  ID. A program that knows only version 18 would keep no ID: a second program of the
   same `.stemma` could give the log another one, and the hub would see two logs. It has to
   refuse the repository. A bare repository has no log, so neither file.
   Version 18 adds the entry `remote-pin`, which pins the key of the hub of a remote again
@@ -246,9 +248,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     directory that every worktree shares, with two lines: `stemma-log-id 1` and the ID, 128
     random bits as 32 lowercase hexadecimal digits. The reader accepts what the writer writes and
     nothing else; a file in another form is damage and no reason for a new ID. `init` writes it
-    into its staging directory; an older repository gets it under the lock of the references,
-    after the rise to version 19, through a temporary file in `tmp/` that is flushed and renamed
-    into place (`Repository::log_id`).
+    into its staging directory; an older repository gets it with its rise to version 19, under
+    the lock of the references and before the file `format` names 19, through a temporary file
+    in `tmp/` that is flushed and renamed into place (`raise_format`, `Repository::log_id`).
   - The last confirmation of an anchor *(STEMMA-300, decided here, as ADR-026 left it to the
     slice)*: the directory `anchors/`, with one file per remote, `anchors/<remote>`, whose name
     is the name of the remote. The file holds the held anchor in the state `confirmed`, as the

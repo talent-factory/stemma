@@ -1428,9 +1428,11 @@ Einen Unfall wie ein zurückgespieltes Backup findet er so selbst.
 \item Der Hub vergleicht Adresse und Repository mit der Nachricht, noch ohne Sperre.
 \item Unter der Sperre der Referenzen, derselben wie beim Ref-Update, liest er die Aufzeichnung
 und das Register an der Spitze von \type{main}; der Schlüssel muss dort aktiv sein.
-\item Er liest die Liste der Anker dieses Logs und vergleicht mit dem letzten bestätigten.
-Dieselbe Spitze ist derselbe Anker, und die Antwort ist die Bestätigung von damals.
-Eine grössere Nummer bestätigt er.
+\item Er liest die Liste der Anker dieses Logs.
+Nennt eine frühere Bestätigung dieselbe Spitze, ist es derselbe Anker, und die Antwort ist die
+Bestätigung von damals; ein alter Anker, den jemand aus der Liste nimmt und erneut sendet, ist
+so kein Widerspruch.
+Sonst vergleicht er mit dem letzten bestätigten Anker: Eine grössere Nummer bestätigt er.
 Dieselbe Nummer mit anderem Hash oder eine kleinere Nummer widerspricht.
 \item Er hängt den Anker mit seinen Zeilen an: laufende Nummer, Zeit, Register-Commit, Nummer des
 letzten Eintrags der Aufzeichnung, Akteur und Zustand \type{confirmed} oder \type{contradicts}.
@@ -1467,6 +1469,9 @@ letzten Anker.
 Die Liste eines Logs lesen alle, die das Repository lesen dürfen, die widersprechenden Anker
 eingeschlossen.
 Der Hub hält Nummer und Hash, also gibt es dort nichts zu purgen.
+Bauen zwei Akteure eines Logs zur gleichen Zeit einen Anker, kann der ältere nach dem neueren
+ankommen und steht dann als widersprechend da; die Regel des Hubs unterscheidet ihn nicht von
+einem abgeschnittenen Log, und wer die Liste liest, sieht beide.
 \stopinfobox
 
 \section[sec:namespaces]{Namespaces}
