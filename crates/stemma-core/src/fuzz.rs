@@ -249,6 +249,11 @@ pub fn protocol(input: &[u8]) {
                     rebuilt_statement_refusal(refusal),
                 )),
                 ErrorMessage::NotReadable => Ok(ErrorMessage::NotReadable),
+                // The anchors of a log (STEMMA-300): the refusal holds values that their own
+                // readers built, so it is the value read.
+                ErrorMessage::AnchorRefused(refusal) => {
+                    Ok(ErrorMessage::AnchorRefused(refusal.clone()))
+                }
             };
             assert_eq!(
                 rebuilt.as_ref(),
@@ -262,6 +267,8 @@ pub fn protocol(input: &[u8]) {
     protocol_statement(input, &check_refusal);
     protocol_sign_in(input, &check_refusal);
     protocol_held(input, &check_refusal);
+    // The anchors of a log (STEMMA-300).
+    protocol_anchor(input, &check_refusal);
     let stream = ObjectStreamReader::new(input, PROTOCOL_MAX_OBJECT_LEN).and_then(|mut reader| {
         let mut writer = ObjectStreamWriter::new(Vec::new()).expect("a vector takes every byte");
         loop {
@@ -296,6 +303,65 @@ pub fn protocol(input: &[u8]) {
                 );
             }
         }
+    }
+}
+
+/// The part of [`protocol`] for the anchors of a log (ADR-026, STEMMA-300): an anchor and a held
+/// anchor are read as a held statement is, their form without the check of the signatures, and
+/// with the check the same value or a refusal for a signature alone. A request of the anchors is
+/// written back unchanged.
+fn protocol_anchor(input: &[u8], check_refusal: &dyn Fn(&crate::protocol::ParseError)) {
+    use crate::protocol::anchor::{Anchor, AnchorProblem, AnchorsRequest, HeldAnchor};
+    use crate::protocol::ParseError;
+    let signature_only = |error: &ParseError| {
+        matches!(
+            error,
+            ParseError::Anchor {
+                reason: AnchorProblem::HubSignature
+                    | AnchorProblem::ActorKey
+                    | AnchorProblem::ActorSignature,
+                ..
+            }
+        )
+    };
+    match Anchor::parse_unverified(input) {
+        Ok(anchor) => {
+            assert_eq!(anchor.encode(), input, "a second spelling was accepted");
+            match Anchor::parse(input) {
+                Ok(verified) => assert_eq!(verified, anchor),
+                Err(error) => {
+                    assert!(signature_only(&error), "refused for its form: {error}");
+                    check_refusal(&error);
+                }
+            }
+        }
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(Anchor::parse(input).as_ref(), Err(&error));
+        }
+    }
+    match HeldAnchor::parse_unverified(input) {
+        Ok(held) => {
+            assert_eq!(held.encode(), input, "a second spelling was accepted");
+            match HeldAnchor::parse(input) {
+                Ok(verified) => assert_eq!(verified, held),
+                Err(error) => {
+                    assert!(signature_only(&error), "refused for its form: {error}");
+                    check_refusal(&error);
+                }
+            }
+        }
+        Err(error) => {
+            check_refusal(&error);
+            assert_eq!(HeldAnchor::parse(input).as_ref(), Err(&error));
+        }
+    }
+    match AnchorsRequest::parse(input) {
+        Ok(request) => {
+            assert_eq!(request.encode(), input, "a second spelling was accepted");
+            assert_eq!(AnchorsRequest::new(request.log()), request);
+        }
+        Err(error) => check_refusal(&error),
     }
 }
 
@@ -804,6 +870,9 @@ pub(crate) mod tests {
                 RefList::parse(b).is_ok()
                     || HeldStatement::parse(b).is_ok()
                     || Range::parse(b).is_ok()
+                    || crate::protocol::anchor::Anchor::parse(b).is_ok()
+                    || crate::protocol::anchor::HeldAnchor::parse(b).is_ok()
+                    || crate::protocol::anchor::AnchorsRequest::parse(b).is_ok()
                     || Statement::parse(b).is_ok()
                     || Challenge::parse(b).is_ok()
                     || SignedChallenge::parse(b).is_ok()

@@ -89,6 +89,7 @@ use std::str::FromStr;
 use crate::actor::{Actor, ActorRef};
 use crate::object::{Kind, ObjectId};
 use crate::oplog::{Entry, PullKind, Record, StubKind};
+use crate::protocol::anchor::{Anchor, LogId};
 use crate::protocol::record::RefUpdate;
 use crate::protocol::statement::Statement;
 use crate::pull;
@@ -116,6 +117,8 @@ pub const MAX_ENTRIES: usize = 256;
 pub const MAX_KEYS: usize = 8;
 
 const HEADER: &str = "stemma-register 1";
+/// The first line of a register whose bounds name the log that wrote them (ADR-026, ADR-009).
+const HEADER_2: &str = "stemma-register 2";
 const PROOF_HEADER: &str = "stemma-proof-file 1";
 const MARKER_CONTENT: &str = "stemma-enforcing 1\n";
 
@@ -271,6 +274,30 @@ pub enum KeyState {
     },
 }
 
+/// Revokes `held` from `bound`: an active key from the bound, a key that is retired or revoked
+/// in the same log from the earlier of both numbers, with the log of that number. A bound
+/// without a log (version 1 of the file) counts in every log by its number, so it is compared
+/// as well. A key whose bound counts in another log keeps it, as it was written first (see
+/// [`Register::revoke`]).
+fn revoke_held(held: &mut KeyEntry, bound: Bound) {
+    match held.state {
+        KeyState::Active => {
+            held.state = KeyState::Revoked { from: bound.number };
+            held.log = bound.log;
+        }
+        KeyState::Retired { from } | KeyState::Revoked { from } => {
+            let comparable = held.log.is_none() || bound.log.is_none() || held.log == bound.log;
+            let from = if comparable && bound.number < from {
+                held.log = bound.log;
+                bound.number
+            } else {
+                from
+            };
+            held.state = KeyState::Revoked { from };
+        }
+    }
+}
+
 /// A key and its state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyEntry {
@@ -278,6 +305,39 @@ pub struct KeyEntry {
     pub key: PublicKey,
     /// Its state.
     pub state: KeyState,
+    /// The log whose numbers the bound of a retired or revoked key counts (ADR-026): the log
+    /// that wrote the bound. `None` for an active key and for a bound of version 1 of the file,
+    /// which names no log and counts in every log by its number, as before.
+    pub log: Option<LogId>,
+}
+
+/// Where a key stops counting: the number of the first log entry that it no longer counts for,
+/// and the log whose numbers that is (ADR-026). A number counts only in the log that wrote it;
+/// in every other log the bound is the `fetch` entry that brought the register commit
+/// ([`Register::for_log`]). A bound without a log is one of version 1 of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bound {
+    /// The number of the first entry that the key no longer counts for.
+    pub number: u64,
+    /// The log that the number belongs to.
+    pub log: Option<LogId>,
+}
+
+impl Bound {
+    /// The bound `number` in the log `log`.
+    pub fn in_log(number: u64, log: LogId) -> Self {
+        Self {
+            number,
+            log: Some(log),
+        }
+    }
+}
+
+impl From<u64> for Bound {
+    /// A bound that names no log, as version 1 of the file writes it.
+    fn from(number: u64) -> Self {
+        Self { number, log: None }
+    }
 }
 
 /// One entry of the register: an identity, its role, and its keys.
@@ -363,6 +423,7 @@ impl Register {
                 keys: vec![KeyEntry {
                     key,
                     state: KeyState::Active,
+                    log: None,
                 }],
             }],
         })
@@ -403,6 +464,7 @@ impl Register {
             keys: vec![KeyEntry {
                 key,
                 state: KeyState::Active,
+                log: None,
             }],
         });
         self.entries.sort_by(|a, b| a.identity.cmp(&b.identity));
@@ -453,6 +515,7 @@ impl Register {
             keys: vec![KeyEntry {
                 key,
                 state: KeyState::Active,
+                log: None,
             }],
         });
         self.entries.sort_by(|a, b| a.identity.cmp(&b.identity));
@@ -578,15 +641,18 @@ impl Register {
                 .keys
                 .iter()
                 .find_map(|held| match held.state {
-                    KeyState::Revoked { from } if held.key == cosigner => Some(from),
+                    KeyState::Revoked { from } if held.key == cosigner => Some((from, held.log)),
                     _ => None,
                 })
         });
+        // A bound of another log was written before the cascade kept it (see `revoke_held`),
+        // so it lies before the revocation of the co-signing key. A bound without a log counts
+        // in every log by its number, so it is compared.
         match bound {
-            Some(bound) => entry
-                .keys
-                .iter()
-                .all(|held| matches!(held.state, KeyState::Revoked { from } if from <= bound)),
+            Some((bound, log)) => entry.keys.iter().all(|held| {
+                let other_log = held.log.is_some() && log.is_some() && held.log != log;
+                matches!(held.state, KeyState::Revoked { from } if other_log || from <= bound)
+            }),
             None => true,
         }
     }
@@ -616,6 +682,7 @@ impl Register {
         entry.keys.push(KeyEntry {
             key,
             state: KeyState::Active,
+            log: None,
         });
         entry
             .keys
@@ -624,7 +691,9 @@ impl Register {
     }
 
     /// Retires an active key: it signs no new records from the log entry `from` on, and the
-    /// records before stay valid.
+    /// records before stay valid. A bound that names a log ([`Bound::in_log`]) counts in that
+    /// log by its number, and in every other log from the `fetch` entry that brought the
+    /// register commit (ADR-026); a bare number is a bound of version 1 of the file.
     ///
     /// # Errors
     ///
@@ -639,11 +708,16 @@ impl Register {
         &mut self,
         identity: &Identity,
         key: &PublicKey,
-        from: u64,
+        from: impl Into<Bound>,
     ) -> Result<(), RegisterError> {
+        let bound = from.into();
         let mut changed = self.clone();
-        changed.change(identity, key, from, |state| match state {
-            KeyState::Active => Ok(KeyState::Retired { from }),
+        changed.change(identity, key, bound.number, |held| match held.state {
+            KeyState::Active => {
+                held.state = KeyState::Retired { from: bound.number };
+                held.log = bound.log;
+                Ok(())
+            }
             _ => Err(RegisterError::NotActive),
         })?;
         if !changed.sponsorships_hold() {
@@ -655,7 +729,9 @@ impl Register {
 
     /// Revokes a key that is active or retired. A revoked key counts for the log entries below
     /// `from` only, and not for approvals. A key that is retired from an earlier entry keeps the
-    /// earlier bound.
+    /// earlier bound. A bound of another log than the one of `from` is no number to compare
+    /// with: the key keeps the bound that was written first, which is earlier in the order of
+    /// the hub (ADR-026).
     ///
     /// Revoking a key of a human revokes every key of the agents that the human sponsors, from the
     /// same `from` (a key that is revoked or retired from an earlier entry keeps the earlier
@@ -669,15 +745,16 @@ impl Register {
         &mut self,
         identity: &Identity,
         key: &PublicKey,
-        from: u64,
+        from: impl Into<Bound>,
     ) -> Result<Vec<Identity>, RegisterError> {
+        let from = from.into();
         let mut changed = self.clone();
-        changed.change(identity, key, from, |state| match state {
-            KeyState::Active => Ok(KeyState::Revoked { from }),
-            KeyState::Retired { from: retired } => Ok(KeyState::Revoked {
-                from: retired.min(from),
-            }),
+        changed.change(identity, key, from.number, |held| match held.state {
             KeyState::Revoked { .. } => Err(RegisterError::AlreadyRevoked),
+            _ => {
+                revoke_held(held, from);
+                Ok(())
+            }
         })?;
         // The bound of the revoked key itself: a key that was retired earlier keeps its earlier
         // bound, and the agents follow it, or the reader would refuse the file.
@@ -685,7 +762,10 @@ impl Register {
             .entry(identity)
             .and_then(|entry| entry.keys.iter().find(|held| &held.key == key))
             .map_or(from, |held| match held.state {
-                KeyState::Revoked { from } => from,
+                KeyState::Revoked { from } => Bound {
+                    number: from,
+                    log: held.log,
+                },
                 _ => from,
             });
         let mut revoked = Vec::new();
@@ -695,18 +775,9 @@ impl Register {
             }
             let mut touched = false;
             for held in &mut entry.keys {
-                let next = match held.state {
-                    KeyState::Active => KeyState::Revoked { from: bound },
-                    KeyState::Retired { from: earlier } => KeyState::Revoked {
-                        from: earlier.min(bound),
-                    },
-                    KeyState::Revoked { from: earlier } if earlier > bound => {
-                        KeyState::Revoked { from: bound }
-                    }
-                    KeyState::Revoked { .. } => continue,
-                };
-                held.state = next;
-                touched = true;
+                let before = held.clone();
+                revoke_held(held, bound);
+                touched |= *held != before;
             }
             if touched {
                 revoked.push(entry.identity.clone());
@@ -724,7 +795,7 @@ impl Register {
         identity: &Identity,
         key: &PublicKey,
         from: u64,
-        next: impl FnOnce(KeyState) -> Result<KeyState, RegisterError>,
+        next: impl FnOnce(&mut KeyEntry) -> Result<(), RegisterError>,
     ) -> Result<(), RegisterError> {
         if from == 0 {
             return Err(RegisterError::ZeroPosition);
@@ -736,7 +807,7 @@ impl Register {
             .iter_mut()
             .find(|held| &held.key == key)
             .ok_or(RegisterError::UnknownKey)?;
-        held.state = next(held.state)?;
+        next(held)?;
         if !changed.has_active_owner_key() {
             return Err(RegisterError::NoOwnerKey);
         }
@@ -766,11 +837,14 @@ impl Register {
             .split_inclusive('\n')
             .enumerate()
             .map(|(index, raw)| (index + 1, raw.strip_suffix('\n').unwrap_or(raw)));
-        match lines.next() {
-            Some((_, HEADER)) => {}
+        // Version 2 names the log of a bound (ADR-026, STEMMA-300); a file of version 2 names
+        // at least one, so every register has one encoding.
+        let second = match lines.next() {
+            Some((_, HEADER)) => false,
+            Some((_, HEADER_2)) => true,
             Some((number, _)) => return Err(fail(number, RegisterProblem::BadHeader)),
             None => return Err(fail(0, RegisterProblem::BadHeader)),
-        }
+        };
         let mut entries: Vec<RegisterEntry> = Vec::new();
         for (number, line) in lines {
             if line.is_empty() || line.ends_with(' ') || line.contains('\r') {
@@ -856,16 +930,29 @@ impl Register {
                     if key.to_openssh() != format!("{algorithm} {data}") {
                         return Err(fail(number, RegisterProblem::BadKey));
                     }
-                    let state = match state {
-                        ["active"] => KeyState::Active,
-                        ["retired", from] => KeyState::Retired {
-                            from: parse_position(from)
-                                .ok_or_else(|| fail(number, RegisterProblem::BadState))?,
-                        },
-                        ["revoked", from] => KeyState::Revoked {
-                            from: parse_position(from)
-                                .ok_or_else(|| fail(number, RegisterProblem::BadState))?,
-                        },
+                    let (state, log) = match state {
+                        ["active"] => (KeyState::Active, None),
+                        [word @ ("retired" | "revoked"), from, log @ ..] => {
+                            let from = parse_position(from)
+                                .ok_or_else(|| fail(number, RegisterProblem::BadState))?;
+                            let log = match log {
+                                [] => None,
+                                ["log", id] if second => Some(
+                                    id.parse::<LogId>()
+                                        .map_err(|_| fail(number, RegisterProblem::BadState))?,
+                                ),
+                                ["log", _] => {
+                                    return Err(fail(number, RegisterProblem::LogInVersion1))
+                                }
+                                _ => return Err(fail(number, RegisterProblem::BadState)),
+                            };
+                            let state = if *word == "retired" {
+                                KeyState::Retired { from }
+                            } else {
+                                KeyState::Revoked { from }
+                            };
+                            (state, log)
+                        }
                         _ => return Err(fail(number, RegisterProblem::BadState)),
                     };
                     if let Some(last) = entry.keys.last() {
@@ -876,12 +963,15 @@ impl Register {
                     if entry.keys.len() == MAX_KEYS {
                         return Err(fail(number, RegisterProblem::TooManyKeysInEntry));
                     }
-                    entry.keys.push(KeyEntry { key, state });
+                    entry.keys.push(KeyEntry { key, state, log });
                 }
                 _ => return Err(fail(number, RegisterProblem::BadLine)),
             }
         }
         let register = Self { entries };
+        if second && !register.names_a_log() {
+            return Err(fail(1, RegisterProblem::NoLogInVersion2));
+        }
         let mut seen = std::collections::HashSet::new();
         for held in register.entries.iter().flat_map(|entry| &entry.keys) {
             if !seen.insert(held.key.clone()) {
@@ -924,7 +1014,8 @@ impl Register {
 
     /// The bytes of the file. [`parse`](Self::parse) reads them back.
     pub fn encode(&self) -> String {
-        let mut text = format!("{HEADER}\n");
+        let header = if self.names_a_log() { HEADER_2 } else { HEADER };
+        let mut text = format!("{header}\n");
         for entry in &self.entries {
             let role = entry.role.name();
             text.push_str(&format!("entry {} {role}", entry.identity));
@@ -937,13 +1028,16 @@ impl Register {
             }
             for held in &entry.keys {
                 let key = held.key.to_openssh();
+                let log = held
+                    .log
+                    .map_or_else(String::new, |log| format!(" log {log}"));
                 match held.state {
                     KeyState::Active => text.push_str(&format!("key {key} active\n")),
                     KeyState::Retired { from } => {
-                        text.push_str(&format!("key {key} retired {from}\n"));
+                        text.push_str(&format!("key {key} retired {from}{log}\n"));
                     }
                     KeyState::Revoked { from } => {
-                        text.push_str(&format!("key {key} revoked {from}\n"));
+                        text.push_str(&format!("key {key} revoked {from}{log}\n"));
                     }
                 }
             }
@@ -1097,6 +1191,66 @@ impl Register {
             actor: self.actor_of(&entry.identity)?,
             key: key.clone(),
         })
+    }
+
+    // The anchors of a log (ADR-026, STEMMA-300).
+
+    /// The actor that an anchor speaks for: the entry that holds the key of the anchor as an
+    /// active key. The signature of the anchor was checked when the value was made.
+    pub fn verify_anchor(&self, anchor: &Anchor) -> Option<Verified> {
+        let key = anchor.payload().key();
+        let entry = self.entries.iter().find(|entry| {
+            entry
+                .keys
+                .iter()
+                .any(|held| &held.key == key && held.state == KeyState::Active)
+        })?;
+        Some(Verified {
+            actor: self.actor_of(&entry.identity)?,
+            key: key.clone(),
+        })
+    }
+
+    /// Whether a bound names its log, which makes the file version 2.
+    fn names_a_log(&self) -> bool {
+        self.entries
+            .iter()
+            .flat_map(|entry| &entry.keys)
+            .any(|held| held.log.is_some())
+    }
+
+    /// The register as it counts in the log `own` (ADR-026): a bound of another log is replaced
+    /// by the number that `resolve` gives for it in `own`, the number of the `fetch` entry that
+    /// brought the register commit. A bound of `own` and a bound without a log keep their
+    /// number. `own` is `None` for a log without an ID yet, where every bound with a log is one
+    /// of another log.
+    ///
+    /// The result is for the checks of the proofs of `own` only: it states the bounds as
+    /// numbers of `own`, so it is no file to write back.
+    pub fn for_log(
+        &self,
+        own: Option<LogId>,
+        mut resolve: impl FnMut(&Identity, &KeyEntry) -> u64,
+    ) -> Self {
+        let mut local = self.clone();
+        for entry in &mut local.entries {
+            for held in &mut entry.keys {
+                let Some(log) = held.log else {
+                    continue;
+                };
+                if Some(log) == own {
+                    continue;
+                }
+                let number = resolve(&entry.identity, held);
+                held.state = match held.state {
+                    KeyState::Active => KeyState::Active,
+                    KeyState::Retired { .. } => KeyState::Retired { from: number },
+                    KeyState::Revoked { .. } => KeyState::Revoked { from: number },
+                };
+                held.log = own;
+            }
+        }
+        local
     }
 
     // The statements on a hub (ADR-025, STEMMA-299).
@@ -1254,7 +1408,7 @@ pub enum RegisterProblem {
     NotUtf8,
     /// The last line does not end with a newline.
     NoFinalNewline,
-    /// The first line is not `stemma-register 1`.
+    /// The first line is not `stemma-register 1` or `stemma-register 2`.
     BadHeader,
     /// An empty line, a space at the end, a carriage return, or a line of no known form.
     BadLine,
@@ -1297,6 +1451,10 @@ pub enum RegisterProblem {
     RoleAboveSponsor,
     /// An agent with an active key whose sponsorship does not hold (see [`Register::revoke`]).
     SponsorRevoked,
+    /// A bound names its log in a file of version 1 (ADR-026).
+    LogInVersion1,
+    /// A file of version 2 names the log of no bound, so it has the encoding of version 1.
+    NoLogInVersion2,
 }
 
 impl fmt::Display for RegisterProblem {
@@ -1305,7 +1463,12 @@ impl fmt::Display for RegisterProblem {
             Self::TooLarge => "the register is larger than 64 KiB",
             Self::NotUtf8 => "the register is not UTF-8",
             Self::NoFinalNewline => "the last line does not end with a newline",
-            Self::BadHeader => "the first line must be `stemma-register 1`",
+            Self::BadHeader => "the first line must be `stemma-register 1` or `stemma-register 2`",
+            Self::LogInVersion1 => "a bound names its log only in `stemma-register 2`",
+            Self::NoLogInVersion2 => {
+                "a register of version 2 names the log of at least one bound; without one it is \
+                 version 1"
+            }
             Self::BadLine => "not a line of the register",
             Self::BadEntry => {
                 "not an entry: `entry human <id> <owner|member>` or \
@@ -2030,7 +2193,12 @@ mod tests {
         let ok = format!("{HEADER}\nentry human daniel owner\nkey {key1} active\n");
         assert!(Register::parse(ok.as_bytes()).is_ok());
         assert_eq!(problem(""), RegisterProblem::BadHeader);
-        assert_eq!(problem("stemma-register 2\n"), RegisterProblem::BadHeader);
+        assert_eq!(problem("stemma-register 3\n"), RegisterProblem::BadHeader);
+        // Version 2 names the log of a bound, and a file of version 2 names at least one.
+        assert_eq!(
+            problem(&ok.replace(HEADER, HEADER_2)),
+            RegisterProblem::NoLogInVersion2
+        );
         assert_eq!(
             problem(&ok[..ok.len() - 1]),
             RegisterProblem::NoFinalNewline
@@ -2219,6 +2387,203 @@ mod tests {
                 state: KeyState::Revoked { from: 20 },
                 number: None
             }
+        );
+    }
+
+    // The bound in the log that wrote it (ADR-026, STEMMA-300).
+
+    fn log(byte: u8) -> LogId {
+        LogId::from_bytes([byte; 16])
+    }
+
+    #[test]
+    fn a_bound_names_its_log_in_version_2_of_the_file() {
+        let mut register = register();
+        let key = Seeded::new(2).public();
+        register
+            .revoke(&mia(), &key, Bound::in_log(20, log(0xab)))
+            .unwrap();
+        let text = register.encode();
+        assert!(text.starts_with("stemma-register 2\n"), "{text}");
+        assert!(text.contains(&format!(
+            "key {key} revoked 20 log abababababababababababababababab\n"
+        )));
+        assert_eq!(Register::parse(text.as_bytes()).unwrap(), register);
+        // A bound without a log keeps the file in version 1.
+        let mut old = super::tests::register();
+        old.revoke(&mia(), &key, 20).unwrap();
+        assert!(old.encode().starts_with("stemma-register 1\n"));
+        // A log in a file of version 1 is refused, and so is a malformed one.
+        assert_eq!(
+            problem(&text.replace(HEADER_2, HEADER)),
+            RegisterProblem::LogInVersion1
+        );
+        assert_eq!(
+            problem(&text.replace(" log abab", " log ABAB")),
+            RegisterProblem::BadState
+        );
+        assert_eq!(
+            problem(&text.replace(" log ", " in ")),
+            RegisterProblem::BadState
+        );
+        assert_eq!(
+            problem(&text.replace(
+                " log abababababababababababababababab",
+                " log abababababababababababababababab x"
+            )),
+            RegisterProblem::BadState
+        );
+        // A retirement round-trips as well, beside a bound of version 1 in the same file.
+        let mut mixed = register.clone();
+        let owner = Seeded::new(1).public();
+        mixed
+            .add_key(&Identity::of(&daniel()), Seeded::new(4).public())
+            .unwrap();
+        mixed.retire(&Identity::of(&daniel()), &owner, 7).unwrap();
+        let mut both = super::tests::register();
+        both.add_key(&Identity::of(&daniel()), Seeded::new(4).public())
+            .unwrap();
+        both.retire(
+            &Identity::of(&daniel()),
+            &owner,
+            Bound::in_log(7, log(0xcd)),
+        )
+        .unwrap();
+        both.revoke(&mia(), &key, 20).unwrap();
+        for one in [mixed, both] {
+            let text = one.encode();
+            assert!(text.starts_with("stemma-register 2\n"), "{text}");
+            assert_eq!(Register::parse(text.as_bytes()).unwrap(), one);
+        }
+        let active = format!(
+            "{HEADER_2}\nentry human daniel owner\nkey {} active log {}\n",
+            owner,
+            log(0xab)
+        );
+        assert_eq!(problem(&active), RegisterProblem::BadState);
+    }
+
+    #[test]
+    fn a_bound_without_a_log_is_compared_with_the_revocation_of_the_cosigning_key() {
+        // The co-signing key of Mia is revoked from entry 5 in log `ab`. A key of the agent
+        // revoked from 1000 without a log would count in that log for entries 5 to 999, so a
+        // hand-written file with it is refused; from 5 it reads.
+        let mut register = with_bot();
+        register
+            .revoke(
+                &mia(),
+                &Seeded::new(2).public(),
+                Bound::in_log(5, log(0xab)),
+            )
+            .unwrap();
+        let text = register.encode();
+        let agent = Seeded::new(3).public();
+        let cascaded = format!("key {agent} revoked 5 log {}", log(0xab));
+        assert!(text.contains(&cascaded), "{text}");
+        assert!(Register::parse(text.as_bytes()).is_ok());
+        let later = text.replace(&cascaded, &format!("key {agent} revoked 1000"));
+        assert_eq!(problem(&later), RegisterProblem::SponsorRevoked);
+        // A bound of another log was written first and stands.
+        let other = text.replace(
+            &cascaded,
+            &format!("key {agent} revoked 1000 log {}", log(0xcd)),
+        );
+        assert!(Register::parse(other.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_bound_of_another_log_counts_from_the_number_that_this_log_gives_it() {
+        let mut register = register();
+        let signer = Seeded::new(2);
+        register
+            .revoke(&mia(), &signer.public(), Bound::in_log(20, log(0xab)))
+            .unwrap();
+        let mia_actor = Actor::human("mia").unwrap();
+        let entry = signature::sign(&signer, PayloadKind::LogEntry, b"h").unwrap();
+        // In the log that wrote it, the number counts.
+        let own = register.for_log(Some(log(0xab)), |_, _| unreachable!());
+        assert_eq!(own, register);
+        assert!(own.verify_log_entry(&mia_actor, 19, b"h", &entry).is_ok());
+        assert!(own.verify_log_entry(&mia_actor, 20, b"h", &entry).is_err());
+        // In another log, the bound is the number of the `fetch` entry that brought it.
+        let other = register.for_log(Some(log(0xcd)), |identity, held| {
+            assert_eq!(identity, &mia());
+            assert_eq!(held.log, Some(log(0xab)));
+            7
+        });
+        assert!(other.verify_log_entry(&mia_actor, 6, b"h", &entry).is_ok());
+        assert!(other.verify_log_entry(&mia_actor, 7, b"h", &entry).is_err());
+        assert!(other
+            .verify_log_entry(&mia_actor, 19, b"h", &entry)
+            .is_err());
+        // A log without an ID has every bound with a log as one of another log.
+        let unnamed = register.for_log(None, |_, _| 3);
+        assert!(unnamed
+            .verify_log_entry(&mia_actor, 3, b"h", &entry)
+            .is_err());
+    }
+
+    #[test]
+    fn a_revocation_keeps_a_bound_of_another_log_that_was_written_first() {
+        let mut register = register();
+        let key = Seeded::new(2).public();
+        register
+            .retire(&mia(), &key, Bound::in_log(10, log(0xab)))
+            .unwrap();
+        register
+            .revoke(&mia(), &key, Bound::in_log(5, log(0xcd)))
+            .unwrap();
+        let held = &register.entry(&mia()).unwrap().keys()[0];
+        assert_eq!(held.state, KeyState::Revoked { from: 10 });
+        assert_eq!(held.log, Some(log(0xab)));
+        // In the same log the earlier number wins, as before.
+        let mut same = super::tests::register();
+        same.retire(&mia(), &key, Bound::in_log(10, log(0xab)))
+            .unwrap();
+        same.revoke(&mia(), &key, Bound::in_log(5, log(0xab)))
+            .unwrap();
+        let held = &same.entry(&mia()).unwrap().keys()[0];
+        assert_eq!(held.state, KeyState::Revoked { from: 5 });
+    }
+
+    #[test]
+    fn a_revocation_in_a_log_lowers_a_bound_without_a_log() {
+        // A bound of version 1 counts in every log by its number, so an earlier revocation in a
+        // log wins, and carries its log.
+        let mut register = register();
+        let key = Seeded::new(2).public();
+        register.retire(&mia(), &key, 50).unwrap();
+        register
+            .revoke(&mia(), &key, Bound::in_log(30, log(0xab)))
+            .unwrap();
+        let held = &register.entry(&mia()).unwrap().keys()[0];
+        assert_eq!(held.state, KeyState::Revoked { from: 30 });
+        assert_eq!(held.log, Some(log(0xab)));
+        // A later one keeps the bound without a log.
+        let mut later = super::tests::register();
+        later.retire(&mia(), &key, 20).unwrap();
+        later
+            .revoke(&mia(), &key, Bound::in_log(30, log(0xab)))
+            .unwrap();
+        let held = &later.entry(&mia()).unwrap().keys()[0];
+        assert_eq!(held.state, KeyState::Revoked { from: 20 });
+        assert_eq!(held.log, None);
+        // The cascade lowers a bound of an agent without a log as well, so the file reads.
+        let mut cascade = with_bot();
+        cascade.add_key(&bot(), Seeded::new(6).public()).unwrap();
+        cascade
+            .retire(&bot(), &Seeded::new(3).public(), 50)
+            .unwrap();
+        cascade
+            .revoke(&mia(), &key, Bound::in_log(30, log(0xab)))
+            .unwrap();
+        for held in cascade.entry(&bot()).unwrap().keys() {
+            assert_eq!(held.state, KeyState::Revoked { from: 30 });
+            assert_eq!(held.log, Some(log(0xab)));
+        }
+        assert_eq!(
+            Register::parse(cascade.encode().as_bytes()).unwrap(),
+            cascade
         );
     }
 

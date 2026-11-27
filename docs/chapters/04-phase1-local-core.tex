@@ -61,6 +61,7 @@ bleibt ein offener Punkt (ADR-009).
 \starttyping
 .stemma/
     format        stemma-repository 4 (2 oder 3 vor der Hash-Kette)
+    log-id        ID des Logs, ab Version 19 des Formats (ADR-026)
     HEAD          branch main
     working-copy  ID des Working-Copy-Commits
     objects/      lose Objekte
@@ -1454,6 +1455,9 @@ Aus demselben Grund deckt er nicht, dass ein Eintrag zum Stub wurde,
 solange ein \type{purge}-Eintrag ihn auflistet.
 Die Einträge nach $n$ deckt er nicht:
 Wer das Log nach $n$ abschneidet und neu schreibt, besteht die Prüfung mit diesem Anker.
+Seit Phase~5 hält ein Hub solche Anker, ohne einen Eintrag zu sehen: Der Klon sendet Nummer und
+Hash seiner Spitze unter der zufälligen ID seines Logs (Datei \type{log-id}), und der Hub
+bestätigt sie signiert (\in{Abschnitt}[sec:anchor-confirm]).
 Crosby und Wallach zeigen, dass ein Log, das sein Schreiber selbst neu berechnen kann,
 Manipulationen erst durch solche Zusagen an Prüfer ausserhalb erkennen lässt,
 und dass der Nachweis über eine Kette linear in der Zahl der Einträge dazwischen ist;

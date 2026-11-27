@@ -94,7 +94,7 @@ use stemma_core::moved::{moved_lines, MovedLines};
 use stemma_core::object::{CommitId, ObjectId, METADATA_DIR};
 use stemma_core::oplog::{self, EntryHash, OpLogError};
 use stemma_core::refs::{BranchName, Head, RefError};
-use stemma_core::register::{self, Identity, IdentityKind, Mode, Register, Role};
+use stemma_core::register::{self, Bound, Identity, IdentityKind, Mode, Register, Role};
 use stemma_core::repository::{
     normalize_path_in, ApplyPurgeError, Changes, CommitError, Committed, Comparison, Content, Diff,
     DiffError, Discovered, Handled, InitError, InitOptions, MergeBranchError, MergeKind, Merged,
@@ -1288,6 +1288,9 @@ enum CliError {
     /// The register, a proof, or a signed statement is not valid or not accepted: damage
     /// (code 5).
     RegisterDamaged(String),
+    /// The ID of the log, or the register as it counts for the log, could not be read: the code
+    /// follows the kind of the failure (ADR-026).
+    LogId(stemma_core::repository::LogAnchorError),
     /// The repository or the register file was made or changed, but the register could not be
     /// written completely or the result could not be written (code 3): a script must not run
     /// `init` again.
@@ -1440,6 +1443,7 @@ impl CliError {
             Self::OpLogRefs(error) => by_kind(error.kind()),
             Self::Purge(error) => by_kind(error.kind()),
             Self::ApplyPurge(error) => by_kind(error.kind()),
+            Self::LogId(error) => by_kind(error.kind()),
             Self::AnchorMissing { .. }
             | Self::AnchorUnchained { .. }
             | Self::AnchorMismatch { .. }
@@ -1830,6 +1834,7 @@ impl fmt::Display for CliError {
             Self::Register(message)
             | Self::RegisterDamaged(message)
             | Self::RegisterNotWritten(message) => f.write_str(message),
+            Self::LogId(error) => error.fmt(f),
             Self::EmptyLog => write!(
                 f,
                 "the operation log is empty: `init` always writes entry 1, so entries were lost \
@@ -3270,6 +3275,10 @@ fn verify_op_log(args: OpVerifyArgs, out: &mut dyn Write) -> Result<(), CliError
     let register = match Mode::of(&repository) {
         Ok(Mode::Open) => None,
         Ok(Mode::Enforcing(register)) => {
+            // A bound of another log counts from the `fetch` entry that brought it (ADR-026).
+            let register = repository
+                .register_for_log(&register, &entries)
+                .map_err(CliError::LogId)?;
             let proofs = register::check_proofs(&repository.metadata_dir(), &register, &entries)
                 .map_err(|error| CliError::RegisterDamaged(error.to_string()))?;
             text.push_str(&format!(
@@ -4551,11 +4560,17 @@ fn register_command(command: RegisterCommand, out: &mut dyn Write) -> Result<(),
         .map_err(CliError::OpLog)?
         .last()
         .map_or(1, |entry| entry.number() + 1);
+    // The number counts in this log only, so the bound names its ID (ADR-026); in every
+    // other clone the bound is the `fetch` entry that brings the register commit.
+    let bound = match action {
+        "Added" => Bound::from(from),
+        _ => Bound::in_log(from, repository.log_id().map_err(CliError::LogId)?),
+    };
     let mut cascaded = Vec::new();
     let changed = match action {
         "Added" => register.add_key(&identity, key),
-        "Retired" => register.retire(&identity, &key, from),
-        _ => register.revoke(&identity, &key, from).map(|agents| {
+        "Retired" => register.retire(&identity, &key, bound),
+        _ => register.revoke(&identity, &key, bound).map(|agents| {
             cascaded = agents;
         }),
     };

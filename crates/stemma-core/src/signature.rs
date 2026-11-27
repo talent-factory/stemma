@@ -81,6 +81,14 @@ pub enum PayloadKind {
     /// ADR-026). The payload is the text of the hash of the held statement
     /// ([`HeldStatement`](crate::protocol::held::HeldStatement)).
     HeldStatement,
+    // The anchors of a log (ADR-026, STEMMA-300).
+    /// The anchor of an operation log, signed by the key of an actor (ADR-026). The payload is
+    /// that of [`AnchorPayload::encode`](crate::protocol::anchor::AnchorPayload::encode).
+    Anchor,
+    /// The lines of a hub for an anchor that it holds, signed by the key of the hub (ADR-026);
+    /// in the state `confirmed` it is the confirmation. The payload is the text of the hash of
+    /// the held anchor ([`HeldAnchor`](crate::protocol::anchor::HeldAnchor)).
+    HeldAnchor,
 }
 
 impl PayloadKind {
@@ -101,6 +109,9 @@ impl PayloadKind {
             Self::Challenge => "challenge",
             Self::FormerKeys => "former-keys",
             Self::HeldStatement => "held-statement",
+            // The anchors of a log (STEMMA-300).
+            Self::Anchor => "anchor",
+            Self::HeldAnchor => "held-anchor",
         }
     }
 }
