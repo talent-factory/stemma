@@ -304,6 +304,17 @@ book-watch:
 book-clean:
     cd {{docs_dir}} && rm -f *.log *.tuc *.tua *.top *.pdf
 
+# ─────────────────────────── Stemma ───────────────────────────────────
+
+# After a `git pull` or a merge on `main`: track the files that Git tracks and Stemma does not,
+# and commit if anything changed. Only for the human, in the root, never in a Git worktree
+# (docs/agents/stemma-alongside-git.md). Needs `stemma` on the PATH (or `STEMMA_BIN`), `jq`,
+# and a human `STEMMA_ACTOR`. Not part of `ci`.
+# Bring the Stemma history of the root in line with Git (human only, in the root).
+[group('Stemma')]
+stemma-sync:
+    scripts/stemma-sync.sh
+
 # ─────────────────────────── Misc ─────────────────────────────────────
 
 # Clean build artifacts and caches.

@@ -995,12 +995,25 @@ Der zweite betrifft die Ausschlüsse. \type{.git} schliesst Stemma immer aus (AD
 und das Verzeichnis \type{.stemma} steht in der \type{.gitignore}, damit Git es nicht sieht.
 Die Ausschlussdatei \type{.stemmaignore} hält Build-Ausgaben wie \type{target/} aus dem Verlauf.
 
-Der dritte Befund betrifft den Anfang. Das Repository hatte schon ein \type{.stemma} mit
-älteren Einträgen, und \type{init} änderte darin nichts.
-Ein Commit legt sich deshalb auf den vorhandenen Verlauf, und der Verlauf wächst über Sitzungen,
-statt pro Aufgabe neu zu beginnen.
-Dabei hält jeder Befehl, der die Arbeitskopie ändert, einen Snapshot fest (ADR-010),
-also auch Zwischenstände, die Git nie sieht.
+Der dritte Befund betrifft den Anfang. Ein bestehendes \type{.stemma} lässt \type{init}
+unverändert, und ein Commit legt sich auf den vorhandenen Verlauf.
+Geht das Verzeichnis verloren, ist auch der Verlauf weg, und mit ihm der Eintrag, den ein Anker
+in den Notizen eines Releases nennt.
+So ging es nach \type{v0.4.0}: Das Log, dessen Eintrag~13 die Notizen verankern, gibt es nicht
+mehr, der Anker lässt sich nicht mehr prüfen, und der Verlauf beginnt neu.
+
+Der vierte Befund betrifft das Nachführen.
+Eine Datei, die über Git hereinkommt, verfolgt Stemma nicht von selbst, und \type{track .}
+nähme auch Dateien auf, die Git ignoriert.
+Die Arbeitskopie der Wurzel gehört deshalb dem Menschen (ADR-010),
+und nach jedem \type{git pull} auf \type{main} ruft er \type{just stemma-sync} auf.
+Das Rezept verfolgt genau die Dateien, die \type{git ls-files} nennt und die für Stemma
+unverfolgt sind, und committet nur bei einer Änderung, mit dem kurzen Hash und dem Betreff
+des Git-Commits in der Nachricht.
+Im Git-Worktree eines Agenten und mit einem Akteur \type{agent …} verweigert es den Lauf.
+Der Koordinator erinnert nach jeder Welle daran und prüft das Ergebnis nur mit
+\type{op log} und \type{op verify}, die keinen Snapshot machen.
+Das Vorgehen steht in \type{docs/agents/stemma-alongside-git.md}.
 
 Die Erprobung lief zuerst in einer Kopie des Stands \type{main}, ohne Eingriff in Git.
 Erst danach wurde der Basis-Commit im Repository angelegt.
