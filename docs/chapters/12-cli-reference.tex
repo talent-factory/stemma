@@ -3333,9 +3333,13 @@ die Anfrage nicht trägt, bleibt der Eintrag, und \type{pr submit} holt die Übe
 ihrer Einträge: die Öffnung, die Prüfungen eines Heads, die Genehmigungen und die Schliessung.
 Eine Erklärung, die der Hub schon hält, beantwortet er mit den Zeilen, mit denen er sie hält;
 darum ist die Wiederholung sicher, und was ein Klon offline machte, kommt in seiner Reihenfolge
-an. Eine Ablehnung des Hubs ist eine Antwort und hält die nächste Erklärung nicht auf. Der Befehl
-prüft, dass die Antwort die gesendete Erklärung ist und der Schlüssel des Hubs sie signierte, den
-der Klon festhält (ADR-026). \type{submit} und \type{show} schreiben nichts in den Klon.
+an. Eine Ablehnung des Hubs ist eine Antwort und hält die nächste Erklärung nicht auf. Eine
+Eröffnung, deren Pull Request auf dem Hub beendet ist, beantwortet der Hub mit \type{not-open};
+er hält sie, und der Befehl zählt das nicht als Ablehnung. Der Befehl liest zuerst die
+Referenzliste und prüft, dass die Antwort die gesendete Erklärung ist und der Schlüssel des Hubs
+zu ihrer Zeit sie signierte: der festgehaltene oder ein früherer Schlüssel der Liste für den
+Bereich, in den ihre Zeile \type{record} fällt (ADR-026).
+\type{submit} und \type{show} schreiben nichts in den Klon.
 \type{show} zeigt den Pull Request und seine Erklärungen in diesem Klon; mit \type{--remote}
 liest er die Referenzliste und die Erklärungen des Hubs, prüft das Repository und den Schlüssel
 wie \type{fetch} und zeigt zu jeder Erklärung die Zeilen des Hubs. Eine Erklärung, die nur der
@@ -3465,14 +3469,18 @@ nach einem gescheiterten Wechsel schliesst \type{switch main} im Worktree ihn ab
 Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
 Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
 
-Nach einem geschriebenen Eintrag endet eine Übermittlung, die nicht abschliesst, mit Exit-Code 3:
-Der Hub ist nicht erreichbar, besetzt, antwortet nicht im Protokoll, oder sein Schlüssel ist
-nicht der festgehaltene. Die Meldung nennt den Eintrag und \type{stemma pr submit PULL}; den
-Befehl selbst wiederholt man nicht. Lehnt der Hub eine Erklärung ab, endet der Befehl mit
-Exit-Code 1, und der Eintrag gilt im Klon weiter. Ohne Eintrag enden mit Exit-Code 1 ein
+Nach einem geschriebenen Eintrag nennt jede Meldung einer Übermittlung, die nicht abschliesst,
+den Eintrag und \type{stemma pr submit PULL}; den Befehl selbst wiederholt man nicht. Ist der
+Hub nicht erreichbar oder bricht die Antwort ab, endet der Befehl mit Exit-Code 3. Jeder andere
+Fehler behält seinen Exit-Code, denn ein späterer Aufruf scheitert gleich, bis er behoben ist:
+1 für eine fehlende Anmeldung, einen anderen Schlüssel des Hubs oder eine Antwort ausserhalb des
+Protokolls, 6 für einen besetzten Hub. Lehnt der Hub die Erklärung des Befehls ab, endet er mit
+Exit-Code 1; die Ablehnung einer älteren Erklärung desselben Pull Requests steht nur als Zeile
+da. Der Eintrag gilt im Klon in jedem Fall weiter. Ohne Eintrag enden mit Exit-Code 1 ein
 unbekanntes Remote, ein Remote mit einem anderen Repository als dem der Öffnung,
-\type{--offline} ohne \type{--remote} bei \type{open} und ein Name, der keinen oder mehr als
-einen Pull Request nennt. \type{submit} endet mit Exit-Code 1, wenn der Pull Request nur im Klon
+\type{--offline} ohne \type{--remote} bei \type{open}, \type{--remote} oder \type{--offline}
+bei einem Pull Request, der nur im Klon gilt, und ein Name, der keinen oder mehr als einen Pull
+Request nennt. \type{submit} endet mit Exit-Code 1, wenn der Pull Request nur im Klon
 gilt, wenn der Hub eine Erklärung ablehnt oder nicht im Protokoll antwortet, und mit Exit-Code 6
 bei einem besetzten Hub; die Antworten bis dahin stehen auf der Standardausgabe. \type{show}
 endet ebenso, und mit Exit-Code 5 bei einer beschädigten Erklärung.

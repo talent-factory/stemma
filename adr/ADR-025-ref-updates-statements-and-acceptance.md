@@ -804,10 +804,14 @@ Built in STEMMA-312, as a proposal that the review confirms: `Repository::open_p
   of a head of it, the approvals, and the closing, in the order of their entries. `--offline`
   skips the submission; `pr submit` makes it later. A submission is safe to repeat, because the
   hub answers a statement that it holds with its lines, so the clone keeps no record of what it
-  sent. A failure after the entry is exit 3, a refusal of the hub exit 1; the entry stays.
-- **The checks of an answer.** A held statement must be the submitted one and carry the
-  signature of the pinned key. The reading takes the list of references first and accepts the
-  pinned key or a former key that the list names.
+  sent. After the entry, a hub that cannot be reached is exit 3, any other failure keeps its
+  code, and a refusal of the statement of the command is exit 1; the entry stays. An opening
+  that the hub answers with `not-open` is held for a pull request that ended there, and is no
+  refusal for the command.
+- **The checks of an answer.** Both the submission and the reading take the list of references
+  first. A held statement must be the submitted one and carry the signature of the key of the
+  hub at its time: the pinned key, or a former key of the list whose range holds the number of
+  its `record` line or the next one, as the hub accepted it between the two.
 - **The name of a pull request for people.** A pull request is named by its number in the clone
   or by a prefix of at least 8 hexadecimal digits of the hash of its opening; `pr list` shows 12.
   The hash holds in every clone and on the hub, offline as well. The running number of the hub

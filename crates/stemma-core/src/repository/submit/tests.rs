@@ -212,13 +212,18 @@ impl Setup {
 }
 
 fn side(hub: &Repository) -> Side<'_> {
-    let facts = ListFacts::new(repository_id(), keys(), |_| Some(record()));
+    side_with(hub, keys(), hub_key())
+}
+
+/// A side with these keys in its list, which signs with `signer`.
+fn side_with<'a>(hub: &'a Repository, keys: &'static HubKeys, signer: Seeded) -> Side<'a> {
+    let facts = ListFacts::new(repository_id(), keys, |_| Some(record()));
     Side {
         answering: Answering::new(hub, facts),
         held: RefCell::new(Vec::new()),
         refuse: RefCell::new(None),
         fail_after: Cell::new(None),
-        signer: hub_key(),
+        signer,
         submissions: Cell::new(0),
     }
 }
@@ -555,4 +560,139 @@ fn the_authorizer_is_asked_before_anything_is_sent() {
         .unwrap_err();
     assert!(matches!(error, SubmitError::Denied { .. }), "{error}");
     assert_eq!(transport.side().submissions.get(), 0);
+}
+
+#[test]
+fn a_repeated_opening_of_a_pull_request_that_ended_is_no_refusal_that_counts() {
+    let setup = Setup::new();
+    let number = setup.open();
+    let clone = &setup.clone;
+    clone
+        .close_pull(number, &daniel(), None, None, &AllowAll)
+        .unwrap();
+    let hashes: Vec<_> = clone
+        .statements_of_pull(number, None)
+        .unwrap()
+        .iter()
+        .map(Statement::hash)
+        .collect();
+    let side = side(&setup.hub);
+    // The hub answers the opening of a pull request that ended with `not-open`, as
+    // `accept_statement` does for the same opening again.
+    *side.refuse.borrow_mut() = Some(StatementRefusal::NotOpen);
+    let mut transport = MemoryTransport::new(side);
+    let submitted = clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap();
+    assert_eq!(
+        submitted[0].outcome,
+        Outcome::Refused(StatementRefusal::NotOpen)
+    );
+    assert!(!submitted[0].is_refused());
+    assert!(!submitted[1].is_refused());
+    // `not-open` for a closing is a refusal that counts.
+    let closing = Submission {
+        outcome: Outcome::Refused(StatementRefusal::NotOpen),
+        ..submitted[1].clone()
+    };
+    assert!(closing.is_refused());
+}
+
+#[test]
+fn an_answer_longer_than_its_bound_names_the_bound() {
+    let error = SubmitError::TooLarge { bound: 7 };
+    assert!(error.to_string().contains("7 bytes"), "{error}");
+}
+
+#[test]
+fn after_a_rotation_a_statement_held_before_it_counts_with_the_former_key() {
+    let setup = Setup::new();
+    let number = setup.open();
+    let clone = &setup.clone;
+    let hashes: Vec<_> = clone
+        .statements_of_pull(number, None)
+        .unwrap()
+        .iter()
+        .map(Statement::hash)
+        .collect();
+    // The old key holds the opening, at record 1.
+    let old = MemoryTransport::new(side(&setup.hub));
+    let mut old = old;
+    clone
+        .submit_statements(&origin(), &hashes, &mut old, &daniel(), &AllowAll)
+        .unwrap();
+    let held = old.side().held.borrow().clone();
+    // The hub rotates: the new key is current, and the old one signed the record entry 1.
+    let new = other_key();
+    let former = FormerKeys::sign(
+        repository_id(),
+        &new.public(),
+        vec![crate::protocol::FormerKey::try_new(1, 1, hub_key().public()).unwrap()],
+        &new,
+    )
+    .unwrap();
+    let rotated: &'static HubKeys =
+        Box::leak(Box::new(HubKeys::try_new(new.public(), former).unwrap()));
+    let side = side_with(&setup.hub, rotated, other_key());
+    *side.held.borrow_mut() = held;
+    let mut transport = MemoryTransport::new(side);
+    let list = read_ref_list(&mut transport).unwrap();
+    clone
+        .pin_hub_key_again(
+            &origin(),
+            &list,
+            &new.public().fingerprint(),
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap();
+    // The repeated opening comes back with the signature of the old key, which counts for it.
+    let submitted = clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap();
+    assert!(matches!(submitted[0].outcome, Outcome::Held(_)));
+    let read = clone
+        .held_statements(&origin(), &mut transport, &daniel(), &AllowAll)
+        .unwrap();
+    assert_eq!(read.len(), 1);
+}
+
+#[test]
+fn a_former_key_does_not_count_outside_its_range() {
+    let setup = Setup::new();
+    let number = setup.open();
+    let clone = &setup.clone;
+    let hashes: Vec<_> = clone
+        .statements_of_pull(number, None)
+        .unwrap()
+        .iter()
+        .map(Statement::hash)
+        .collect();
+    // The old key signed only the record entries 5 to 6, and the side signs lines of record 1
+    // with it: a stolen former key cannot make held statements of another time.
+    let new = other_key();
+    let former = FormerKeys::sign(
+        repository_id(),
+        &new.public(),
+        vec![crate::protocol::FormerKey::try_new(5, 6, hub_key().public()).unwrap()],
+        &new,
+    )
+    .unwrap();
+    let rotated: &'static HubKeys =
+        Box::leak(Box::new(HubKeys::try_new(new.public(), former).unwrap()));
+    let mut transport = MemoryTransport::new(side_with(&setup.hub, rotated, hub_key()));
+    let list = read_ref_list(&mut transport).unwrap();
+    clone
+        .pin_hub_key_again(
+            &origin(),
+            &list,
+            &new.public().fingerprint(),
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap();
+    let error = clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(matches!(error, SubmitError::WrongHubKey(_)), "{error}");
 }

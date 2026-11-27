@@ -45,8 +45,8 @@ use stemma_core::remote::{RemoteConfig, RemoteName};
 use stemma_core::repository::{Outcome, Repository, Submission, SubmitError};
 use stemma_core::{Actor, AllowAll};
 
-use super::network::{connect, parse_remote_name, with_status, NetworkError};
-use super::review::{pull_error, register_of};
+use super::network::{connect, connect_noting, parse_remote_name, with_status, NetworkError};
+use super::review::{pull_error, pull_kind, register_of};
 use super::{actor, mask_controls, open, short_id, CliError, ACTOR_ENV};
 use crate::op_log::{quote, JSON_SCHEMA};
 
@@ -198,6 +198,12 @@ fn submissions_text(submitted: &[Submission]) -> String {
                     mask_controls(&held.actor().to_string())
                 );
             }
+            Outcome::Refused(_) if !submission.is_refused() => {
+                let _ = writeln!(
+                    text,
+                    "  {kind} {name}: held, and the pull request has ended on the hub (not-open)"
+                );
+            }
             Outcome::Refused(reason) => {
                 let word = refusal_line(&submission.outcome).map_or_else(String::new, |(w, _)| w);
                 let _ = writeln!(text, "  {kind} {name}: refused ({word}): {reason}");
@@ -251,14 +257,22 @@ pub(super) fn hashes_of_pull(
     Ok(statements.iter().map(Statement::hash).collect())
 }
 
-/// Whether the hub refused one of the statements.
+/// Whether the hub refused one of the statements, other than an opening that it holds for a
+/// pull request that ended ([`Submission::is_refused`]).
 fn any_refused(submitted: &[Submission]) -> bool {
-    submitted
-        .iter()
-        .any(|submission| matches!(submission.outcome, Outcome::Refused(_)))
+    submitted.iter().any(Submission::is_refused)
 }
 
-/// Connects to the remote and submits the statements.
+/// Why a submission did not finish: the error to report, and whether the hub could not be
+/// reached or did not answer whole, so that a later call can succeed.
+struct Unfinished {
+    submitted: Vec<Submission>,
+    error: NetworkError,
+    unreachable: bool,
+}
+
+/// Connects to the remote and submits the statements. `note` follows the message of a failure
+/// to connect, as [`connect_noting`] takes it.
 fn send(
     repository: &Repository,
     remote: &RemoteName,
@@ -266,32 +280,37 @@ fn send(
     hashes: &[StatementHash],
     key: Option<&std::path::Path>,
     who: &Actor,
-) -> Result<Vec<Submission>, (Vec<Submission>, NetworkError, bool)> {
-    let mut transport = connect(config, key).map_err(|error| (Vec::new(), error, true))?;
+    note: &str,
+) -> Result<Vec<Submission>, Unfinished> {
+    let mut transport = connect_noting(config, key, note).map_err(|error| Unfinished {
+        submitted: Vec::new(),
+        error,
+        unreachable: false,
+    })?;
     repository
         .submit_statements(remote, hashes, &mut transport, who, &AllowAll)
-        .map_err(|error| {
-            let unreachable = error.is_unreachable();
-            let submitted = error.submitted().to_vec();
-            let kind = submit_kind(&error);
-            (
-                submitted,
-                with_status(error.to_string(), kind, &transport),
-                unreachable,
-            )
+        .map_err(|error| Unfinished {
+            submitted: error.submitted().to_vec(),
+            unreachable: error.is_unreachable(),
+            error: with_status(error.to_string(), submit_kind(&error), &transport),
         })
 }
 
+/// The kind of a failure of a submission: damage of the log, the set, or the configuration of
+/// the remote is exit 5, a held lock exit 6.
 fn submit_kind(error: &SubmitError) -> FailureKind {
     match error {
         SubmitError::Refs(inner) => inner.kind(),
+        SubmitError::Pull(inner) => pull_kind(inner),
+        SubmitError::Remote(inner) => inner.kind(),
+        SubmitError::List(inner) => inner.kind(),
         SubmitError::Statements(_) | SubmitError::Missing(_) => FailureKind::Damaged,
         SubmitError::After { source, .. } => submit_kind(source),
         _ => FailureKind::Other,
     }
 }
 
-/// Where a statement that was just made goes: the remote of its hub, or none if `--offline`
+/// Where a statement that was just made goes: the remote of its hub, and whether `--offline`
 /// keeps it in the clone for now.
 pub(super) struct Destination {
     remote: RemoteName,
@@ -315,7 +334,7 @@ impl Destination {
     }
 
     /// The remote of the hub of `pull`, for `pr approve` and `pr close`, or `None` for a pull
-    /// request of this clone only.
+    /// request of this clone only, which takes neither `--remote` nor `--offline`.
     pub(super) fn of_pull(
         repository: &Repository,
         pull: &PullRequest,
@@ -323,10 +342,10 @@ impl Destination {
         offline: bool,
     ) -> Result<Option<Self>, CliError> {
         let Some(id) = pull.repository() else {
-            if let Some(name) = wanted {
+            if wanted.is_some() || offline {
                 return Err(NetworkError::refused(format!(
                     "pull request {} counts in this clone only: its opening names no \
-                     repository of a hub, so its statements cannot go to `{name}`",
+                     repository of a hub, so its statements go to no hub; nothing is written",
                     pull.number()
                 ))
                 .into());
@@ -347,12 +366,15 @@ impl Destination {
     }
 
     /// Submits `hashes` after `entry` was written, and returns the lines to print after the
-    /// line of the command, and the error to end with if the submission did not finish. `pull`
-    /// is the name that `pr submit` takes to send them later.
+    /// line of the command, and the error to end with if the submission did not finish or the
+    /// hub refused `own`, the statement of the command; the refusal of an older statement is a
+    /// line only. `later` names the call of `pr submit` that sends them later.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn submit_after(
         &self,
         repository: &Repository,
         entry: &Entry,
+        own: StatementHash,
         hashes: &[StatementHash],
         later: &str,
         key: Option<&std::path::Path>,
@@ -361,41 +383,52 @@ impl Destination {
         if self.offline {
             return (
                 format!(
-                    "The statement counts in this clone; `stemma pr submit {later}` sends it to \
-                     `{}`.\n",
+                    "The statement counts in this clone; {later} sends it to `{}`.\n",
                     self.remote
                 ),
                 None,
             );
         }
-        match send(repository, &self.remote, &self.config, hashes, key, who) {
+        let written = format!(
+            "entry {} is written and counts in this clone",
+            entry.number()
+        );
+        match send(repository, &self.remote, &self.config, hashes, key, who, "") {
             Ok(submitted) => {
                 let mut text = format!("Submitted to `{}`:\n", self.remote);
                 text.push_str(&submissions_text(&submitted));
-                let error = any_refused(&submitted).then(|| {
+                let refused = submitted
+                    .iter()
+                    .any(|submission| submission.hash == own && submission.is_refused());
+                let error = refused.then(|| {
                     NetworkError::refused(format!(
-                        "the hub of `{}` refused a statement; entry {} is written and counts \
-                         in this clone",
-                        self.remote,
-                        entry.number()
+                        "the hub of `{}` refused the statement; {written}",
+                        self.remote
                     ))
                     .into()
                 });
                 (text, error)
             }
-            Err((submitted, error, _)) => {
+            Err(unfinished) => {
                 let mut text = String::new();
-                if !submitted.is_empty() {
+                if !unfinished.submitted.is_empty() {
                     text = format!("Submitted to `{}`:\n", self.remote);
-                    text.push_str(&submissions_text(&submitted));
+                    text.push_str(&submissions_text(&unfinished.submitted));
                 }
-                let message = error.message().replace("; nothing was written", "");
-                let error = NetworkError::incomplete(format!(
-                    "entry {} is written and counts in this clone, but the submission to `{}` \
-                     did not finish: {message}; `stemma pr submit {later}` sends it later",
-                    entry.number(),
-                    self.remote
-                ));
+                let remote = &self.remote;
+                let message = |inner: &str| {
+                    format!(
+                        "{written}, but the submission to `{remote}` did not finish: {inner}; \
+                         {later} sends it later"
+                    )
+                };
+                // Only a hub that could not be reached is exit 3; any other failure keeps its
+                // own code, as a repeat would fail the same way until it is fixed.
+                let error = if unfinished.unreachable {
+                    NetworkError::incomplete(message(&unfinished.error.to_string()))
+                } else {
+                    unfinished.error.reworded(message)
+                };
                 (text, Some(error.into()))
             }
         }
@@ -490,10 +523,11 @@ pub(super) fn pr_submit(args: PrSubmitArgs, out: &mut dyn Write) -> Result<(), C
         &hashes,
         args.hub.key.as_deref(),
         &who,
+        "; nothing was written",
     );
     let (submitted, failure) = match result {
         Ok(submitted) => (submitted, None),
-        Err((submitted, error, _)) => (submitted, Some(error)),
+        Err(unfinished) => (unfinished.submitted, Some(unfinished.error)),
     };
     let text = if args.hub.json {
         let items: Vec<String> = submitted.iter().map(submission_json).collect();
@@ -517,7 +551,9 @@ pub(super) fn pr_submit(args: PrSubmitArgs, out: &mut dyn Write) -> Result<(), C
         text
     };
     if let Some(error) = failure {
-        let _ = out.write_all(text.as_bytes());
+        // The error is what the command ends with; a failed write of the answers before it
+        // does not replace it.
+        let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
         return Err(error.into());
     }
     write_out(out, &text)?;

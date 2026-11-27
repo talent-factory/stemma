@@ -1022,6 +1022,17 @@ fn the_statements_of_a_pull_request_of_this_clone_only_go_to_no_hub() {
     );
     assert_eq!(approved.code, 1, "{}", approved.stderr);
     assert_eq!(operations(&copy).len(), before, "nothing is written");
+    let closed = run(
+        &copy,
+        &["pr", "close", "--actor", ACTOR, &number, "--offline"],
+    );
+    assert_eq!(closed.code, 1, "{}", closed.stderr);
+    assert!(
+        closed.stderr.contains("nothing is written"),
+        "{}",
+        closed.stderr
+    );
+    assert_eq!(operations(&copy).len(), before, "nothing is written");
     // `--offline` without a hub, and a name that is no name, are refused before anything.
     let refused = run(
         &copy,

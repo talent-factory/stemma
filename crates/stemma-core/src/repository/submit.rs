@@ -10,11 +10,12 @@
 //! of them the hub holds.
 //!
 //! The answer to a submission is a held statement, whose signature of the hub is checked
-//! against the key that the configuration of the remote pinned (ADR-026), or a typed refusal
-//! ([`StatementRefusal`]). The statements of a hub are read by a range of numbers; the list of
-//! references is read first, so that the repository ID and the key of the hub are checked as a
-//! fetch checks them, and a held statement counts as signed by the hub if its key is the pinned
-//! key or a former key that the list names.
+//! against the keys of the hub that the clone trusts (ADR-026), or a typed refusal
+//! ([`StatementRefusal`]). The statements of a hub are read by a range of numbers. Both calls
+//! read the list of references first, so that the repository ID and the key of the hub are
+//! checked as a fetch checks them, and a held statement counts as signed by the hub if its key
+//! is the key of the hub at its time: the pinned key, or a former key that the list names for
+//! the range of record numbers that its `record` line falls in.
 //!
 //! Nothing here writes into the clone: neither the log nor the set of statements changes. The
 //! lines of the hub are not kept in the clone; the entry `fetch` that brings statements into the
@@ -30,12 +31,12 @@ use crate::evidence::Placed;
 use crate::object::CommitId;
 use crate::oplog::OperationName;
 use crate::protocol::held::{read_held, HeldParseError, HeldStatement, Range, StatementRefusal};
+use crate::protocol::record::HubKeys;
 use crate::protocol::statement::{Body, Statement, StatementHash, StatementKind};
 use crate::protocol::{ErrorMessage, ParseError, RepositoryId};
 use crate::refs::RefError;
 use crate::register::Register;
 use crate::remote::{HubKeyError, RemoteConfig, RemoteError, RemoteName};
-use crate::signature::PublicKey;
 use crate::statements::{SetError, MAX_STATEMENT_LEN};
 use crate::transport::{Answer, Body as AnswerBody, Transport, TransportError};
 use crate::{Actor, Authorizer, Decision};
@@ -79,6 +80,20 @@ pub struct Submission {
     pub kind: StatementKind,
     /// What the hub answered.
     pub outcome: Outcome,
+}
+
+impl Submission {
+    /// Whether the hub refused the statement, other than for an opening whose pull request
+    /// ended on the hub. The hub answers an opening that it holds already with `not-open` once
+    /// its pull request is closed or merged (ADR-025): it holds the opening, so a submission
+    /// that sends the opening again to bring a later statement along has lost nothing.
+    pub fn is_refused(&self) -> bool {
+        match &self.outcome {
+            Outcome::Held(_) => false,
+            Outcome::Refused(StatementRefusal::NotOpen) => self.kind != StatementKind::Opening,
+            Outcome::Refused(_) => true,
+        }
+    }
 }
 
 impl Repository {
@@ -154,10 +169,12 @@ impl Repository {
     /// Submits the statements `hashes` of the set, in this order, to the remote `remote`
     /// through `transport`, and returns the answer of the hub to each. The authorizer is asked
     /// for `submit` with the target `remote <name>`. Every statement must name the repository
-    /// of the remote, which is checked for all of them before the first is sent. A held
-    /// statement must be the submitted one and carry a signature of the key that the
-    /// configuration pinned. A remote whose configuration says `sign-in yes` is signed in on
-    /// `transport` by the caller first.
+    /// of the remote, which is checked for all of them before the first is sent. The list of
+    /// references is read first, for the repository ID and the keys of the hub, as a fetch
+    /// reads it. A held statement must be the submitted one and carry a signature of the key of
+    /// the hub at its time: the pinned key, or a former key that the list names for its range.
+    /// A remote whose configuration says `sign-in yes` is signed in on `transport` by the
+    /// caller first.
     ///
     /// A refusal of the hub is an answer, not an error: the next statement is sent all the
     /// same, so that one refused approval does not keep back a closing.
@@ -171,7 +188,9 @@ impl Repository {
     /// does not give, and [`SubmitError::OtherRepository`] for a statement that names another
     /// repository or none.
     ///
-    /// For a request: [`SubmitError::Transport`], [`SubmitError::Body`],
+    /// For a request: [`SubmitError::List`] for the list of references and
+    /// [`SubmitError::HubKey`] for a list of another repository or with another key,
+    /// [`SubmitError::Transport`], [`SubmitError::Body`],
     /// [`SubmitError::TooLarge`], [`SubmitError::Answer`] for an answer that the reader
     /// refuses, [`SubmitError::Refused`] for an error of the hub other than a refused
     /// statement, [`SubmitError::NotSubmitted`] for a held statement that is not the submitted
@@ -189,7 +208,7 @@ impl Repository {
             .map_err(SubmitError::Refs)?;
         authorize(SUBMIT, remote, actor, authorizer)?;
         let config = self.config_of(remote)?;
-        let pinned = config.pinned_key().map_err(SubmitError::HubKey)?.clone();
+        config.pinned_key().map_err(SubmitError::HubKey)?;
         let set = self.statement_set();
         let mut statements = Vec::with_capacity(hashes.len());
         for hash in hashes {
@@ -207,9 +226,13 @@ impl Repository {
             }
             statements.push(statement);
         }
+        // The list gives the former keys of the hub: a statement that the hub held before it
+        // rotated its key comes back with the signature of the key of that time.
+        let list = read_ref_list(transport).map_err(|error| SubmitError::List(Box::new(error)))?;
+        let keys = config.hub_keys(&list).map_err(SubmitError::HubKey)?;
         let mut submitted = Vec::with_capacity(statements.len());
         for statement in &statements {
-            match submit_one(statement, transport, &pinned) {
+            match submit_one(statement, transport, &keys) {
                 Ok(outcome) => submitted.push(Submission {
                     hash: statement.hash(),
                     kind: statement.kind(),
@@ -232,7 +255,7 @@ impl Repository {
     /// `remote <name>`, as the reading is a fetch that writes nothing. The list of references
     /// is read first: its repository ID must be the one of the configuration and its key the
     /// pinned one, and every held statement must name the repository and carry a signature of
-    /// the pinned key or of a former key that the list names.
+    /// the key of the hub at its time, as for a submission.
     ///
     /// # Errors
     ///
@@ -269,9 +292,7 @@ impl Repository {
             if statement.statement().body().repository() != Some(config.repository) {
                 return Err(SubmitError::NotOfRemote(statement.hash()));
             }
-            let key = statement.hub_key();
-            let known = key == *keys.current() || keys.former().iter().any(|f| *f.key() == key);
-            if !known {
+            if !signed_by_hub(statement, &keys) {
                 return Err(SubmitError::WrongHubKey(statement.hash()));
             }
         }
@@ -309,7 +330,7 @@ fn authorize(
 fn submit_one(
     statement: &Statement,
     transport: &mut dyn Transport,
-    pinned: &PublicKey,
+    keys: &HubKeys,
 ) -> Result<Outcome, SubmitError> {
     let encoded = statement.encode();
     let answer = transport
@@ -322,7 +343,7 @@ fn submit_one(
             if held.statement() != statement {
                 return Err(SubmitError::NotSubmitted(statement.hash()));
             }
-            if held.hub_key() != *pinned {
+            if !signed_by_hub(&held, keys) {
                 return Err(SubmitError::WrongHubKey(statement.hash()));
             }
             Ok(Outcome::Held(Box::new(held)))
@@ -332,6 +353,15 @@ fn submit_one(
             other => Err(SubmitError::Refused(other)),
         },
     }
+}
+
+/// Whether the key of the hub at the time of `held` signed it. The hub accepted the statement
+/// after the record entry of its `record` line and before the next one, so the key is the one
+/// that signed either of the two: a rotation between them leaves both possible. A former key
+/// counts only for its range, as for a record entry ([`HubKeys::at`]).
+fn signed_by_hub(held: &HeldStatement, keys: &HubKeys) -> bool {
+    let key = held.hub_key();
+    key == *keys.at(held.record()) || key == *keys.at(held.record().saturating_add(1))
 }
 
 /// The error that the hub answered.
@@ -347,7 +377,7 @@ fn read_bounded(body: AnswerBody<'_>, bound: u64) -> Result<Vec<u8>, SubmitError
         .read_to_end(&mut bytes)
         .map_err(SubmitError::Body)?;
     if bytes.len() as u64 > bound {
-        return Err(SubmitError::TooLarge);
+        return Err(SubmitError::TooLarge { bound });
     }
     Ok(bytes)
 }
@@ -397,7 +427,10 @@ pub enum SubmitError {
     /// The body of an answer could not be read to its end.
     Body(io::Error),
     /// An answer is longer than its bound.
-    TooLarge,
+    TooLarge {
+        /// The bound, in bytes.
+        bound: u64,
+    },
     /// The answer to a submission, or an error in place of an answer, is not readable.
     Answer(ParseError),
     /// The answer with the held statements is not readable.
@@ -488,7 +521,9 @@ impl fmt::Display for SubmitError {
             Self::List(error) => write!(f, "the list of references: {error}"),
             Self::Transport(error) => error.fmt(f),
             Self::Body(error) => write!(f, "the answer could not be read: {error}"),
-            Self::TooLarge => f.write_str("the answer is longer than its bound"),
+            Self::TooLarge { bound } => {
+                write!(f, "the answer of the hub is longer than {bound} bytes")
+            }
             Self::Answer(error) => write!(f, "the answer of the hub is not readable: {error}"),
             Self::Held(error) => write!(f, "the held statements are not readable: {error}"),
             Self::Refused(message) => write!(f, "the hub refused: {message}"),
@@ -498,7 +533,8 @@ impl fmt::Display for SubmitError {
             ),
             Self::WrongHubKey(hash) => write!(
                 f,
-                "the hub signed statement {hash} with another key than the pinned one"
+                "statement {hash} carries the signature of another key than the one of the hub \
+                 that the clone pinned"
             ),
             Self::NotOfRemote(hash) => write!(
                 f,

@@ -84,10 +84,13 @@ impl NetworkError {
         ExitCode::from(self.code)
     }
 
-    /// The message, for a command that reports the failure as part of another one
-    /// (STEMMA-312).
-    pub(super) fn message(&self) -> &str {
-        &self.message
+    /// The same failure with another message and the same exit code, for a command that
+    /// reports it as part of another one (STEMMA-312).
+    pub(super) fn reworded(self, message: impl FnOnce(&str) -> String) -> Self {
+        Self {
+            message: message(&self.message),
+            code: self.code,
+        }
     }
 }
 
@@ -357,19 +360,29 @@ pub(super) fn connect(
     config: &RemoteConfig,
     key: Option<&Path>,
 ) -> Result<HttpTransport, NetworkError> {
+    connect_noting(config, key, "; nothing was written")
+}
+
+/// [`connect`] with `note` after each message of a failure: what the failure leaves behind. A
+/// command that wrote an entry before it connects says so itself (STEMMA-312).
+pub(super) fn connect_noting(
+    config: &RemoteConfig,
+    key: Option<&Path>,
+    note: &str,
+) -> Result<HttpTransport, NetworkError> {
     let mut transport = HttpTransport::new(config, Timeouts::DEFAULT)
-        .map_err(|error| NetworkError::refused(format!("{error}; nothing was written")))?;
+        .map_err(|error| NetworkError::refused(format!("{error}{note}")))?;
     if config.sign_in {
         let key = key.ok_or_else(|| {
-            NetworkError::refused(
-                "the remote asks for a sign-in: pass `--key KEY_FILE`; nothing was written",
-            )
+            NetworkError::refused(format!(
+                "the remote asks for a sign-in: pass `--key KEY_FILE`{note}"
+            ))
         })?;
         let public = read_public_key(key)?;
         let hub = hub_of(&config.address).ok_or_else(|| {
             NetworkError::refused(format!(
                 "the address `{}` of the remote names no namespace and repository, so the hub \
-                 to sign in to is not known; nothing was written",
+                 to sign in to is not known{note}",
                 config.address
             ))
         })?;
@@ -378,7 +391,7 @@ pub(super) fn connect(
         })?;
         if let Err(error) = sign_in(&mut transport, &called, &public, &SshKeygen::new(key)) {
             return Err(with_status(
-                format!("the sign-in failed: {error}; nothing was written"),
+                format!("the sign-in failed: {error}{note}"),
                 FailureKind::Other,
                 &transport,
             ));
