@@ -15,6 +15,10 @@ ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 # `ureq` (through `ureq-proto`) writes the raw bytes of every request and answer at the level
 # `trace`, among them the `Authorization` header and the token answer of a sign-in.
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_debug"] }
+# The content encoding of the body (ADR-029): the binding to the C library of zstd, without the
+# default features, so that neither the decoder of the legacy formats nor the dictionary builder
+# is built.
+zstd = { version = "0.14.5", default-features = false }
 # The check of the certificates of a CA file, and the TLS of the responder of the tests. The
 # version that `ureq` uses, so the tree gets no new package.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

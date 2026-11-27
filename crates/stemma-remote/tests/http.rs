@@ -56,7 +56,7 @@ fn refs_is_a_get_below_the_address_and_hands_the_message_over() {
         .header("user-agent")
         .is_some_and(|agent| agent.starts_with("stemma/")));
     assert_eq!(request.header("authorization"), None);
-    assert_eq!(request.header("accept-encoding"), None);
+    assert_eq!(request.header("accept-encoding"), Some("zstd"));
 }
 
 #[test]
@@ -487,16 +487,13 @@ fn every_line_and_value_of_content_encoding_is_checked() {
         Action::Respond(response(200, &all, refs))
     };
     let responder = Responder::start(vec![
-        with(&[
-            ("Content-Encoding", "identity"),
-            ("Content-Encoding", "zstd"),
-        ]),
+        with(&[("Content-Encoding", "identity"), ("Content-Encoding", "br")]),
         with(&[("Content-Encoding", "identity, gzip")]),
         with(&[("Transfer-Encoding", "gzip")]),
         with(&[("Content-Encoding", "identity")]),
     ]);
     let mut transport = transport(&responder);
-    assert!(no_answer(transport.refs()).contains("zstd"));
+    assert!(no_answer(transport.refs()).contains("`br`"));
     assert!(no_answer(transport.refs()).contains("gzip"));
     assert!(no_answer(transport.refs()).contains("transfer encoding `gzip`"));
     let (is_message, body) = read_all(transport.refs().unwrap());

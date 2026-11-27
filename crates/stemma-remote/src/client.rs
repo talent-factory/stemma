@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, BufReader, Read};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use stemma_core::protocol::sign_in::{Token, TokenAnswer};
@@ -16,6 +17,7 @@ use ureq::http::{header, HeaderMap, Response, Version};
 use ureq::{Agent, Proxy, ProxyProtocol, SendBody};
 
 use crate::address::{Base, Endpoint, Scheme};
+use crate::encoding::{self, ContentEncoding, ZSTD};
 use crate::status::{names_bearer, Status};
 use crate::tls;
 
@@ -156,6 +158,9 @@ pub struct HttpTransport {
     base: Base,
     token: Option<Token>,
     last_status: Option<Status>,
+    /// Whether the last answer with an HTTP status named zstd in `Accept-Encoding`, so that the
+    /// next upload is compressed (ADR-023).
+    hub_accepts_zstd: bool,
 }
 
 impl fmt::Debug for HttpTransport {
@@ -164,6 +169,7 @@ impl fmt::Debug for HttpTransport {
             .field("base", &self.base)
             .field("holds_token", &self.token.is_some())
             .field("last_status", &self.last_status)
+            .field("hub_accepts_zstd", &self.hub_accepts_zstd)
             .finish_non_exhaustive()
     }
 }
@@ -199,9 +205,8 @@ impl HttpTransport {
             .tls_config(tls)
             .user_agent(USER_AGENT)
             .accept(format!("{MESSAGE_MEDIA_TYPE}, {ERROR_MEDIA_TYPE}"))
-            // No compression yet: the encoder and the decoder of zstd come with their slice
-            // (ADR-029), and a body with a content encoding is no answer here.
-            .accept_encoding(AutoHeaderValue::None)
+            // The decoder of zstd is the client's own (ADR-029); `ureq` passes the body through.
+            .accept_encoding(AutoHeaderValue::Provided(Arc::new(ZSTD.to_owned())))
             .timeout_resolve(Some(timeouts.connect))
             .timeout_connect(Some(timeouts.connect))
             .timeout_per_read(Some(timeouts.idle))
@@ -220,6 +225,7 @@ impl HttpTransport {
             base,
             token: None,
             last_status: None,
+            hub_accepts_zstd: false,
         })
     }
 
@@ -269,14 +275,21 @@ impl HttpTransport {
                 }
             }
             Method::Post(body) => {
+                // The body is compressed only after the hub named zstd in `Accept-Encoding`; the
+                // encoder reads from the body, so an error of the body still counts for this side.
+                let mut encoded;
+                let (body, request) = if self.hub_accepts_zstd {
+                    encoded = encoding::encoder(body).map_err(TransportError::Request)?;
+                    let request = self.agent.post(&url).header(header::CONTENT_ENCODING, ZSTD);
+                    (&mut *encoded, request)
+                } else {
+                    (body, self.agent.post(&url))
+                };
                 let mut tracked = Tracked {
                     inner: body,
                     error: None,
                 };
-                let request = self
-                    .agent
-                    .post(&url)
-                    .header(header::CONTENT_TYPE, MESSAGE_MEDIA_TYPE);
+                let request = request.header(header::CONTENT_TYPE, MESSAGE_MEDIA_TYPE);
                 let request = match &bearer {
                     Some(value) => request.header(header::AUTHORIZATION, value),
                     None => request,
@@ -311,24 +324,19 @@ impl HttpTransport {
             location.as_deref(),
         );
         self.last_status = Some(status.clone());
+        self.hub_accepts_zstd = encoding::accepts_zstd(headers);
         let no_answer = |detail: String| Err(TransportError::NoAnswer { detail });
-        // Every value of every line must be `identity`; a value that is not text is no
-        // `identity` either.
-        if let Some(encoding) = headers
-            .get_all(header::CONTENT_ENCODING)
-            .iter()
-            .map(lossy)
-            .find(|value| {
-                !value
-                    .split(',')
-                    .all(|part| part.trim().eq_ignore_ascii_case("identity"))
-            })
-        {
-            return no_answer(format!(
-                "{status}, with the content encoding `{}`, which the client did not ask for",
-                encoding.escape_debug()
-            ));
-        }
+        // Every value of every line is read; a value that is not text is no encoding the client
+        // reads.
+        let content_encoding = match encoding::content_encoding(headers) {
+            Ok(content_encoding) => content_encoding,
+            Err(encoding) => {
+                return no_answer(format!(
+                    "{status}, with the content encoding `{}`, which the client does not read",
+                    encoding.escape_debug()
+                ))
+            }
+        };
         // `ureq` reads chunks in HTTP/1.1 alone; an HTTP/1.0 answer with the header is read to the
         // close of the connection, so the header counts for nothing there.
         let http11 = response.version() == Version::HTTP_11;
@@ -375,11 +383,16 @@ impl HttpTransport {
                 "{status}, with a body without a length, whose end cannot be told from a cut"
             ));
         }
-        let body = response.into_body();
-        Ok(case(Box::new(BufReader::new(Stream {
-            reader: body.into_reader(),
+        let stream = BufReader::new(Stream {
+            reader: response.into_body().into_reader(),
             failed: None,
-        }))))
+        });
+        Ok(case(match content_encoding {
+            ContentEncoding::Identity => Box::new(stream),
+            ContentEncoding::Zstd => Box::new(BufReader::new(
+                encoding::decoder(stream).map_err(TransportError::Carrier)?,
+            )),
+        }))
     }
 
     /// Sends a request and sorts its answer.

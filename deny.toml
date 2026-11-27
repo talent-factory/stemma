@@ -52,6 +52,22 @@ allow = ["ISC"]
 crate = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
+# zstd for the compression of the body in `stemma-remote` (ADR-029): the binding `zstd` and
+# `zstd-safe` carry BSD-3-Clause, and `zstd-sys`, which builds the C library, carries
+# BSD-3-Clause AND BSD-2-Clause. The exceptions name the crates instead of allowing the licenses
+# for the whole tree.
+[[licenses.exceptions]]
+crate = "zstd"
+allow = ["BSD-3-Clause"]
+
+[[licenses.exceptions]]
+crate = "zstd-safe"
+allow = ["BSD-3-Clause"]
+
+[[licenses.exceptions]]
+crate = "zstd-sys"
+allow = ["BSD-3-Clause", "BSD-2-Clause"]
+
 [licenses.private]
 # The crates of the workspace are not published (`publish = false`), so their own license is not
 # checked.
