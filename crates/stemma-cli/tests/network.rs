@@ -675,6 +675,86 @@ fn a_clone_into_an_existing_repository_is_refused_and_changes_nothing() {
 }
 
 #[test]
+fn a_clone_into_a_directory_that_is_not_empty_is_refused_and_leaves_it_alone() {
+    let hub = Hub::start();
+    let place = Dir::new();
+    write(place.path(), "copy/notes.txt", "mine\n");
+    let result = run(
+        place.path(),
+        &["clone", "--actor", ACTOR, &hub.address, "copy"],
+    );
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("is not an empty directory"),
+        "{}",
+        result.stderr
+    );
+    assert!(!place.path().join("copy/.stemma").exists());
+    let notes = std::fs::read_to_string(place.path().join("copy/notes.txt")).unwrap();
+    assert_eq!(notes, "mine\n");
+    // An empty directory is taken.
+    std::fs::create_dir(place.path().join("empty")).unwrap();
+    ok(
+        place.path(),
+        &["clone", "--actor", ACTOR, &hub.address, "empty"],
+    );
+    assert!(place.path().join("empty/.stemma").exists());
+}
+
+#[test]
+fn a_taken_name_is_refused_before_the_hub_is_asked_for_a_sign_in() {
+    let hub = Hub::start();
+    let local = repository();
+    ok(
+        local.path(),
+        &["remote", "add", "--actor", ACTOR, "origin", &hub.address],
+    );
+    let before = operations(local.path());
+    let result = run(
+        local.path(),
+        &[
+            "remote",
+            "add",
+            "--actor",
+            ACTOR,
+            "--sign-in",
+            "origin",
+            &hub.address,
+        ],
+    );
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("the remote `origin` exists already"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(local.path()), before);
+}
+
+#[test]
+fn a_fetch_from_a_remote_that_asks_for_a_sign_in_needs_a_key() {
+    let hub = Hub::start();
+    let local = repository();
+    ok(
+        local.path(),
+        &["remote", "add", "--actor", ACTOR, "origin", &hub.address],
+    );
+    let config = local.path().join(".stemma/remotes/origin");
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("sign-in no\n"), "{text}");
+    std::fs::write(&config, text.replace("sign-in no\n", "sign-in yes\n")).unwrap();
+    let before = operations(local.path());
+    let result = run(local.path(), &["fetch", "--actor", ACTOR]);
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert!(
+        result.stderr.contains("--key KEY_FILE"),
+        "{}",
+        result.stderr
+    );
+    assert_eq!(operations(local.path()), before);
+}
+
+#[test]
 fn the_json_forms_of_list_remove_and_pin_name_their_fields() {
     let hub = Hub::start();
     let local = repository();

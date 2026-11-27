@@ -465,6 +465,7 @@ impl Classify for RestoreError {
         match self {
             Self::Update(error) => error.kind(),
             Self::Log(error) => error.kind(),
+            Self::Remote(error) => error.kind(),
             Self::Refs(error) => error.kind(),
             Self::Snapshot(error) => error.kind(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
@@ -485,6 +486,7 @@ impl Classify for RestoreError {
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
             | Self::GoneWorktree { .. }
+            | Self::GoneRemote { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => FailureKind::Other,
@@ -667,8 +669,8 @@ impl Classify for crate::repository::FetchError {
             | Self::Refused(_)
             | Self::Unreadable(_)
             | Self::OtherRepository { .. }
-            | Self::HubKey(_)
-            | Self::RemoteChanged(_) => FailureKind::Other,
+            | Self::HubKey(_) => FailureKind::Other,
+            Self::RemoteChanged(_) => FailureKind::Locked,
         }
     }
 }

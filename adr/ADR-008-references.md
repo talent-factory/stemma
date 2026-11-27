@@ -278,8 +278,10 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     remote, its commit and its record entry, and deletes them after it. It moves none: the
     references go with the remote, and a later `remote add` and `fetch` bring them back. A
     fetch reads the configuration once more under the lock and refuses to move anything if it
-    was removed or changed during the transfer (`FetchError::RemoteChanged`), so a removal is
-    not undone by a fetch that ran beside it.
+    was removed or changed during the transfer (`FetchError::RemoteChanged`, code 6), so a
+    removal is not undone by a fetch that ran beside it. Nor by a restore: `op restore` refuses
+    an entry that moved remote references of a remote removed or added again after it
+    (`RestoreError::GoneRemote`), as it refuses one of a worktree removed since.
   - **Which local branch follows** *(proposed by STEMMA-305, confirmed in its review)*. `clone`
     makes the branch `main` at `remotes/<remote>/heads/main` after its fetch, with the files of
     its tree, by the mechanism of `switch -c`; a hub without `main` leaves the branch without a

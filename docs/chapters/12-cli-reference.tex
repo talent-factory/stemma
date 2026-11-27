@@ -3040,7 +3040,9 @@ bewegt sich nie und gehört nicht zum Zustand, den der Befehl zurückbringt (ADR
 bei einem Eintrag, den ein Purge nennt, der noch nicht fertig ist, bei einem Eintrag von
 \type{worktree add} oder \type{worktree remove}, denn das Restore legt kein Verzeichnis an und
 löscht keines, bei einem Eintrag eines Worktrees, der danach entfernt oder unter demselben Namen
-neu angelegt wurde (der Name steht dann für einen anderen Worktree oder für keinen), und bei
+neu angelegt wurde (der Name steht dann für einen anderen Worktree oder für keinen), ebenso bei
+einem Eintrag, der Remote-Referenzen eines Remote bewegte, der danach entfernt oder neu angelegt
+wurde (seine Referenzen gingen mit ihm, und ein \type{fetch} holt, was der Hub hat), und bei
 einem Eintrag, der HEAD oder den Working-Copy-Commit eines anderen Worktrees bewegte (die
 Meldung nennt den Worktree und rät, \type{op restore} dort aufzurufen);
 diese Fälle hebt auch \type{--force} nicht auf. Ein Stub ersetzt eine Änderung, deren
@@ -3778,8 +3780,10 @@ stemma remote add [-C VERZEICHNIS] [--actor AKTEUR] [--expect-key FINGERABDRUCK]
 \startitemize
 \item {\bf NAME:} Der Name des Remote, eine Komponente nach den Regeln eines Branch-Namens
 (Exit-Code 2 sonst).
-\item {\bf ADRESSE:} Die Adresse des Repositorys, \type{https://<Hub>/<Namespace>/<Repository>}.
-Eine Adresse ohne Namespace und Repository ist ein Aufruffehler (Exit-Code 2).
+\item {\bf ADRESSE:} Die Adresse des Repositorys in der Form\crlf
+\type{https://<Hub>/<Namespace>/<Repository>}.
+Eine Adresse ohne Namespace und Repository, oder mit \type{.} oder \type{..} an deren Stelle,
+ist ein Aufruffehler (Exit-Code 2).
 \type{http://} nimmt der Client nur zu \type{127.0.0.1}, \type{::1} und \type{localhost} an
 (ADR-028); sonst endet der Befehl mit Exit-Code 1, bevor er eine Anfrage stellt.
 \item {\bf \type{--expect-key} FINGERABDRUCK:} Der Fingerabdruck, den der Schlüssel des Hubs haben
@@ -3802,7 +3806,8 @@ Standard ist das aktuelle.
 \stopitemize
 
 Der Kern fragt den Autorisierer nach \type{remote-add} mit dem Namen des Remote (Stufe 2,
-ADR-004) und lehnt einen Namen ab, den es schon gibt, bevor er den Hub fragt.
+ADR-004) und lehnt einen Namen ab, den es schon gibt, bevor er den Hub fragt oder sich dort
+anmeldet.
 Dann liest er die Liste der Referenzen, nimmt die Repository-ID daraus und hält den Schlüssel
 des Hubs fest. Unter der Sperre der Referenzen prüft er den Namen noch einmal, schreibt den
 Eintrag \type{remote-add} mit der ganzen Konfiguration und danach die Datei
@@ -3824,7 +3829,9 @@ wurde umbenannt), eine Anmeldung, die scheitert oder ohne \type{--key} ist, und 
 sich nicht lesen lässt. Exit-Code 6: Die Sperre der Referenzen ist gehalten, oder der Hub ist
 beschäftigt (503) oder begrenzt die Anfragen (429); ein späterer Aufruf kann gelingen.
 Exit-Code 3: Der Eintrag steht im Log, aber die Konfiguration liess sich nicht schreiben, oder
-die Ausgabe nicht. Exit-Code 5: Eine Konfiguration eines Remote ist beschädigt.
+die Ausgabe nicht. Eine geschlossene Pipe ist kein Fehler, denn \type{op log} nennt den Eintrag;
+das gilt ebenso für \type{remote remove}, \type{remote pin} und \type{fetch}.
+Exit-Code 5: Eine Konfiguration eines Remote ist beschädigt.
 
 {\bf Wiederholen.} Nach Exit-Code 1 und 6 ist nichts geschrieben. Nach Exit-Code 3 zeigt
 \type{remote list}, ob der Remote da ist; fehlt er, schreibt ein zweiter Aufruf einen zweiten
@@ -3960,8 +3967,9 @@ Commits, eine Zeile mit dem Fingerabdruck wie bei \type{remote add} und eine Zei
 \type{branch} (\type{main} oder \type{null}).
 
 {\bf Fehler.} Exit-Code 1, ohne dass ein Verzeichnis entsteht: ein unerwarteter Schlüssel und
-die Fehler des Hubs wie bei \type{remote add}; ebenso ein Verzeichnis, das schon ein
-\type{.stemma} hat. Exit-Code 6 wie bei \type{remote add}. Exit-Code 3: Das Repository ist
+die Fehler des Hubs wie bei \type{remote add}; ebenso ein Ziel, das es gibt und das kein leeres
+Verzeichnis ist, denn der Klon mischte sich mit dem, was dort liegt. Das prüft der Befehl, bevor er
+den Hub fragt. Exit-Code 6 wie bei \type{remote add}. Exit-Code 3: Das Repository ist
 angelegt, aber der Fetch oder der Branch \type{main} kam nicht zu Ende, oder die Ausgabe liess
 sich nicht schreiben. Das Verzeichnis bleibt;
 ein \type{fetch} dort setzt fort, und die Meldung nennt den Aufruf \type{switch}, der
@@ -4012,13 +4020,14 @@ neuem Commit, \type{new at} für eine neue und \type{deleted} für eine entfernt
 {\bf Fehler.} Exit-Code 1, ohne Eintrag: ein Remote, den es nicht gibt, ein Hub, der einen
 anderen Schlüssel als den festgehaltenen nennt (die Meldung nennt beide Fingerabdrücke und den
 Aufruf \type{remote pin}), eine Konfiguration ohne festgehaltenen Schlüssel (die Meldung nennt
-\type{remote pin}), eine Liste eines anderen Repositorys, ein Remote, der während des Empfangs
-entfernt oder neu festgehalten wurde, ein Strom, der abbricht oder nicht vollständig ist, und die
-Fehler des Hubs wie bei \type{remote add}. Was ganz ankam, bleibt
+\type{remote pin}), eine Liste eines anderen Repositorys, ein Strom, der abbricht oder nicht
+vollständig ist, und die Fehler des Hubs wie bei \type{remote add}. Was ganz ankam, bleibt
 im Speicher und im Journal \type{fetch-pending}, und der nächste \type{fetch} setzt dort fort.
-Exit-Code 6: eine gehaltene Sperre oder ein beschäftigter Hub. Exit-Code 3: Der Eintrag steht im
-Log, und nicht alle Remote-Referenzen bewegten sich, oder das Journal blieb liegen; ein zweiter
-Aufruf beendet es. Exit-Code 5: ein Schaden im Repository.
+Exit-Code 6: eine gehaltene Sperre, ein beschäftigter Hub oder ein Remote, der während des
+Empfangs entfernt oder geändert wurde (etwa neu festgehalten); die Remote-Referenzen bewegen sich
+dann nicht, und ein späterer Aufruf geht von der neuen Konfiguration aus.
+Exit-Code 3: Der Eintrag steht im Log, und nicht alle Remote-Referenzen bewegten sich, oder das
+Journal blieb liegen; ein zweiter Aufruf beendet es. Exit-Code 5: ein Schaden im Repository.
 
 {\bf Wiederholen.} \type{fetch} lässt sich nach Erfolg, Fehler und Absturz wiederholen.
 

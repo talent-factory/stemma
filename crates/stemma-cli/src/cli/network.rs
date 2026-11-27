@@ -36,7 +36,7 @@ use stemma_core::repository::{
     RemoteConfigError, RemoteSetup, Repository, Revision, SwitchTarget,
 };
 use stemma_core::signature::{KeyFingerprint, PublicKey, SshKeygen};
-use stemma_core::transport::{sign_in, SignInError};
+use stemma_core::transport::sign_in;
 use stemma_core::AllowAll;
 use stemma_remote::{HttpTransport, Status, Timeouts};
 
@@ -313,7 +313,13 @@ fn parse_ca_file(text: &str) -> Result<CaFile, String> {
 /// two components after it, the namespace and the repository (ADR-027).
 fn parse_address(text: &str) -> Result<RemoteAddress, String> {
     let address = RemoteAddress::try_new(text).map_err(|error| error.to_string())?;
-    if hub_of(&address).is_none() {
+    // A namespace or repository `.` or `..` names no repository, and the default directory of a
+    // clone would be the current one or its parent.
+    let dots = text
+        .rsplit('/')
+        .take(2)
+        .any(|part| matches!(part, "." | ".."));
+    if hub_of(&address).is_none() || dots {
         return Err(format!(
             "the address `{}` names no namespace and repository: expected \
              `https://<hub>/<namespace>/<repository>`",
@@ -364,7 +370,7 @@ fn connect(config: &RemoteConfig, key: Option<&Path>) -> Result<HttpTransport, N
         if let Err(error) = sign_in(&mut transport, &called, &public, &SshKeygen::new(key)) {
             return Err(with_status(
                 format!("the sign-in failed: {error}; nothing was written"),
-                sign_in_kind(&error),
+                FailureKind::Other,
                 &transport,
             ));
         }
@@ -384,24 +390,28 @@ fn read_public_key(key: &Path) -> Result<PublicKey, NetworkError> {
         })
     };
     let text = read(key)?;
-    if let Ok(public) = PublicKey::from_openssh(text.trim()) {
-        return Ok(public);
-    }
+    let first = match PublicKey::from_openssh(text.trim()) {
+        Ok(public) => return Ok(public),
+        Err(error) => error,
+    };
     // The file holds no public key, so it is the private key, and its public key lies beside it.
     let mut public = key.as_os_str().to_owned();
     public.push(".pub");
     let public = PathBuf::from(public);
-    PublicKey::from_openssh(read(&public)?.trim()).map_err(|error| {
+    let text = std::fs::read_to_string(&public).map_err(|error| {
         NetworkError::refused(format!(
-            "the key file {} holds no public key, and {} is none either: {error}",
+            "the key file {} holds no public key ({first}), and {} cannot be read: {error}",
+            key.display(),
+            public.display()
+        ))
+    })?;
+    PublicKey::from_openssh(text.trim()).map_err(|error| {
+        NetworkError::refused(format!(
+            "the key file {} holds no public key ({first}), and {} is none either: {error}",
             key.display(),
             public.display()
         ))
     })
-}
-
-fn sign_in_kind(_error: &SignInError) -> FailureKind {
-    FailureKind::Other
 }
 
 /// The error of a command that spoke to a hub, with what the status of the last answer adds: a
@@ -455,9 +465,11 @@ fn not_flushed(error: &OpLogError) -> bool {
     matches!(error, OpLogError::NotFlushed { .. })
 }
 
+/// Writes the result of a command. A closed pipe is no failure, also after an entry: `op log`
+/// names the entry of every one of these commands.
 fn write_out(out: &mut dyn Write, text: &str, made: Option<u64>) -> Result<(), CliError> {
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe && made.is_none() => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(error) => Err(match made {
             Some(entry) => NetworkError::incomplete(format!(
                 "entry {entry} is written, but the result could not be written: {error}"
@@ -491,7 +503,8 @@ pub(super) fn remote(command: RemoteCommand, out: &mut dyn Write) -> Result<(), 
 fn remote_config_error(error: RemoteConfigError, remote: &RemoteName) -> NetworkError {
     match &error {
         RemoteConfigError::Written { .. } => NetworkError::incomplete(format!(
-            "{error}; run the command again, which writes a second entry"
+            "{error}; look at `remote list`, and run the command again if it does not show the \
+             change, which writes a second entry"
         )),
         RemoteConfigError::Log(inner) if not_flushed(inner) => NetworkError::incomplete(format!(
             "{error}; look at `op log`, and run the command again if the remote did not change"
@@ -513,6 +526,15 @@ fn remote_config_error(error: RemoteConfigError, remote: &RemoteName) -> Network
 fn remote_add(args: RemoteAddArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let who = actor(args.common.actor)?;
     let repository = open(&args.common.repository)?;
+    // A name that is taken is refused before the hub is contacted or signed in to; the core
+    // checks it again under the lock.
+    let taken = repository
+        .remote(&args.name)
+        .map_err(|error| NetworkError::of_kind(error.to_string(), error.kind()))?;
+    if taken.is_some() {
+        let error = RemoteConfigError::Exists(args.name.clone());
+        return Err(NetworkError::refused(format!("{error}; nothing was written")).into());
+    }
     let setup = args.contact.setup(args.address);
     let mut transport = connect(&setup.provisional(), args.key.key.as_deref())?;
     let added = match repository.add_remote(&args.name, &setup, &mut transport, &who, &AllowAll) {
@@ -808,7 +830,8 @@ pub(super) fn fetch(args: FetchArgs, out: &mut dyn Write) -> Result<(), CliError
 
 // `clone`.
 
-/// The directory that `clone` makes when none is given: the last component of the address.
+/// The directory that `clone` makes when none is given: the last component of the address,
+/// which [`parse_address`] made sure is neither `.` nor `..`.
 fn default_directory(address: &RemoteAddress) -> PathBuf {
     let last = address
         .as_str()
@@ -816,6 +839,29 @@ fn default_directory(address: &RemoteAddress) -> PathBuf {
         .next()
         .expect("split yields one part at least");
     PathBuf::from(last)
+}
+
+/// Refuses a target of `clone` that exists and is not an empty directory: the clone would mix
+/// with what is there, and the switch to `main` would take it into a snapshot.
+fn refuse_used_directory(directory: &Path) -> Result<(), NetworkError> {
+    let used = match std::fs::read_dir(directory) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => true,
+        Err(error) => {
+            return Err(NetworkError::refused(format!(
+                "cannot read the directory `{}`: {error}; nothing was made",
+                directory.display()
+            )))
+        }
+    };
+    if used {
+        return Err(NetworkError::refused(format!(
+            "`{}` exists and is not an empty directory; nothing was made",
+            directory.display()
+        )));
+    }
+    Ok(())
 }
 
 fn clone_error(error: CloneError, transport: &HttpTransport) -> NetworkError {
@@ -838,6 +884,7 @@ pub(super) fn clone(args: CloneArgs, out: &mut dyn Write) -> Result<(), CliError
     let directory = args
         .directory
         .unwrap_or_else(|| default_directory(&args.address));
+    refuse_used_directory(&directory)?;
     let setup = args.contact.setup(args.address);
     let mut transport = connect(&setup.provisional(), args.key.key.as_deref())?;
     let (repository, fetched) = Repository::clone_remote(
@@ -871,14 +918,20 @@ pub(super) fn clone(args: CloneArgs, out: &mut dyn Write) -> Result<(), CliError
     let has_main = repository
         .refs()
         .remote_ref(&upstream)
-        .map_err(|error| NetworkError::incomplete(format!("the clone is made, but {error}")))?
+        .map_err(|error| {
+            made(format!(
+                "its remote reference `{upstream}` cannot be read: {error}; run `switch -c main \
+                 {upstream}` there"
+            ))
+        })?
         .is_some();
     if has_main {
         let target = SwitchTarget::Create {
             name: main.clone(),
             start: Some(Revision::Remote(upstream.clone())),
         };
-        // The new repository has no change to carry; what the switch did is what the output says.
+        // The directory was empty, so the new repository has no change to carry; what the switch
+        // did is what the output says.
         let _switched = repository
             .switch(&target, Changes::Carry, &who, &AllowAll)
             .map_err(|error| {
@@ -978,5 +1031,17 @@ mod tests {
     fn the_default_directory_is_the_last_component_of_the_address() {
         let address = RemoteAddress::try_new("https://hub.example/ns/stemma").unwrap();
         assert_eq!(default_directory(&address), PathBuf::from("stemma"));
+    }
+
+    #[test]
+    fn an_address_whose_namespace_or_repository_is_a_dot_is_refused() {
+        for text in [
+            "https://hub.example/ns/.",
+            "https://hub.example/ns/..",
+            "https://hub.example/../stemma",
+        ] {
+            assert!(parse_address(text).is_err(), "{text}");
+        }
+        assert!(parse_address("https://hub.example/ns/.stemma").is_ok());
     }
 }
