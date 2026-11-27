@@ -5,8 +5,8 @@ confirmed by the author on 2026-10-24 (STEMMA-9). All are implemented in Phase 1
 Pack files, streaming, and the cheaper flush move to a later phase; garbage collection comes with
 the retention of snapshot entries in a later phase (ADR-011). For a bare repository on a hub,
 phase 5 decides the removal of unreachable objects and a directory of its own for an upload
-(STEMMA-270, STEMMA-272; see "Open"). The directory is implemented (STEMMA-289); the removal is
-not yet. The flush of directories on Windows
+(STEMMA-270, STEMMA-272; see "Open"). The directory is implemented (STEMMA-289), and so is the
+removal (STEMMA-292). The flush of directories on Windows
 was decided on 2026-10-24 (STEMMA-84), and the replacement of a damaged object on 2026-10-30
 (STEMMA-85); the other guarantees on Windows stay open.
 
@@ -160,7 +160,8 @@ server will later keep objects elsewhere (API-first). The implementation is
       STEMMA-9). Phase 1
       removes nothing but what a purge removes, so the store only grows.
       For a bare repository the removal is decided for phase 5 (STEMMA-272), as an operation of
-      the core, because the stores are sealed. Its rules: the roots are the current references
+      the core, because the stores are sealed, and implemented in STEMMA-292
+      (`Repository::remove_unreachable_objects`). Its rules: the roots are the current references
       alone (branches and tags), and what they do not reach is removed; the record of ref updates
       is not a root, so a rewritten history can leave a hub (ADR-025); it runs under `refs.lock`,
       reads commits and trees and no blobs, and is started rarely; and it keeps objects that are
@@ -172,6 +173,21 @@ server will later keep objects elsewhere (API-first). The implementation is
       lock spans an upload and its ref update, and a wrong guess costs a second upload. The clock
       serves the age of files only and occurs in no repository. The operation
       treats objects that a computation stored like every unnamed object (ADR-025).
+      The implementation adds three points (STEMMA-292). The last entry of the record is the
+      one exception to the roots: an update whose entry was written and whose references did
+      not move yet is completed by the next accepting call (ADR-025), so the new commits of
+      that entry and its register are kept; the caller passes the record for that reason. The
+      age is the time of modification of the file, and a time after the clock counts as young.
+      An upload that stores an object that the store has already does not touch its file, so
+      an old unnamed object that a new upload names again can still go before its ref update;
+      that costs a repeated upload as well. The operation refuses a repository with a working
+      copy: there the operation log, the working copies, and the remote references are roots
+      too, and that garbage collection stays with the retention of snapshot entries. It reads
+      every reachable commit and tree with the strict readers, and a reachable commit or tree
+      that is missing or unreadable stops it before the first removal, because what it names
+      cannot be told from what is unreachable. The walk costs one read of each reachable
+      commit and tree, the listing one entry per object, and each unreachable object one
+      inspection of its file.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31). A receiving operation, which is the upload on a hub and the
       receiving side of a fetch, runs without the lock, so it writes its temporary files into a

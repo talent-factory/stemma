@@ -1666,3 +1666,6 @@ fn a_policy_that_the_storage_cannot_read_now_is_no_damage() {
     wire.side().time.set(START + LEASE);
     send(&mut wire, &update).unwrap();
 }
+
+// The removal of unreachable objects on a hub (STEMMA-292).
+mod unreachable;

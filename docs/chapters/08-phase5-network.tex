@@ -39,6 +39,7 @@ das Festhalten des Schlüssels des Hubs im Klon,
 der HTTP-Client des Klons,
 die Kompression seines Rumpfs mit zstd,
 die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub,
+das Entfernen unerreichbarer Objekte auf dem Bare-Repository
 und die Befehle \type{remote}, \type{clone} und \type{fetch}.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
@@ -318,8 +319,16 @@ zusammenhängen, und bewegt die Referenz mit Compare-and-Swap.
 
 Der Upload ist idempotent: Er kann wiederholt und an Commit-Grenzen in mehrere Anfragen geteilt
 werden.
-Ein abgelehnter Push hinterlässt unbenannte Objekte auf dem Hub, die er nie ausliefert und später
-entfernt.
+Ein abgelehnter Push hinterlässt unbenannte Objekte auf dem Hub, die er nie ausliefert.
+Von Zeit zu Zeit entfernt der Hub, was kein Branch und kein Tag erreicht (ADR-007).
+Die Aufzeichnung der Ref-Updates hält nichts fest; was ein Rewrite oder das Löschen einer
+Referenz zurücklässt, geht mit.
+Zwischen Upload und Ref-Update hält der Hub keinen Zustand.
+Er schont deshalb jedes Objekt, das jünger ist als eine Frist, die er selbst wählt.
+Kommt das Ref-Update erst nach der Frist und sind die Objekte inzwischen fort, lehnt der Hub es als
+unvollständig ab (\type{Incomplete}).
+Der Klon lädt sie dann noch einmal hoch und sendet das Ref-Update erneut.
+Eine zu kurze Frist kostet also einen zweiten Upload und nie Daten.
 Ist die Remote-Referenz des Klons veraltet, scheitert das Compare-and-Swap (\type{Stale}), und der
 Klon holt zuerst den neuen Stand.
 
