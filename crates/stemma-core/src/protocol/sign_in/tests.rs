@@ -424,7 +424,9 @@ fn other_kinds() -> Vec<PayloadKind> {
         | PayloadKind::OwnerOverride
         | PayloadKind::Challenge
         | PayloadKind::FormerKeys
-        | PayloadKind::HeldStatement => kind,
+        | PayloadKind::HeldStatement
+        | PayloadKind::Anchor
+        | PayloadKind::HeldAnchor => kind,
     };
     vec![
         known(PayloadKind::LogEntry),
@@ -439,6 +441,8 @@ fn other_kinds() -> Vec<PayloadKind> {
         known(PayloadKind::OwnerOverride),
         known(PayloadKind::FormerKeys),
         known(PayloadKind::HeldStatement),
+        known(PayloadKind::Anchor),
+        known(PayloadKind::HeldAnchor),
     ]
 }
 

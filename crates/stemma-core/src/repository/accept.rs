@@ -1087,5 +1087,10 @@ pub use statement::{
     StatementError,
 };
 
+// The anchors of a log (ADR-026, STEMMA-300).
+mod anchor;
+
+pub use anchor::{anchors_in, AnchorDestination, AnchorError};
+
 #[cfg(test)]
 mod tests;
