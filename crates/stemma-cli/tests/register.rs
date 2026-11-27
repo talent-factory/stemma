@@ -206,8 +206,15 @@ fn a_revoked_key_is_written_with_its_position_in_the_log() {
         .count();
     ok(dir.path(), &["register", "revoke", &old, "--actor", ACTOR]);
     let text = fs::read_to_string(dir.path().join(REGISTER)).unwrap();
+    // The bound names the log that wrote it, in version 2 of the file (ADR-026).
+    let log = fs::read_to_string(dir.path().join(".stemma/log-id")).unwrap();
+    let log = log.lines().nth(1).unwrap();
+    assert!(text.starts_with("stemma-register 2\n"), "{text}");
     assert!(
-        text.contains(&format!("key {OWNER_KEY} revoked {}", entries + 1)),
+        text.contains(&format!(
+            "key {OWNER_KEY} revoked {} log {log}\n",
+            entries + 1
+        )),
         "{text}"
     );
     // A second revocation is refused.
