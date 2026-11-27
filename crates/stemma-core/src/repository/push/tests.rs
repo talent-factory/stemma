@@ -34,6 +34,7 @@ use crate::store::ObjectStore;
 use crate::testutil::TempDir;
 use crate::transport::{MemoryTransport, OtherSide, Refusal};
 use crate::{policy, AllowAll};
+use std::io::Read;
 
 const ADDRESS: &str = "https://hub.example";
 const REPOSITORY: &str = "00112233445566778899aabbccddeeff";
@@ -174,7 +175,8 @@ struct Hub {
     time: Cell<i64>,
     /// Every upload request that reached the hub, in its order, also one that failed.
     uploads: RefCell<Vec<Vec<u8>>>,
-    /// The numbers of the upload requests, from 0, that fail as a broken connection does.
+    /// The numbers of the upload requests, from 0, that fail as a broken connection does: the
+    /// hub reports them, and [`After`] turns them into a failure of the carrier.
     broken: RefCell<BTreeSet<usize>>,
     /// How many of the next uploads the hub confirms without storing their objects.
     lose: Cell<u32>,
@@ -186,6 +188,8 @@ struct Hub {
     rogue: Cell<bool>,
     /// A step that runs before the next ref update is accepted: another writer.
     before_update: RefCell<Option<Hook>>,
+    /// Whether the hub fails every anchor.
+    no_anchors: Cell<bool>,
 }
 
 impl Hub {
@@ -207,6 +211,7 @@ impl Hub {
             always_stale: Cell::new(false),
             rogue: Cell::new(false),
             before_update: RefCell::new(None),
+            no_anchors: Cell::new(false),
         }
     }
 
@@ -311,7 +316,7 @@ impl OtherSide for Hub {
         let number = self.uploads.borrow().len();
         self.uploads.borrow_mut().push(bytes.clone());
         if self.broken.borrow().contains(&number) {
-            return Err(Refusal::Failed("the connection broke".to_owned()));
+            return Err(Refusal::Failed(BROKEN.to_owned()));
         }
         if self.lose.get() > 0 {
             self.lose.set(self.lose.get() - 1);
@@ -365,6 +370,9 @@ impl OtherSide for Hub {
     }
 
     fn anchor(&self, anchor: &Anchor) -> Result<HeldAnchor, Refusal> {
+        if self.no_anchors.get() {
+            return Err(Refusal::Failed("the anchors are down".to_owned()));
+        }
         let hub = address();
         let signer = hub_key();
         let mut record = self.record.borrow_mut();
@@ -380,6 +388,95 @@ impl OtherSide for Hub {
 }
 
 type Wire = MemoryTransport<Hub>;
+
+/// What the hub reports for an upload request that [`Hub::broken`] names.
+const BROKEN: &str = "the connection broke";
+
+/// What [`After`] runs after the hub answered a ref update.
+type Step<'a> = Box<dyn FnOnce(&mut Wire) + 'a>;
+
+/// A transport to the hub that runs a step after the hub answered the ref update and before the
+/// clone reads the answer, and that may refuse to carry an upload: what another process of the
+/// clone, or a transport that knows no upload, does.
+struct After<'a> {
+    wire: &'a mut Wire,
+    step: Option<Step<'a>>,
+    carries_upload: bool,
+}
+
+impl<'a> After<'a> {
+    fn new(wire: &'a mut Wire, step: impl FnOnce(&mut Wire) + 'a) -> Self {
+        Self {
+            wire,
+            step: Some(Box::new(step)),
+            carries_upload: true,
+        }
+    }
+}
+
+impl Transport for After<'_> {
+    fn refs(&mut self) -> Result<Answer<'_>, TransportError> {
+        self.wire.refs()
+    }
+
+    fn fetch(&mut self, request: &mut dyn io::Read) -> Result<Answer<'_>, TransportError> {
+        self.wire.fetch(request)
+    }
+
+    fn ref_update(&mut self, request: &mut dyn io::Read) -> Result<Answer<'_>, TransportError> {
+        let read = |mut body: crate::transport::Body<'_>| {
+            let mut bytes = Vec::new();
+            body.read_to_end(&mut bytes).unwrap();
+            bytes
+        };
+        let (message, bytes) = match self.wire.ref_update(request)? {
+            Answer::Message(body) => (true, read(body)),
+            Answer::Error(body) => (false, read(body)),
+        };
+        if let Some(step) = self.step.take() {
+            step(self.wire);
+        }
+        let body: crate::transport::Body<'_> = Box::new(io::Cursor::new(bytes));
+        Ok(if message {
+            Answer::Message(body)
+        } else {
+            Answer::Error(body)
+        })
+    }
+
+    fn challenge(&mut self) -> Result<Answer<'_>, TransportError> {
+        self.wire.challenge()
+    }
+
+    fn answer_challenge(
+        &mut self,
+        request: &mut dyn io::Read,
+    ) -> Result<crate::transport::SignedIn<'_>, TransportError> {
+        self.wire.answer_challenge(request)
+    }
+
+    fn upload(&mut self, request: &mut dyn io::Read) -> Result<Answer<'_>, TransportError> {
+        if self.carries_upload {
+            // A connection that broke is a failure of the carrier, which the transport in
+            // memory has no other way to show.
+            match self.wire.upload(request) {
+                Err(TransportError::NoAnswer { detail }) if detail == BROKEN => Err(
+                    TransportError::Carrier(io::Error::new(io::ErrorKind::ConnectionReset, BROKEN)),
+                ),
+                other => other,
+            }
+        } else {
+            Err(TransportError::Carrier(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this transport does not carry an upload",
+            )))
+        }
+    }
+
+    fn anchor(&mut self, request: &mut dyn io::Read) -> Result<Answer<'_>, TransportError> {
+        self.wire.anchor(request)
+    }
+}
 
 /// A hub without a reference, and a clone of it with the remote `origin`.
 struct Fixture {
@@ -485,11 +582,12 @@ impl Fixture {
         targets: &[PushTarget],
         piece: u64,
     ) -> Result<Option<Pushed>, PushError> {
+        let mut wire = After::new(&mut self.wire, |_: &mut Wire| {});
         self.clone.push_with(
             &origin(),
             &address(),
             targets,
-            &mut self.wire,
+            &mut wire,
             signer,
             &human("daniel"),
             &AllowAll,
@@ -1274,8 +1372,226 @@ fn a_merge_whose_receipt_was_not_recorded_is_recorded_by_the_next_call() {
     let merged = m.merge().unwrap();
 
     assert!(merged.repaired);
-    assert!(merged.pushed.is_none());
     assert_eq!(m.f.hub().updates.get(), updates);
     assert_eq!(m.f.remote("heads/main").unwrap().commit, landed);
+    // The local `main` followed the hub with an entry of the gate, and no anchor was sent.
+    assert_eq!(m.f.local("main"), Some(landed));
+    let moved = merged.pushed.unwrap();
+    assert_eq!(
+        moved.change().unwrap().branches(),
+        [(branch("main"), Moved::from_to(Some(m.root), Some(landed)))]
+    );
+    assert!(merged.anchor.is_none());
     assert_eq!(m.pr_merges(), 1);
+}
+
+#[test]
+fn a_local_main_beside_the_hub_is_refused_before_anything_is_sent() {
+    let mut m = Merging::new();
+    m.approve(true);
+    let register = register_of().encode();
+    let files = m.f.files_with(&register, &[("src/local.rs", "local\n")]);
+    let local = m.f.commit("daniel", &files, vec![m.root]);
+    m.f.set("main", local);
+    let updates = m.f.hub().updates.get();
+
+    let error = m.merge().unwrap_err();
+
+    assert!(
+        matches!(error, RemoteMergeError::Diverged { local: l, tip } if l == local && tip == m.root),
+        "{error:?}"
+    );
+    assert_eq!(m.f.hub().updates.get(), updates);
+    assert_eq!(m.f.local("main"), Some(local));
+}
+
+#[test]
+fn a_remote_reference_that_a_fetch_moved_after_the_receipt_keeps_its_state() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    f.push("heads/main", root).unwrap().unwrap();
+    let commits = line(&f, root, 1);
+    let clone = &f.clone;
+    let mut after = After::new(&mut f.wire, |wire: &mut Wire| {
+        clone
+            .fetch(&origin(), wire, &human("daniel"), &AllowAll)
+            .unwrap();
+    });
+
+    let target = PushTarget::new(name("heads/work"), Some(commits[0]));
+    let pushed = clone
+        .push_with(
+            &origin(),
+            &address(),
+            &[target],
+            &mut after,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+            PIECE_BYTES,
+        )
+        .unwrap()
+        .unwrap();
+    drop(after);
+
+    // The fetch brought the state of the receipt already: no entry `push` moves it again.
+    assert!(pushed.entry.is_none());
+    assert_eq!(
+        f.remote("heads/work"),
+        Some(RemoteRef {
+            commit: commits[0],
+            entry: pushed.receipt.hash()
+        })
+    );
+}
+
+#[test]
+fn a_merge_moves_the_local_main_even_when_a_fetch_moved_its_remote_reference() {
+    let mut m = Merging::new();
+    m.approve(true);
+    let mode = Mode::Enforcing(register_of());
+    let clone = &m.f.clone;
+    let mut after = After::new(&mut m.f.wire, |wire: &mut Wire| {
+        clone
+            .fetch(&origin(), wire, &human("daniel"), &AllowAll)
+            .unwrap();
+    });
+
+    let merged = clone
+        .merge_gate_remote(
+            m.number,
+            &mode,
+            &origin(),
+            &address(),
+            &mut after,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+        )
+        .unwrap();
+    drop(after);
+
+    assert_eq!(m.f.local("main"), Some(merged.commit));
+    assert_eq!(m.f.remote("heads/main").unwrap().commit, merged.commit);
+    let pushed = merged.pushed.unwrap();
+    let change = pushed.change().unwrap();
+    assert!(change.remotes().is_empty());
+    assert_eq!(
+        change.branches(),
+        [(
+            branch("main"),
+            Moved::from_to(Some(m.root), Some(merged.commit))
+        )]
+    );
+    assert_eq!(m.pr_merges(), 1);
+}
+
+#[test]
+fn a_push_that_the_clone_cannot_record_carries_the_receipt() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    let config = f.clone.metadata_dir().join("remotes").join("origin");
+    // The remote is changed while the hub accepts: as a `remote pin` beside the push does.
+    let mut after = After::new(&mut f.wire, |_: &mut Wire| {
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, text.replace("sign-in no", "sign-in yes")).unwrap();
+    });
+
+    let target = PushTarget::new(name("heads/main"), Some(root));
+    let error = f
+        .clone
+        .push_with(
+            &origin(),
+            &address(),
+            &[target],
+            &mut after,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+            PIECE_BYTES,
+        )
+        .unwrap_err();
+    drop(after);
+
+    let PushError::Unrecorded { receipt, source } = &error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        matches!(**source, PushError::RemoteChanged(_)),
+        "{source:?}"
+    );
+    assert_eq!(
+        error.receipt().map(RecordEntry::number),
+        Some(receipt.number())
+    );
+    assert_eq!(f.hub().branch("main"), Some(root));
+    assert_eq!(f.remote("heads/main"), None);
+    assert!(f.push_entries().is_empty());
+    // A fetch brings the remote reference along.
+    f.clone
+        .fetch(&origin(), &mut f.wire, &human("daniel"), &AllowAll)
+        .unwrap();
+    assert_eq!(f.remote("heads/main").unwrap().commit, root);
+}
+
+#[test]
+fn a_transport_without_an_upload_fails_at_once_and_an_anchor_failure_leaves_the_push() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    let mut after = After::new(&mut f.wire, |_: &mut Wire| {});
+    after.carries_upload = false;
+    let target = PushTarget::new(name("heads/main"), Some(root));
+    let error = f
+        .clone
+        .push_with(
+            &origin(),
+            &address(),
+            std::slice::from_ref(&target),
+            &mut after,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+            PIECE_BYTES,
+        )
+        .unwrap_err();
+    drop(after);
+    // One attempt, and no advice to push again.
+    assert!(
+        matches!(error, PushError::Upload { confirmed: 0, .. }),
+        "{error:?}"
+    );
+    assert!(!error.to_string().contains("push again"), "{error}");
+    assert_eq!(f.hub().updates.get(), 0);
+
+    f.hub().no_anchors.set(true);
+    let pushed = f.push("heads/main", root).unwrap().unwrap();
+    assert!(pushed.entry.is_some());
+    assert!(
+        matches!(pushed.anchor, Err(AnchorFailure::Transport(_))),
+        "{:?}",
+        pushed.anchor
+    );
+    assert_eq!(f.remote("heads/main").unwrap().commit, root);
+}
+
+#[test]
+fn a_push_deletes_a_reference_on_the_hub_and_its_remote_reference() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    f.push("heads/main", root).unwrap().unwrap();
+    f.push("heads/feature", root).unwrap().unwrap();
+
+    let target = PushTarget::new(name("heads/feature"), None);
+    let pushed = f
+        .push_by(&daniel(), &[target], PIECE_BYTES)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(f.hub().branch("feature"), None);
+    assert_eq!(f.remote("heads/feature"), None);
+    let change = pushed.entry.unwrap();
+    let [(_, moved)] = change.change().unwrap().remotes() else {
+        panic!("one remote reference");
+    };
+    assert_eq!(moved.after(), None);
 }

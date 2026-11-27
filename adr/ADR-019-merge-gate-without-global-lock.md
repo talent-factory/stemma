@@ -331,9 +331,13 @@ first, the third and the last are (STEMMA-303), and the swap across the network 
   the lock, one entry `push` moves the local `main` and its remote reference to `M`, and then
   `pr-merge` follows (ADR-011). `Stale` starts the next attempt with a new fetch and a new
   signature, at most `MAX_ATTEMPTS` times, the cap of the local loop. A refusal of the hub
-  leaves `M` unnamed, as the failed attempts of the local gate leave their objects. A change
-  that the hub holds already is recorded as merged without a move, the repair path across the
-  network. The local `main` therefore never names an `M` that the hub did not accept.
+  leaves `M` unnamed, as the failed attempts of the local gate leave their objects. The local
+  `main` moves only if it still has the value that it had when the attempt began, and a local
+  `main` with commits that the hub does not hold is refused before anything is sent
+  (`RemoteMergeError::Diverged`). A change that the hub holds already is recorded as merged
+  without an update, and the local `main` moves to the tip of the hub with an entry
+  `gate-merge`: the repair path across the network. The local `main` therefore never names an
+  `M` that the hub did not accept.
 - The write owner of an unprotected branch may push a move that is no fast-forward, and the
   record of the hub says so, which is the way of this ADR for a rebase.
 - The accepting operation takes `refs.lock` itself in the middle, as the gate does. Pure

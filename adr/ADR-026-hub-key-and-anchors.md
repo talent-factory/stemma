@@ -210,7 +210,8 @@ How it is built (STEMMA-300):
   kept number only grows. Where it keeps it is decided in ADR-009: `anchors/<remote>`.
 - **Sent after a push** *(STEMMA-309)*: `Transport::anchor` carries the anchor, and
   `Repository::push` builds it after its entry, sends it, and keeps the confirmation; a merge
-  with a remote does the same after `pr-merge`. A failure there is named in the result of the
+  with a remote does the same after `pr-merge`, and its repair, which sends no update, sends
+  none. A failure there is named in the result of the
   push (`AnchorFailure`), which has happened all the same. The commands come with their slices.
 
 ### A contradicting anchor is recorded and blocks nothing

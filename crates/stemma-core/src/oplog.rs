@@ -61,8 +61,9 @@
 //! `receipt <number> <hash>`, after the remote references that it moved: the number and the hash
 //! of the record entry that the hub answered. A push names the remote references that it moved,
 //! and in a repository whose `main` follows a remote the merge of a pull request names the local
-//! branch `main` beside them (or alone, if a fetch brought the remote reference along already). Only a `push` entry has the line, and every one has it. It came with version
-//! 21 of the repository format.
+//! branch `main` beside them (or alone, if a fetch brought the remote reference along already).
+//! Only a `push` entry has the line, and every one has it. It came with version 21 of the
+//! repository format.
 //!
 //! # Stubs and purges (version 2)
 //!

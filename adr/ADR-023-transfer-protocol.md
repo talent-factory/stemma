@@ -105,11 +105,14 @@ resumption), and the core needs no quarantine area.
 with the commits of the remote references of the remote as `have`. It is cut into pieces of
 about 64 MiB of bodies (`PIECE_BYTES`) at commit boundaries, each a stream of its own with its
 first line, and an object goes once across the pieces. A piece whose request fails on the
-carrier is sent again, at most three times (`PIECE_ATTEMPTS`); a piece that was confirmed is not
-sent again within the push. A push that stops keeps no journal: the next push computes the same
-upload from the remote references, which did not move, and the hub stores what it has already
-once more, as the request is idempotent. A refusal of the ref update with an `incomplete`
-reference (422) uploads once more and sends the same update again, once.
+carrier is sent again, in at most three attempts in all (`PIECE_ATTEMPTS`); within one pass a
+piece that was confirmed is not sent again. A failure that no repeat mends (a request that the
+transport does not carry, no answer of the protocol) ends the push at once. A push that stops
+keeps no journal: the next push computes the same upload from the remote references, which did
+not move, and the hub stores what it has already once more, as the request is idempotent. A
+refusal of the ref update with an `incomplete` reference (422) uploads once more, this time
+without `have` lines, so that what the hub lost below a remote reference arrives as well, and
+sends the same update again, once.
 
 Rejected: a question to the hub before sending (it can be added as an optional request later), a
 negotiation of common commits, one request with objects and ref update (a quarantine area in the

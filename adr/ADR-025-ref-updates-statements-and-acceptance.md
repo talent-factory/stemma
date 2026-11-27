@@ -822,8 +822,11 @@ surface comes with its slices.
   the local `main` and the remote reference of `main` to `M`, and then `pr-merge` is written.
   `Stale` starts the loop again with a new fetch and a new signature, at most `MAX_ATTEMPTS`
   times (`RemoteMergeError::Contended`); a refusal of the hub leaves `M` unnamed and nothing to
-  take back. A change that the hub holds already, after a call that stopped after its receipt,
-  is recorded as merged without a move. The clone judges by its own statements, so the opening,
+  take back. The local `main` moves only from the value that it had when the attempt began, and
+  one with commits that the hub does not hold is refused before anything is sent. A change that
+  the hub holds already, after a call that stopped after its receipt or lost the answer, is
+  recorded as merged without an update, and the local `main` follows the hub with an entry
+  `gate-merge`. The clone judges by its own statements, so the opening,
   the approvals and the results must be on the hub as well; binding the statements of a clone
   to the ID of the repository of a hub belongs to the commands of a pull request with a remote
   (see the open items).

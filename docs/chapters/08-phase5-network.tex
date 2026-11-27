@@ -333,14 +333,17 @@ der nichts bewegt, sendet nichts.
 Den Upload teilt er an Commit-Grenzen in Stücke von etwa 64~MiB, jedes ein eigener Strom, und ein
 Objekt geht über alle Stücke nur einmal.
 Scheitert die Anfrage eines Stücks an der Verbindung, sendet er dieses Stück erneut,
-in höchstens drei Versuchen; ein bestätigtes Stück sendet er nicht wieder.
+in höchstens drei Versuchen; innerhalb eines Durchgangs sendet er ein bestätigtes Stück nicht
+wieder.
+Ein Fehler, den keine Wiederholung behebt, beendet den Push sofort.
 Ohne neue Objekte entfällt der Upload.
 
 Die Quittung muss das gesendete Update Byte für Byte enthalten und mit dem festgehaltenen
 Schlüssel des Hubs signiert sein (\in{Abschnitt}[sec:anchor-confirm]); sonst bewegt sich im Klon
 nichts.
 Lehnt der Hub ab, weil die Objekte eines neuen Commits nicht zusammenhängen (422), lädt der Klon
-einmal neu hoch und sendet dasselbe Update noch einmal.
+einmal neu hoch, diesmal alles, was die neuen Commits erreichen, und sendet dasselbe Update
+noch einmal.
 Bei \type{Stale} bewegt er nichts und nennt den Stand jeder veralteten Referenz auf dem Hub.
 Erst nach der Quittung schreibt er unter der Sperre einen Eintrag \type{push} mit den
 Remote-Referenzen und der Nummer und dem Hash der Quittung, und erst dann bewegen sie sich, auf
@@ -1220,9 +1223,12 @@ Push.
 Erst nach der Quittung bewegt ein Eintrag \type{push} das lokale \type{main} und seine
 Remote-Referenz auf $M$, danach folgt \type{pr-merge}.
 Das lokale \type{main} nennt so nie ein $M$, das der Hub nicht angenommen hat.
+Es bewegt sich nur, wenn es noch den Wert vom Beginn des Versuchs hat, und ein lokales
+\type{main} mit Commits, die der Hub nicht kennt, lehnt der Kern ab, bevor er etwas sendet.
 Nach \type{Stale} beginnt der nächste Versuch, höchstens achtmal.
-Hält der Hub die Änderung schon, weil ein früherer Aufruf nach der Quittung stehen blieb,
-schreibt der Kern nur \type{pr-merge}.
+Hält der Hub die Änderung schon, weil ein früherer Aufruf nach der Quittung stehen blieb oder
+die Antwort verlor, holt der Kern das lokale \type{main} mit einem Eintrag \type{gate-merge} auf
+die Spitze des Hubs und schreibt \type{pr-merge}; einen Anker sendet er dann nicht.
 Der Klon urteilt mit seinen eigenen Erklärungen; Eröffnung, Freigaben und Ergebnisse müssen also
 auch auf dem Hub liegen.
 Ohne Verbindung bleiben Commits, Branches, das Eröffnen eines Pull Requests, Freigaben und

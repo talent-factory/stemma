@@ -11,8 +11,9 @@
 //! The trait has one method per request of the protocol (ADR-023). This version has the list of
 //! references, the fetch, the two requests of the sign-in (ADR-024), the upload, the ref update,
 //! which is answered with its receipt ([`record`](crate::protocol::record), ADR-025), and the
-//! anchor of a log (ADR-026); the slices that add a request add its method. The sign-in is the one place where a transport reads a message: the
-//! token answer holds the token, which stays inside the transport
+//! anchor of a log (ADR-026); the slices that add a request add its method. The sign-in is the
+//! one place where a transport reads a message: the token answer holds the token, which stays
+//! inside the transport
 //! ([`Transport::answer_challenge`]). The procedure of the client is [`sign_in`]. The upload of
 //! the objects that a ref update names and the sending of an anchor came with the slice of
 //! `push` (STEMMA-309). The submission of a

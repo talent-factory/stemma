@@ -803,11 +803,13 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     number and hash of the receipt (ADR-008). `pr-merge` is written after the receipt as well,
     in a repository whose `main` follows a remote. Pinning the key of a hub again writes an
     entry (ADR-026). *Built in STEMMA-309*: the entry `push` is a change of the operation `push`
-    with its remote references (old and new state, commit and record entry) and, as its last
-    line, `receipt <number> <hash>`, the number and the hash of the record entry that the hub
-    answered. Only a `push` entry has the line, and every one has it. The merge of a pull request in a repository whose `main` follows a remote
-    writes one `push` entry that moves the local `main` with the remote reference of `main`,
-    then `pr-merge`, both under the lock and both after the receipt. A restore of a `push`
+    with the remote references that it moved (old and new state, commit and record entry) and,
+    as its last line, `receipt <number> <hash>`, the number and the hash of the record entry
+    that the hub answered. Only a `push` entry has the line, and every one has it. The merge of
+    a pull request in a repository whose `main` follows a remote writes one `push` entry that
+    moves the local `main` with the remote reference of `main`, then `pr-merge`, both under the
+    lock and both after the receipt; if a fetch brought the remote reference along in between,
+    the entry names the local `main` alone. A restore of a `push`
     entry is a restore as of a `fetch`: it moves the pointers back and names no receipt. An
     older program refuses the line as damage, so the repository format rises to 21 with the
     entry (ADR-009).

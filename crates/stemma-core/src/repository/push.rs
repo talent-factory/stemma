@@ -12,15 +12,17 @@
 //! 3. The upload: everything that the new commits reach and the commits of the remote references
 //!    of the remote do not, in the order of the format, cut into pieces of about
 //!    [`PIECE_BYTES`] at commit boundaries ([`Repository::upload_of`]). A piece whose request
-//!    fails on the carrier is sent again, up to [`PIECE_ATTEMPTS`] times, so an interrupted
-//!    upload goes on at the first piece that was not confirmed; a piece that the other side
-//!    confirmed is never sent again. A push without new objects sends no upload.
+//!    fails on the carrier is sent again, in at most [`PIECE_ATTEMPTS`] attempts in all, so an
+//!    interrupted upload goes on at the first piece that was not confirmed; within one pass a
+//!    confirmed piece is not sent again. Any other failure of the request ends the push at
+//!    once. A push without new objects sends no upload.
 //! 4. The payload is signed by the actor and sent. The receipt must hold the update as it was
 //!    sent and be signed by the pinned key of the hub ([`RecordEntry::check_receipt`]). A
 //!    refusal because the objects of a new commit do not hold together
-//!    ([`Refused::wants_upload`], status 422) uploads once more and sends the same update
-//!    again, once. A stale update ([`ErrorMessage::Stale`]) moves nothing and is reported with
-//!    the state of each stale reference on the hub; the push does not repeat on its own, as only
+//!    ([`Refused::wants_upload`], status 422) uploads once more, this time everything that the
+//!    new commits reach, and sends the same update again, once. A stale update
+//!    ([`ErrorMessage::Stale`]) moves nothing and is reported with the state of each stale
+//!    reference on the hub; the push does not repeat on its own, as only
 //!    a fetch moves a remote reference to a state that this side has not seen (ADR-008).
 //! 5. Under the lock of the references, after the receipt, one entry `push` is written with the
 //!    remote references that move to the state of the receipt (the commit and the hash of the
@@ -136,22 +138,22 @@ pub struct Pushed {
 }
 
 /// A ref update that the hub accepted, before anything moved in the clone.
-pub(super) struct Accepted {
-    pub(super) receipt: RecordEntry,
-    pub(super) uploaded: Uploaded,
+struct Accepted {
+    receipt: RecordEntry,
+    uploaded: Uploaded,
 }
 
 impl Repository {
     /// Pushes `targets` to the remote `remote` through `transport` (ADR-023, ADR-025): uploads
     /// what the new commits reach and the remote references do not, signs the ref update with
     /// `signer` for the hub `hub`, sends it, checks the receipt against the pinned key, and then
-    /// moves the remote references with one entry `push` and sends the anchor of the log (ADR-023,
-    /// ADR-025, ADR-026). The upload goes in pieces of [`PIECE_BYTES`] at commit boundaries, a
-    /// piece is sent again after a failure of the carrier, and a refusal for want of objects
-    /// uploads once more. A remote that asks
-    /// for a sign-in is signed in on `transport` by the caller first. A target whose remote
-    /// reference has its new value already is left out, and a push of nothing sends nothing and
-    /// returns `None`; a remote reference that is behind the hub is found by the hub as stale.
+    /// moves the remote references with one entry `push` and sends the anchor of the log
+    /// (ADR-023, ADR-025, ADR-026). The upload goes in pieces of [`PIECE_BYTES`] at commit
+    /// boundaries, a piece is sent again after a failure of the carrier, and a refusal for want
+    /// of objects uploads once more. A remote that asks for a sign-in is signed in on
+    /// `transport` by the caller first. A target whose remote reference has its new value
+    /// already is left out, and a push of nothing sends nothing and returns `None`; a remote
+    /// reference that is behind the hub is found by the hub as stale.
     ///
     /// # Errors
     ///
@@ -163,8 +165,9 @@ impl Repository {
     ///
     /// Before the receipt, with nothing moved in the clone: [`PushError::Objects`] if the store
     /// cannot give an object of the upload, [`PushError::Upload`] if a piece failed on the
-    /// carrier [`PIECE_ATTEMPTS`] times, [`PushError::Sign`], [`PushError::Transport`] for the
-    /// ref update (whether the hub accepted it is not known then; a fetch says it),
+    /// carrier in [`PIECE_ATTEMPTS`] attempts or its request failed otherwise,
+    /// [`PushError::Sign`], [`PushError::Transport`] for the ref update (whether the hub
+    /// accepted it is not known then; a fetch says it),
     /// [`PushError::Answer`] for an answer that cannot be read, [`PushError::Refused`] for an
     /// error of the hub, [`PushError::Stale`] for a stale update, and [`PushError::Receipt`]
     /// for a receipt that is not the one of the update or not signed by the pinned key.
@@ -239,7 +242,18 @@ impl Repository {
         if moves.is_empty() {
             return Ok(None);
         }
-        let accepted = self.send_update(remote, &config, hub, moves, transport, signer, piece)?;
+        let mut uploaded = Uploaded::default();
+        let receipt = self.send_update(
+            remote,
+            &config,
+            hub,
+            moves,
+            transport,
+            signer,
+            piece,
+            &mut uploaded,
+        )?;
+        let accepted = Accepted { receipt, uploaded };
         let unrecorded = |source: PushError| PushError::Unrecorded {
             receipt: Box::new(accepted.receipt.clone()),
             source: Box::new(source),
@@ -273,7 +287,8 @@ impl Repository {
 
     /// Steps 3 and 4 of a push: uploads what the new commits of `moves` reach, signs and sends
     /// the update, uploads once more after a refusal for want of objects, and checks the
-    /// receipt. Nothing moves in the clone.
+    /// receipt. Nothing moves in the clone. What the uploads carried is added to `uploaded`,
+    /// also when the call fails.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn send_update(
         &self,
@@ -284,12 +299,12 @@ impl Repository {
         transport: &mut dyn Transport,
         signer: &dyn Signer,
         piece: u64,
-    ) -> Result<Accepted, PushError> {
+        uploaded: &mut Uploaded,
+    ) -> Result<RecordEntry, PushError> {
         let pinned = config.pinned_key().map_err(PushError::HubKey)?.clone();
         let tips: BTreeSet<CommitId> = moves.iter().filter_map(Move::new_commit).collect();
         let had = self.remote_commits(remote)?;
-        let mut uploaded = Uploaded::default();
-        self.upload(&tips, &had, transport, piece, &mut uploaded)?;
+        self.upload(&tips, &had, transport, piece, uploaded)?;
         let key = signer
             .public_key()
             .map_err(|error| PushError::Sign(SealError::Sign(error)))?;
@@ -300,14 +315,16 @@ impl Repository {
         let mut again = true;
         loop {
             match send(transport, &update, &pinned) {
-                Ok(receipt) => return Ok(Accepted { receipt, uploaded }),
+                Ok(receipt) => return Ok(receipt),
                 Err(PushError::Refused(ErrorMessage::Refused(refused)))
                     if again && refused.wants_upload() =>
                 {
-                    // The hub misses objects of a new commit (ADR-023): a purge on either side
-                    // or an upload that the hub lost. The same update is sent once more.
+                    // The hub misses objects of a new commit (ADR-023): a purge on either side,
+                    // or an upload that the hub lost. The second pass names no `have`, so it
+                    // also brings what the hub lost below a remote reference; the same update
+                    // is sent once more.
                     again = false;
-                    self.upload(&tips, &had, transport, piece, &mut uploaded)?;
+                    self.upload(&tips, &BTreeSet::new(), transport, piece, uploaded)?;
                 }
                 Err(error) => return Err(error),
             }
@@ -328,7 +345,9 @@ impl Repository {
     }
 
     /// One pass over the upload: every piece in its order, each sent again on a failure of the
-    /// carrier up to [`PIECE_ATTEMPTS`] times.
+    /// carrier, in at most [`PIECE_ATTEMPTS`] attempts in all. A failure that no repeat mends
+    /// (a request that cannot be read, a request that the transport does not carry, no answer
+    /// of the protocol) ends the pass at once.
     fn upload(
         &self,
         tips: &BTreeSet<CommitId>,
@@ -353,7 +372,7 @@ impl Repository {
                             other => PushError::Answer(Box::new(other)),
                         })
                     }
-                    Err(source) if attempt >= PIECE_ATTEMPTS => {
+                    Err(source) if attempt >= PIECE_ATTEMPTS || !transient(&source) => {
                         return Err(PushError::Upload {
                             confirmed: uploaded.pieces,
                             source,
@@ -374,17 +393,19 @@ impl Repository {
     }
 
     /// Step 5 of a push, under the lock: the configuration is read again, the remote references
-    /// of the receipt move to its state, and `branch`, the local `main` of a merge, moves to
-    /// its new commit, after one entry `push`. A remote reference that is no longer in the state
-    /// that the update was signed against is left as it is: a fetch moved it to a later state
-    /// of the hub. Returns `None` if nothing had to move.
+    /// of the receipt move to its state, and `branch`, the local `main` of a merge with the
+    /// value it had when the attempt began, moves to its new commit, after one entry `push`. A
+    /// remote reference that is no longer in the state that the update was signed against is
+    /// left as it is: a fetch moved it to a later state of the hub. A branch that no longer has
+    /// its value is left as well: another writer moved it. Returns `None` if nothing had to
+    /// move.
     pub(super) fn record_push(
         &self,
         lock: &WriteLock,
         remote: &RemoteName,
         config: &RemoteConfig,
         receipt: &RecordEntry,
-        branch: Option<(BranchName, CommitId)>,
+        branch: Option<(BranchName, Option<CommitId>, CommitId)>,
         actor: &Actor,
     ) -> Result<Option<Entry>, PushError> {
         if self.remote(remote).map_err(PushError::Remote)?.as_ref() != Some(config) {
@@ -409,10 +430,12 @@ impl Repository {
             });
             remotes.push((name, value));
         }
-        let branches: Vec<(BranchName, Option<CommitId>)> = branch
-            .into_iter()
-            .map(|(name, commit)| (name, Some(commit)))
-            .collect();
+        let mut branches: Vec<(BranchName, Option<CommitId>)> = Vec::new();
+        if let Some((name, expected, new)) = branch {
+            if self.refs().branch(&name).map_err(PushError::Refs)? == expected {
+                branches.push((name, Some(new)));
+            }
+        }
         let targets = RestoreTargets {
             head: None,
             working_copy: None,
@@ -470,9 +493,15 @@ impl Repository {
             }
         };
         self.keep_confirmation(remote, &held)
-            .map_err(|error| AnchorFailure::Log(Box::new(error)))?;
+            .map_err(|error| AnchorFailure::NotKept(Box::new(error)))?;
         Ok(held)
     }
+}
+
+/// Whether a failure of a request may pass when the request is sent again: the carrier failed,
+/// and not because it does not carry the request at all.
+fn transient(error: &TransportError) -> bool {
+    matches!(error, TransportError::Carrier(source) if source.kind() != io::ErrorKind::Unsupported)
 }
 
 /// Sends a signed update and reads the receipt, checked against the pinned key `hub`.
@@ -535,8 +564,10 @@ fn boxed_objects(error: AnswerError) -> PushError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum AnchorFailure {
-    /// The anchor could not be built, or its confirmation could not be kept.
+    /// The anchor could not be built.
     Log(Box<LogAnchorError>),
+    /// The hub confirmed the anchor, and the clone could not keep the confirmation.
+    NotKept(Box<LogAnchorError>),
     /// The request got no answer.
     Transport(TransportError),
     /// The answer could not be read.
@@ -551,6 +582,10 @@ impl fmt::Display for AnchorFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Log(error) => write!(f, "the anchor of the log failed: {error}"),
+            Self::NotKept(error) => write!(
+                f,
+                "the hub confirmed the anchor, but its confirmation was not kept: {error}"
+            ),
             Self::Transport(error) => write!(f, "the anchor was not sent: {error}"),
             Self::Answer(error) => write!(f, "the answer to the anchor: {error}"),
             Self::Refused(message) => write!(f, "the hub refused the anchor: {message}"),
@@ -564,7 +599,7 @@ impl fmt::Display for AnchorFailure {
 impl Error for AnchorFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Log(error) => error.source(),
+            Self::Log(error) | Self::NotKept(error) => error.source(),
             Self::Transport(error) => error.source(),
             Self::Answer(error) => error.source(),
             Self::Unreadable(error) => error.source(),
@@ -603,8 +638,9 @@ pub enum PushError {
     Duplicate(QualifiedName),
     /// An object of the upload could not be read from the store.
     Objects(Box<AnswerError>),
-    /// A piece of the upload failed on the carrier [`PIECE_ATTEMPTS`] times. The pieces before
-    /// it are confirmed; the hub holds their objects unnamed.
+    /// A piece of the upload failed: on the carrier in [`PIECE_ATTEMPTS`] attempts, or at once
+    /// for a failure that no repeat mends. The pieces before it are confirmed; the hub holds
+    /// their objects unnamed.
     Upload {
         /// The pieces that the other side confirmed.
         confirmed: u32,
@@ -630,7 +666,8 @@ pub enum PushError {
     /// or the gate, a refusal for want of objects after the second upload, or an error of the
     /// protocol.
     Refused(ErrorMessage),
-    /// The configuration of the remote was removed or changed during the push.
+    /// The configuration of the remote was removed or changed during the push. It comes as the
+    /// source of [`Unrecorded`](Self::Unrecorded), as the check runs after the receipt.
     RemoteChanged(RemoteName),
     /// The hub accepted the update, and the clone did not record it: the configuration of the
     /// remote changed, or the lock, the entry, or a move failed. The hub moved; a fetch brings
@@ -696,10 +733,14 @@ impl fmt::Display for PushError {
             Self::Move { name, problem } => write!(f, "the move of `{name}`: {problem}"),
             Self::Duplicate(name) => write!(f, "the reference `{name}` is named twice"),
             Self::Objects(error) => write!(f, "the upload cannot be read from the store: {error}"),
-            Self::Upload { confirmed, source } => write!(
+            Self::Upload { confirmed, source } if transient(source) => write!(
                 f,
                 "the upload failed after {confirmed} confirmed pieces: {source}; nothing moved, \
                  and a push again sends what is missing"
+            ),
+            Self::Upload { confirmed, source } => write!(
+                f,
+                "the upload failed after {confirmed} confirmed pieces: {source}; nothing moved"
             ),
             Self::Sign(error) => write!(f, "the ref update cannot be signed: {error}"),
             Self::Transport(error) => write!(
