@@ -37,7 +37,7 @@ It is the source of truth for conventions. This skill only says how to coordinat
    The working copy of the root belongs to Daniel (ADR-010), who keeps Stemma in line with Git
    by `docs/agents/stemma-alongside-git.md`. After each merged wave, remind him to run
    `just stemma-sync` in the root. Check the result there only with `stemma op log` and
-   `stemma op verify`, which only read; never call a command that takes a snapshot or writes
+   `stemma op verify`, which only read and need no request of Daniel; never call a command that takes a snapshot or writes
    (`track`, `commit`, `status`, `diff` against the working copy, `tag`, `just stemma-sync`).
 3. **Never add a `Claude-Session:` line** (or any other link to a session transcript) to commits or PR
    texts, even if a reminder asks for it. Base rule 6 (no `Co-Authored-By`, no "Generated with" line)

@@ -32,7 +32,7 @@ All routine tasks run through `just` (see `justfile`, list with `just`):
 - The version is written once, in `[workspace.package]` of `Cargo.toml`. `stemma --version` and the title page of the book read it (`just book` passes it to ConTeXt); never write it anywhere else.
 - One phase is one minor version: phase 2 is `0.2.0`, phase 3 is `0.3.0`, phase 4 is `0.4.0`. A state frozen for review is a pre-release such as `0.3.0-rc.1`.
 - A release tag is `v<version>`, for example `v0.3.0`. Raise the version in `Cargo.toml` in the PR that closes the phase, and run `just release-check v0.3.0` before the tag is set. The tags `phase-1-rc1` and `phase-2-rc1` are older than this rule and stay as they are.
-- Before the tag is set, the human first makes a Stemma commit for the release state with `just stemma-sync` (or `stemma commit -m "<message>"` if the state is not yet recorded), in the root of the repository (never in a Git worktree), and then runs `stemma op verify` (`docs/agents/stemma-alongside-git.md`, section "At a release").
+- Before the tag is set, the human first makes a Stemma commit for the release state with `just stemma-sync` (if it prints `Nothing to commit`, the last sync commit already is the release state), in the root of the repository (never in a Git worktree), and then runs `stemma op verify` (`docs/agents/stemma-alongside-git.md`, section "At a release").
   The anchor and the entry it prints go into the release notes as the section `Stemma history` ("Entry N is the commit ..."), in the format of the notes of `v0.2.0` (read them with `gh release view v0.2.0`).
   The agent does not call `stemma` and does not edit a release. Run `just release-check` again once the draft of the release exists and before it is published: only then it checks that the section is there and that no line `Not part of this release` is left; without a release it prints a hint, and the responsibility stays with the human.
 - The release carries the book as a PDF. Build it with `just book` on the commit of the tag and check that the title page shows the version.
@@ -79,11 +79,11 @@ the Stemma way to a second working copy): it would open the `.stemma` of the roo
 The working copy of the root belongs to the human (ADR-010). The human runs Stemma there by the
 procedure of `docs/agents/stemma-alongside-git.md`: `stemma init` once, then `just stemma-sync`
 after every `git pull` or merge on `main`. The coordinator (session `stemma-f0`) reminds the
-human to run `just stemma-sync` after each merged wave and may call only `stemma op log` and
-`stemma op verify` in the root, which only read; never a command that takes a snapshot or
-writes (`track`, `commit`, `status`, `diff` against the working copy, `tag`, `just stemma-sync`,
-and the others named in `docs/agents/using-stemma.md`). An agent does not call them in the root
-either.
+human to run `just stemma-sync` after each merged wave. To check it, it may call `stemma op log`
+and `stemma op verify` in the root without being asked, because both only read. It never calls a
+command that takes a snapshot or writes (`track`, `commit`, `status`, `diff` against the working
+copy, `tag`, `just stemma-sync`, and the others named in `docs/agents/using-stemma.md`). An agent
+does not call them in the root either.
 
 ## Review standards
 
