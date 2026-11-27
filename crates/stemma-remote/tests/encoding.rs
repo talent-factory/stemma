@@ -6,8 +6,10 @@
 mod support;
 
 use std::io::{self, Read, Write};
+use std::num::NonZeroU64;
 
-use stemma_core::transport::{Answer, Transport, TransportError};
+use stemma_core::protocol::sign_in::{Token, TokenAnswer};
+use stemma_core::transport::{Answer, SignedIn, Transport, TransportError, MAX_SIGN_IN_MESSAGE};
 use stemma_remote::{
     HttpTransport, Timeouts, WindowTooLarge, ERROR_MEDIA_TYPE, MAX_WINDOW, MESSAGE_MEDIA_TYPE,
 };
@@ -142,28 +144,93 @@ fn an_upload_is_compressed_only_after_the_hub_named_zstd() {
     let update = example("ref-update");
     let refs = example("refs");
     let responder = Responder::start(vec![
-        // Nothing named yet: the first upload goes as it is.
         Action::Respond(message_accepting(refs, "gzip")),
+        // After an answer that names gzip alone, the upload goes as it is.
         Action::Respond(message_accepting(refs, "gzip, zstd")),
-        Action::Respond(message(refs)),
+        Action::Respond(message(example("receipt"))),
         // The last answer named no zstd, so the upload goes as it is again.
         Action::Respond(message(example("receipt"))),
     ]);
     let mut transport = transport(&responder);
-    read_all(transport.fetch(&mut &fetch[..]).unwrap());
     read_all(transport.refs().unwrap());
+    read_all(transport.fetch(&mut &fetch[..]).unwrap());
     read_all(transport.ref_update(&mut &update[..]).unwrap());
     read_all(transport.ref_update(&mut &update[..]).unwrap());
 
     let requests = responder.requests();
-    assert_eq!(requests[0].header("content-encoding"), None);
-    assert_eq!(requests[0].body, fetch);
+    assert_eq!(requests[1].header("content-encoding"), None);
+    assert_eq!(requests[1].body, fetch);
     assert_eq!(requests[2].header("content-encoding"), Some("zstd"));
     assert_eq!(requests[2].header("content-type"), Some(MESSAGE_MEDIA_TYPE));
     assert_ne!(requests[2].body, update);
     assert_eq!(zstd::decode_all(&requests[2].body[..]).unwrap(), update);
     assert_eq!(requests[3].header("content-encoding"), None);
     assert_eq!(requests[3].body, update);
+}
+
+#[test]
+fn an_answer_that_is_no_answer_of_the_protocol_turns_compression_off() {
+    let fetch = example("fetch");
+    let page: &[u8] = b"<html>Bad Gateway</html>";
+    let responder = Responder::start(vec![
+        Action::Respond(message_accepting(example("refs"), "zstd")),
+        // The page of a proxy that names zstd counts for nothing.
+        Action::Respond(response(
+            502,
+            &[("Content-Type", "text/html"), ("Accept-Encoding", "zstd")],
+            page,
+        )),
+        Action::Respond(message(example("objects"))),
+        // An error message of the hub that names zstd turns compression on.
+        Action::Respond(response(
+            404,
+            &[
+                ("Content-Type", ERROR_MEDIA_TYPE),
+                ("Accept-Encoding", "zstd"),
+            ],
+            example("error-malformed"),
+        )),
+        Action::Respond(message(example("objects"))),
+    ]);
+    let mut transport = transport(&responder);
+    read_all(transport.refs().unwrap());
+    no_answer(transport.refs());
+    read_all(transport.fetch(&mut &fetch[..]).unwrap());
+    assert!(!read_all(transport.refs().unwrap()).0);
+    read_all(transport.fetch(&mut &fetch[..]).unwrap());
+    let requests = responder.requests();
+    assert_eq!(requests[2].header("content-encoding"), None);
+    assert_eq!(requests[4].header("content-encoding"), Some("zstd"));
+}
+
+#[test]
+fn a_204_with_zstd_is_a_message_without_a_body_and_one_with_another_encoding_is_not() {
+    let responder = Responder::start(vec![
+        Action::Respond(response(204, &[("Content-Encoding", "zstd")], b"")),
+        Action::Respond(response(204, &[("Content-Encoding", "br")], b"")),
+    ]);
+    let mut transport = transport(&responder);
+    assert_eq!(read_all(transport.refs().unwrap()), (true, Vec::new()));
+    assert!(no_answer(transport.refs()).contains("`br`"));
+}
+
+#[test]
+fn a_cut_of_the_carrier_inside_a_compressed_body_is_no_error_of_the_frame() {
+    // The answer names a longer body than it sends, and the connection closes.
+    let compressed = compress(example("objects"), 27);
+    let mut bytes = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {MESSAGE_MEDIA_TYPE}\r\nContent-Encoding: zstd\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        compressed.len() + 100
+    )
+    .into_bytes();
+    bytes.extend_from_slice(&compressed);
+    let responder = Responder::start(vec![Action::Respond(bytes)]);
+    let error = read_error(transport(&responder).refs().unwrap());
+    assert!(!error.to_string().contains("frame"), "{error}");
+    assert!(error
+        .get_ref()
+        .is_some_and(|inner| !inner.is::<WindowTooLarge>()));
 }
 
 #[test]
@@ -238,6 +305,78 @@ fn an_error_of_the_body_of_a_compressed_upload_is_an_error_of_the_request() {
         }
         other => panic!("expected an error of the request, got {other:?}"),
     };
+}
+
+/// The answer to `answer_challenge` against a responder that answers `action`.
+fn sign_in(action: Action) -> Result<bool, TransportError> {
+    let responder = Responder::start(vec![action]);
+    let mut transport = transport(&responder);
+    let answer = transport
+        .answer_challenge(&mut &b"answer"[..])
+        .map(|signed_in| matches!(signed_in, SignedIn::Accepted(_)));
+    answer.map(|accepted| accepted && transport.holds_token())
+}
+
+fn compressed_token_answer(body: &[u8]) -> Action {
+    Action::Respond(compressed_message(body, 27))
+}
+
+#[test]
+fn a_compressed_token_answer_signs_in() {
+    let answer = TokenAnswer::new(
+        Token::try_new("a-token-of-the-hub").unwrap(),
+        NonZeroU64::new(600).unwrap(),
+    )
+    .encode();
+    assert!(sign_in(compressed_token_answer(&answer)).unwrap());
+}
+
+#[test]
+fn a_compressed_token_answer_is_bounded_after_it_is_decoded() {
+    // A few hundred bytes that decode to four times the bound.
+    let bomb = vec![b'a'; MAX_SIGN_IN_MESSAGE as usize * 4];
+    let detail = match sign_in(compressed_token_answer(&bomb)) {
+        Err(TransportError::NoAnswer { detail }) => detail,
+        other => panic!("expected no answer, got {other:?}"),
+    };
+    assert!(detail.contains("longer than"), "{detail}");
+}
+
+#[test]
+fn a_compressed_token_answer_that_cannot_be_read_is_no_answer() {
+    let compressed = compress(b"stemma-protocol 1\n", 27);
+    let cut = response(
+        200,
+        &[
+            ("Content-Type", MESSAGE_MEDIA_TYPE),
+            ("Content-Encoding", "zstd"),
+        ],
+        &compressed[..compressed.len() - 3],
+    );
+    let broken_chunks = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {MESSAGE_MEDIA_TYPE}\r\nContent-Encoding: zstd\r\n\
+         Transfer-Encoding: chunked\r\nConnection: close\r\n\r\nzz\r\n"
+    )
+    .into_bytes();
+    for (action, expected) in [
+        (Action::Respond(cut), "inside a frame"),
+        (
+            compressed_token_answer_with_window(28),
+            "window larger than",
+        ),
+        (Action::Respond(broken_chunks), ""),
+    ] {
+        match sign_in(action) {
+            Err(TransportError::NoAnswer { detail }) => {
+                assert!(detail.contains(expected), "{detail}")
+            }
+            other => panic!("expected no answer, got {other:?}"),
+        }
+    }
+}
+
+fn compressed_token_answer_with_window(window_log: u32) -> Action {
+    Action::Respond(compressed_message(b"stemma-protocol 1\n", window_log))
 }
 
 #[test]

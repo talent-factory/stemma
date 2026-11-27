@@ -81,6 +81,8 @@ the memory that a decoder holds, 128 MiB per connection, is the price.
 - A decoder is a parser of foreign bytes written in C. The bound of the window and the bounds for
   the size of an object and of a request (ADR-023) limit what a sender can make it hold; every
   object is hashed and read strictly after the decoder.
+- The frames carry no checksum of zstd. The receiver hashes every object (ADR-023), so a frame
+  that decodes to wrong bytes is found there, and TLS protects the bytes in transit.
 
 ## Open Points
 

@@ -9,6 +9,8 @@
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufRead, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use ureq::http::{header, HeaderMap};
 use zstd::stream::raw::CParameter;
@@ -122,74 +124,200 @@ pub(crate) fn encoder<'r, R: Read + 'r>(body: R) -> io::Result<Box<dyn Read + 'r
     Ok(Box::new(encoder))
 }
 
-/// The reader of a body compressed with zstd, which gives the decoded bytes. A frame with a
-/// window larger than [`MAX_WINDOW`] gives [`WindowTooLarge`], and every other error of zstd an
-/// error of the kind [`io::ErrorKind::InvalidData`]; a body that ends inside a frame gives an
-/// error of the kind [`io::ErrorKind::UnexpectedEof`]. An error of `body` comes out as it is. An
-/// error stays: every read after the first one fails in the same way.
+/// The reader of a body compressed with zstd, which gives the decoded bytes.
+///
+/// A frame with a window larger than [`MAX_WINDOW`] gives [`WindowTooLarge`], every other error
+/// of zstd an error of the kind [`io::ErrorKind::InvalidData`], and a body that ends inside a
+/// frame, also an empty one, an error of the kind [`io::ErrorKind::UnexpectedEof`];
+/// [`decoding_error`] tells these from the others. An error of `body` comes out as it is, with
+/// its inner error, and so does a failure of the decoder on this side, such as one to allocate
+/// its memory. An error stays: every read after the first one fails with the same kind and text.
 pub(crate) fn decoder<R: BufRead + 'static>(body: R) -> io::Result<Decoded> {
-    let mut decoder = zstd::stream::read::Decoder::with_buffer(body)?;
+    let failed = Arc::new(AtomicBool::new(false));
+    let source = Source {
+        inner: body,
+        failed: Arc::clone(&failed),
+    };
+    let mut decoder = zstd::stream::read::Decoder::with_buffer(source)?;
     decoder.window_log_max(WINDOW_LOG)?;
     Ok(Decoded {
         decoder: Box::new(decoder),
+        source_failed: failed,
         failed: None,
     })
+}
+
+/// The text of an error that the decoder gives for the bytes of the other side: a window above
+/// the bound, a frame that cannot be decoded, or a body that ends inside a frame. `None` for an
+/// error of the carrier and for a failure on this side.
+pub(crate) fn decoding_error(error: &io::Error) -> Option<String> {
+    let inner = error.get_ref()?;
+    if inner.is::<WindowTooLarge>() || inner.is::<Undecodable>() {
+        Some(inner.to_string())
+    } else {
+        None
+    }
+}
+
+/// The error inside the [`io::Error`] of a body compressed with zstd that cannot be decoded,
+/// other than [`WindowTooLarge`].
+#[derive(Debug)]
+struct Undecodable(String);
+
+impl fmt::Display for Undecodable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for Undecodable {}
+
+/// The body below the decoder, which notes that an error came from it, so that the decoder can
+/// tell an error of the body from one of its own.
+struct Source<R> {
+    inner: R,
+    failed: Arc<AtomicBool>,
+}
+
+impl<R> Source<R> {
+    fn note<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if let Err(error) = &result {
+            if error.kind() != io::ErrorKind::Interrupted {
+                self.failed.store(true, Ordering::Relaxed);
+            }
+        }
+        result
+    }
+}
+
+impl<R: BufRead> Read for Source<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let result = self.inner.read(buf);
+        self.note(result)
+    }
+}
+
+impl<R: BufRead> BufRead for Source<R> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        // The borrow of the buffer ends before the error is noted.
+        if let Err(error) = self.inner.fill_buf() {
+            return self.note(Err(error));
+        }
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.inner.consume(amount);
+    }
 }
 
 /// The decoded body of an answer; see [`decoder`].
 pub(crate) struct Decoded {
     decoder: Box<dyn Read>,
-    failed: Option<Failure>,
+    source_failed: Arc<AtomicBool>,
+    failed: Option<(io::ErrorKind, String, Kind)>,
 }
 
-/// The first error of a [`Decoded`], to give it again.
-#[derive(Clone)]
-enum Failure {
+/// Which error a [`Decoded`] keeps, to give it again with its inner error where that is one of
+/// this module.
+#[derive(Clone, Copy)]
+enum Kind {
     Window,
-    Other(io::ErrorKind, String),
-}
-
-impl Failure {
-    fn to_error(&self) -> io::Error {
-        match self {
-            Self::Window => io::Error::new(
-                io::ErrorKind::InvalidData,
-                WindowTooLarge { bound: MAX_WINDOW },
-            ),
-            Self::Other(kind, text) => io::Error::new(*kind, text.clone()),
-        }
-    }
+    Undecodable,
+    Other,
 }
 
 impl Read for Decoded {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if let Some(failure) = &self.failed {
-            return Err(failure.to_error());
+        if let Some((kind, text, which)) = &self.failed {
+            return Err(match which {
+                Kind::Window => io::Error::new(*kind, WindowTooLarge { bound: MAX_WINDOW }),
+                Kind::Undecodable => io::Error::new(*kind, Undecodable(text.clone())),
+                Kind::Other => io::Error::new(*kind, text.clone()),
+            });
         }
         let error = match self.decoder.read(buf) {
             Ok(read) => return Ok(read),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
             Err(error) => error,
         };
-        let failure = match error
+        let code = error
             .get_ref()
             .and_then(|inner| inner.downcast_ref::<zstd::Error>())
-        {
-            Some(code) if code.is(ZSTD_ErrorCode::ZSTD_error_frameParameter_windowTooLarge) => {
-                Failure::Window
+            .copied();
+        let error = if self.source_failed.load(Ordering::Relaxed) {
+            // An error of the body, which the decoder passed on.
+            error
+        } else if let Some(code) = code {
+            if code.is(ZSTD_ErrorCode::ZSTD_error_frameParameter_windowTooLarge) {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    WindowTooLarge { bound: MAX_WINDOW },
+                )
+            } else {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    Undecodable(format!(
+                        "the body compressed with zstd cannot be decoded: {code}"
+                    )),
+                )
             }
-            Some(code) => Failure::Other(
-                io::ErrorKind::InvalidData,
-                format!("the body compressed with zstd cannot be decoded: {code}"),
-            ),
-            None if error.kind() == io::ErrorKind::UnexpectedEof => Failure::Other(
+        } else if error.kind() == io::ErrorKind::UnexpectedEof {
+            // The body ended without an error of its own, and the decoder says that a frame
+            // is not complete.
+            io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                format!("the body compressed with zstd ends inside a frame: {error}"),
-            ),
-            None => Failure::Other(error.kind(), error.to_string()),
+                Undecodable("the body compressed with zstd ends inside a frame".to_owned()),
+            )
+        } else {
+            // A failure of the decoder on this side, such as one to allocate its memory.
+            error
         };
-        let error = failure.to_error();
-        self.failed = Some(failure);
+        let which = match error.get_ref() {
+            Some(inner) if inner.is::<WindowTooLarge>() => Kind::Window,
+            Some(inner) if inner.is::<Undecodable>() => Kind::Undecodable,
+            _ => Kind::Other,
+        };
+        self.failed = Some((error.kind(), error.to_string(), which));
         Err(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ureq::http::HeaderValue;
+
+    fn accepts(values: &[&str]) -> bool {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append(
+                header::ACCEPT_ENCODING,
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        accepts_zstd(&headers)
+    }
+
+    #[test]
+    fn only_a_weight_of_zero_names_zstd_as_not_acceptable() {
+        for zero in ["q=0", "q=0.", "q=0.0", "q=0.000", " Q = 0 "] {
+            assert!(is_zero_weight(zero), "{zero}");
+        }
+        for other in ["q=0.001", "q=0.5", "q=1", "q=1.0", "q=", "level=0", "q"] {
+            assert!(!is_zero_weight(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn zstd_is_accepted_on_any_line_with_a_weight_that_is_not_zero() {
+        assert!(accepts(&["zstd"]));
+        assert!(accepts(&["ZSTD;q=0.001"]));
+        assert!(accepts(&["gzip", "br, zstd ; q=1"]));
+        assert!(!accepts(&[]));
+        assert!(!accepts(&["gzip"]));
+        assert!(!accepts(&["zstd;q=0"]));
+        assert!(!accepts(&["*"]));
+        assert!(!accepts(&["zstdx"]));
     }
 }

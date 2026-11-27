@@ -158,8 +158,9 @@ pub struct HttpTransport {
     base: Base,
     token: Option<Token>,
     last_status: Option<Status>,
-    /// Whether the last answer with an HTTP status named zstd in `Accept-Encoding`, so that the
-    /// next upload is compressed (ADR-023).
+    /// Whether the last answer with an HTTP status was a message or an error message of the
+    /// protocol and named zstd in `Accept-Encoding`, so that the next upload is compressed
+    /// (ADR-023). Another answer, such as the page of a proxy, sets it back.
     hub_accepts_zstd: bool,
 }
 
@@ -277,6 +278,7 @@ impl HttpTransport {
             Method::Post(body) => {
                 // The body is compressed only after the hub named zstd in `Accept-Encoding`; the
                 // encoder reads from the body, so an error of the body still counts for this side.
+                // A failure of the encoder, which is on this side as well, counts the same way.
                 let mut encoded;
                 let (body, request) = if self.hub_accepts_zstd {
                     encoded = encoding::encoder(body).map_err(TransportError::Request)?;
@@ -324,7 +326,9 @@ impl HttpTransport {
             location.as_deref(),
         );
         self.last_status = Some(status.clone());
-        self.hub_accepts_zstd = encoding::accepts_zstd(headers);
+        // Set again below for an answer of the protocol alone.
+        self.hub_accepts_zstd = false;
+        let accepts_zstd = encoding::accepts_zstd(headers);
         let no_answer = |detail: String| Err(TransportError::NoAnswer { detail });
         // Every value of every line is read; a value that is not text is no encoding the client
         // reads.
@@ -354,6 +358,7 @@ impl HttpTransport {
             }
         }
         if status == Status::Success(204) {
+            self.hub_accepts_zstd = accepts_zstd;
             return Ok(Answer::Message(Box::new(io::empty())));
         }
         let media = headers.get(header::CONTENT_TYPE).map(|value| {
@@ -387,9 +392,12 @@ impl HttpTransport {
             reader: response.into_body().into_reader(),
             failed: None,
         });
+        self.hub_accepts_zstd = accepts_zstd;
         Ok(case(match content_encoding {
             ContentEncoding::Identity => Box::new(stream),
             ContentEncoding::Zstd => Box::new(BufReader::new(
+                // A decoder that cannot be made, for want of memory, fails on this side; the
+                // answer is not read.
                 encoding::decoder(stream).map_err(TransportError::Carrier)?,
             )),
         }))
@@ -443,10 +451,13 @@ impl Transport for HttpTransport {
         let mut bytes = Vec::new();
         body.take(MAX_SIGN_IN_MESSAGE + 1)
             .read_to_end(&mut bytes)
-            .map_err(|error| match protocol_error(&error) {
-                // Chunks that cannot be read came back from the other side.
-                Some(detail) => TransportError::NoAnswer { detail },
-                None => TransportError::Carrier(error),
+            .map_err(|error| {
+                match protocol_error(&error).or_else(|| encoding::decoding_error(&error)) {
+                    // Chunks that cannot be read, and a body of zstd that cannot be decoded, came
+                    // back from the other side.
+                    Some(detail) => TransportError::NoAnswer { detail },
+                    None => TransportError::Carrier(error),
+                }
             })?;
         if bytes.len() as u64 > MAX_SIGN_IN_MESSAGE {
             return Err(TransportError::NoAnswer {
