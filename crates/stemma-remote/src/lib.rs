@@ -24,12 +24,24 @@
 //! answer with a 4xx or 5xx status and the media type of an error. Everything else is
 //! [`TransportError::NoAnswer`](stemma_core::transport::TransportError::NoAnswer) with the
 //! status in its words: another 2xx, the page of a proxy, a redirect, a body with a content
-//! encoding or with a transfer encoding other than chunks, and a body without a length (chunks
-//! count in HTTP/1.1 alone). An answer that is no HTTP, such as another service behind the port,
-//! a head that is too large, or a proxy that refuses the tunnel, is `NoAnswer` too, in the words
-//! of the failure, without a status. The status itself is the coarse class only ([`Status`]); the typed
-//! error stands in the body, which the core reads. The transport follows no redirect and relies
-//! on no `Cache-Control` header.
+//! encoding other than zstd or with a transfer encoding other than chunks, and a body without a
+//! length (chunks count in HTTP/1.1 alone). An answer that is no HTTP, such as another service
+//! behind the port, a head that is too large, or a proxy that refuses the tunnel, is `NoAnswer`
+//! too, in the words of the failure, without a status. The status itself is the coarse class
+//! only ([`Status`]); the typed error stands in the body, which the core reads. The transport
+//! follows no redirect and relies on no `Cache-Control` header.
+//!
+//! # Compression
+//!
+//! The body carries the content encoding zstd or none (ADR-023, ADR-029). The client sends
+//! `Accept-Encoding: zstd`, reads an answer with `Content-Encoding: zstd` through the decoder of
+//! zstd and an answer without one as it is, and compresses an upload, with `Content-Encoding:
+//! zstd`, only when the answer to the last request was a message or an error message of the
+//! protocol and named zstd in its `Accept-Encoding`. The encoder runs at level 3 with a window
+//! of 128 MiB and long-distance matching; the decoder refuses a frame with a larger window
+//! ([`MAX_WINDOW`]) with [`WindowTooLarge`] inside the error of the body. The client wraps the
+//! body in the encoder and the decoder itself; `ureq` is built without its feature `gzip`, and
+//! gzip is not read.
 //!
 //! # Connections
 //!
@@ -56,7 +68,8 @@
 //! for the tests with the standard library, answers each request with bytes that a test sets, and
 //! records what the client sent; with the test CA under `tests/data` it speaks TLS through
 //! rustls. So the mapping of every status, the refused redirect, the idle timeouts, the loopback
-//! rule, the proxy rule for `http://`, the CA file, and the absence of the token from errors and logs are tested here. The end-to-end
+//! rule, the proxy rule for `http://`, the CA file, the compression in both directions, and the
+//! absence of the token from errors and logs are tested here. The end-to-end
 //! tests against a real hub live in stemma-hub (ADR-022).
 //!
 //! # Errors
@@ -68,10 +81,12 @@
 
 mod address;
 mod client;
+mod encoding;
 mod status;
 mod tls;
 
 pub use client::{ClientError, HttpTransport, Timeouts, ERROR_MEDIA_TYPE, MESSAGE_MEDIA_TYPE};
+pub use encoding::{WindowTooLarge, MAX_WINDOW};
 pub use status::Status;
 
 // The token never reaches a log record: `ureq` writes the raw bytes of requests and answers at

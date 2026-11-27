@@ -37,6 +37,7 @@ die annehmende Operation für Branches, Tags und eingereichte Erklärungen,
 das Gate auf dem Hub für die Bewegung von \type{main},
 das Festhalten des Schlüssels des Hubs im Klon,
 der HTTP-Client des Klons,
+die Kompression seines Rumpfs mit zstd,
 die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub,
 und die Befehle \type{remote}, \type{clone} und \type{fetch}.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
@@ -164,6 +165,18 @@ Eine Messung am Git-Verlauf dieses Repositorys gab die Richtung: 4483 Objekte si
 Das lange Fenster findet die Wiederholungen zwischen den Versionen einer Datei selbst; deshalb
 kommt das Format ohne Deltas aus.
 Die Zahlen stammen von einem einzigen Verlauf und sind kein Schwellenwert.
+
+Stufe und Fenster sind an einem Stemma-Speicher gemessen und festgelegt (ADR-029).
+Die 349 Commits, die der Verlauf von \type{main} dieses Repositorys im November 2026 hatte,
+als Stemma-Commits eingelesen, ergeben für einen ganzen Klon einen Strom von 4548 Objekten
+und 125,9 MB.
+Mit Stufe 3 und einem Fenster von $2^{27}$ Byte (128 MiB) sind es 2,67 MB in 0,13 Sekunden,
+mit Stufe 19 1,98 MB in gut fünf Sekunden, ohne das lange Fenster mit Stufe 3 16,8 MB.
+Der Sender komprimiert deshalb mit Stufe 3 und diesem Fenster.
+Ein Decoder hält das Fenster im Speicher, für jede Verbindung; jeder Empfänger nimmt darum ein
+Fenster bis $2^{27}$ Byte an und lehnt ein grösseres mit einem eigenen Fehler ab.
+Die Schranke ist eine Regel des Protokolls und keine Angabe in einem Header: Ein Sender hält
+sie ein, ohne nachzufragen.
 
 \subsection{Fetch und Klon}
 
@@ -554,10 +567,22 @@ verlangte Nachricht, ein Status 204 eine Nachricht ohne Rumpf.
 Ein Status 4xx oder 5xx mit dem Medientyp eines Fehlers (\type{application/vnd.stemma.error})
 ist ein Fehler, dessen Art der Kern aus dem Rumpf liest.
 Alles andere ist keine Antwort des Protokolls, etwa die Seite eines Proxys, eine Weiterleitung,
-ein komprimierter Rumpf, um den der Client nicht gebeten hat, oder ein Rumpf ohne Länge, dessen
+ein Rumpf mit einer anderen Kompression als zstd, oder ein Rumpf ohne Länge, dessen
 Ende sich nicht von einem Abbruch unterscheiden lässt; der Fehler nennt den Status, falls die
 Antwort einen hat.
 \stopitemize
+
+Den Rumpf komprimiert der Client selbst, mit dem Encoder und dem Decoder von zstd; gzip
+kennt er nicht.
+Jede Anfrage sendet \type{Accept-Encoding: zstd}.
+Eine Antwort mit \type{Content-Encoding: zstd} liest er durch den Decoder, eine Antwort ohne
+Kompression, wie sie ist.
+Einen Upload komprimiert er erst, wenn die letzte Antwort eine Nachricht oder eine
+Fehlermeldung des Protokolls war und zstd in ihrem \type{Accept-Encoding} nennt;
+die Seite eines Proxys zählt nicht.
+Sonst geht der Rumpf unkomprimiert, und das muss jeder Hub annehmen.
+Ein Rumpf, den der Decoder nicht lesen kann, ist ein Fehler beim Lesen des Rumpfs, ebenso ein
+Fenster über der Schranke.
 
 Der Client folgt keiner Weiterleitung und nennt stattdessen die neue Adresse, falls die Antwort
 sie nennt, damit das Token nie an einen anderen Host geht.
@@ -579,8 +604,8 @@ ein Zertifikat, das ein Administrator dem Vertrauensspeicher des Systems hinzuf�
 Die Tests des Clients brauchen keinen Hub: Ein Responder auf einem Loopback-Socket beantwortet jede
 Anfrage mit Bytes, die der Test vorgibt, und spricht mit einer Test-CA auch TLS.
 Die Tests gegen einen echten Hub liegen in stemma-hub (ADR-022).
-Noch nicht gebaut sind die Kompression mit zstd (ADR-029) und die Wiederholung einer Anfrage,
-die der Hub wegen Auslastung ablehnt; sie kommen mit dem Upload und den Befehlen.
+Noch nicht gebaut ist die Wiederholung einer Anfrage, die der Hub wegen Auslastung ablehnt;
+sie kommt mit dem Upload und den Befehlen.
 \stopinfobox
 
 \section[sec:hub-auth]{Anmeldung am Hub}

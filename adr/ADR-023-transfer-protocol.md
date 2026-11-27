@@ -110,9 +110,11 @@ upload session with state on the hub.
 The HTTP body carries a content encoding that is negotiated, with zstd (ADR-029), and every side
 must accept an uncompressed body. The store stays as ADR-007 defines it. The messages of
 `stemma_core::protocol` know no compression, and the in-memory `Transport` needs none. The long
-window is the reason why the format can do without deltas. The level and the size of the window
-are left to the slice, which measures them on a Stemma store; the receiver may name an upper
-bound for the window.
+window is the reason why the format can do without deltas. A sender compresses at level 3 with
+a window of 2^27 bytes (128 MiB) and long-distance matching, measured on a Stemma store
+(STEMMA-304, ADR-029). Every receiver takes a window up to 2^27 bytes and refuses a frame with a
+larger one; the bound is a rule of the protocol, so no header carries it and a sender keeps to
+it without asking.
 
 Rejected: no compression, compression per object inside the protocol, and a compressed store
 whose bytes are sent as they are.
