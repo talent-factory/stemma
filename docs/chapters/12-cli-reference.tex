@@ -2803,6 +2803,8 @@ Eine Grenze, die das Register für das Log eines anderen Klons nennt, zählt dab
 Eintrag dieses Logs vor ihr (ADR-026).
 Ein Register, das sich nicht lesen lässt, ein durchsetzendes Repository ohne Register in
 seiner Basis und ein Beweis, den das Register nicht annimmt, enden mit Exit-Code 5.
+Ebenso eine Datei \type{.stemma/log-id}, die nicht in kanonischer Form ist oder ab Version~19
+fehlt; lässt sich eine Datei nicht lesen, folgt der Exit-Code der Ursache.
 
 Zuletzt prüft der Befehl die signierten Erklärungen unter \type{.stemma/statements/} und die
 Einträge, die sie nennen, in beiden Modi.
@@ -3135,6 +3137,10 @@ diesem Agenten, dieser Rolle und diesem Sponsor.
 \type{cosign} endet mit Exit-Code 1, wenn der Akteur ein Agent ist oder \type{ssh-keygen}
 nicht signiert.
 Ein Register, das sich nicht lesen lässt, endet mit Exit-Code 5.
+Bei \type{retire} und \type{revoke} gilt das auch für eine Datei \type{.stemma/log-id}, die
+nicht in kanonischer Form ist oder ab Version~19 des Repositorys fehlt;
+hält ein anderer Befehl die Sperre der Referenzen, während ein älteres Repository seine ID
+bekommt, endet der Befehl mit Exit-Code 6.
 Dazu gehört eine Datei, in der jemand einen Eintrag von Hand an die falsche Stelle gesetzt hat:
 Der Leser nimmt nur die sortierte Fassung an, und kein Befehl ordnet sie nachträglich.
 Ein Eintrag, den noch kein Commit trägt, zählt für keinen Beweis und keine Freigabe:

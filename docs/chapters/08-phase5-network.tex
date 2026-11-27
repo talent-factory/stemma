@@ -1448,6 +1448,9 @@ ihren Signaturen selbst prüft.
 Die Nummer darin wächst nur.
 \type{op verify} gegen die Anker des Hubs liest die Liste des Logs und verlangt, dass jeder
 bestätigte Anker einen Eintrag mit diesem Hash nennt.
+Sie verlangt auch, was der Hub beim Lesen verlangt: Jeder Anker trägt die Nummer seiner Stelle,
+und die Liste enthält die Bestätigung, die der Klon festhält.
+Lässt eine Zwischenstelle den Anker weg, der ein abgeschnittenes Ende zeigt, fällt das auf.
 Ein Stub behält den Hash seines Eintrags, also hält ein Anker über einen Purge hinweg.
 
 {\bf Garantien.}
@@ -1472,6 +1475,12 @@ Der Hub hält Nummer und Hash, also gibt es dort nichts zu purgen.
 Bauen zwei Akteure eines Logs zur gleichen Zeit einen Anker, kann der ältere nach dem neueren
 ankommen und steht dann als widersprechend da; die Regel des Hubs unterscheidet ihn nicht von
 einem abgeschnittenen Log, und wer die Liste liest, sieht beide.
+Der Hub fragt nur, ob der Schlüssel aktiv ist, nicht, in welchem Log sein Akteur schreibt.
+Ein aktiver Schlüssel kann darum für ein fremdes Log eine Nummer bestätigen lassen, die dieses
+Log nie erreicht hat; die Log-ID ist kein Geheimnis, denn das Register nennt sie.
+Die echten Anker dieses Logs stehen dann als widersprechend da, und sein Klon liest ein
+abgeschnittenes Ende.
+Die Signatur des Akteurs steht im gehaltenen Anker, die Liste nennt also, wer es war.
 \stopinfobox
 
 \section[sec:namespaces]{Namespaces}

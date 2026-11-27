@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::allowed::Allowed;
+use crate::failure::Classify;
 use crate::index::Index;
 use crate::object::{Blob, Commit, FileMode};
 use crate::oplog::{Change, Moved, OperationName};
@@ -136,10 +137,13 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
 
     // From version 19 on a missing file is damage: the rise to 19 writes it.
     fs::remove_file(&path).unwrap();
-    assert!(matches!(
-        repository.log_id(),
-        Err(LogAnchorError::LogIdDamaged { .. })
-    ));
+    let error = repository.log_id().unwrap_err();
+    assert!(
+        matches!(error, LogAnchorError::LogIdMissing { .. }),
+        "{error}"
+    );
+    assert!(error.to_string().contains("was removed"), "{error}");
+    assert_eq!(error.kind(), crate::failure::FailureKind::Damaged);
     // Any rise to 19, such as the next entry, gives a repository of 18 its ID.
     fs::write(
         repository.metadata_dir().join("format"),
@@ -155,7 +159,14 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
     assert!(matches!(
         repository.log_id(),
         Err(LogAnchorError::LogIdDamaged { .. })
-    ));
+    )); // So is a file over the limit, which is not read as a failure to read.
+    fs::write(&path, "x".repeat(70 * 1024)).unwrap();
+    let error = repository.log_id().unwrap_err();
+    assert!(
+        matches!(error, LogAnchorError::LogIdDamaged { .. }),
+        "{error}"
+    );
+    assert_eq!(error.kind(), crate::failure::FailureKind::Damaged);
 }
 
 #[test]
@@ -521,5 +532,197 @@ fn a_retirement_that_a_later_fetch_turns_into_a_revocation_counts_from_the_first
     assert_eq!(
         local.entry(&mia).unwrap().keys()[0].state,
         KeyState::Revoked { from: first }
+    );
+}
+
+#[test]
+fn a_kept_confirmation_that_was_changed_is_damage() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    commit(&dir, &repository, "a.txt", "one\n");
+    let held = confirm(&repository, 1);
+    let path = repository.metadata_dir().join(ANCHORS_DIR).join("origin");
+    let text = fs::read_to_string(&path).unwrap();
+    let number = held.tip().number;
+    let changed = text.replacen(
+        &format!("tip {number} "),
+        &format!("tip {} ", number + 1),
+        1,
+    );
+    assert_ne!(changed, text);
+    for content in [changed, "x".repeat(70 * 1024)] {
+        fs::write(&path, content).unwrap();
+        let error = repository.last_confirmation(&origin()).unwrap_err();
+        assert!(
+            matches!(error, LogAnchorError::ConfirmationDamaged { .. }),
+            "{error}"
+        );
+        assert_eq!(error.kind(), crate::failure::FailureKind::Damaged);
+        assert!(matches!(
+            repository.anchor(&origin(), address(), &signer()),
+            Err(LogAnchorError::ConfirmationDamaged { .. })
+        ));
+    }
+}
+
+#[test]
+fn a_kept_confirmation_of_another_hub_key_confirms_nothing() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    commit(&dir, &repository, "a.txt", "one\n");
+    confirm(&repository, 1);
+    // The remote now pins another key of the hub, as after a rotation.
+    let metadata = repository.metadata_dir();
+    let mut config = repository.remote(&origin()).unwrap().unwrap();
+    config.hub_key = Some(Seeded::new(9).public());
+    remote::write_config(&metadata, &metadata.join("tmp"), &origin(), &config).unwrap();
+    assert!(matches!(
+        repository.anchor(&origin(), address(), &signer()),
+        Err(LogAnchorError::Confirmation(AnchorFinding::HubKey {
+            position: 1
+        }))
+    ));
+}
+
+#[test]
+fn a_confirmation_of_an_entry_that_the_log_does_not_hold_is_not_kept() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    commit(&dir, &repository, "a.txt", "one\n");
+    let last = repository
+        .oplog()
+        .entries()
+        .unwrap()
+        .last()
+        .unwrap()
+        .number();
+    let of = |tip: Point| {
+        let anchor = AnchorPayload::try_new(
+            address(),
+            repository_id(),
+            repository.log_id().unwrap(),
+            tip,
+            None,
+            signer().public(),
+        )
+        .unwrap()
+        .sign(&signer())
+        .unwrap();
+        held_by(&hub(), anchor, 1, 1, AnchorState::Confirmed)
+    };
+    let other = format!("b3:{}", "77".repeat(32)).parse().unwrap();
+    let rewritten = of(Point {
+        number: last,
+        hash: other,
+    });
+    assert!(matches!(
+        repository.keep_confirmation(&origin(), &rewritten),
+        Err(LogAnchorError::Confirmation(
+            AnchorFinding::Rewritten { .. }
+        ))
+    ));
+    let beyond = of(Point {
+        number: last + 5,
+        hash: other,
+    });
+    assert!(matches!(
+        repository.keep_confirmation(&origin(), &beyond),
+        Err(LogAnchorError::Confirmation(AnchorFinding::Cut { .. }))
+    ));
+    assert_eq!(repository.last_confirmation(&origin()).unwrap(), None);
+}
+
+#[test]
+fn a_list_out_of_order_or_without_the_kept_confirmation_is_found() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    commit(&dir, &repository, "a.txt", "one\n");
+    let first = confirm(&repository, 1);
+    commit(&dir, &repository, "a.txt", "two\n");
+    let second = confirm(&repository, 2);
+    let both = [first.clone(), second.clone()];
+    assert_eq!(
+        repository
+            .verify_anchors(&origin(), &both)
+            .unwrap()
+            .confirmed,
+        2
+    );
+    // An anchor left out, or one held twice.
+    for list in [
+        vec![second.clone()],
+        vec![first.clone(), first.clone()],
+        vec![second.clone(), first.clone()],
+    ] {
+        assert!(matches!(
+            repository.verify_anchors(&origin(), &list),
+            Err(LogAnchorError::Confirmation(AnchorFinding::Order { .. }))
+        ));
+    }
+    // A list without the confirmation that the clone keeps, the last one in it.
+    for list in [vec![], vec![first]] {
+        let error = repository.verify_anchors(&origin(), &list).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                LogAnchorError::Confirmation(AnchorFinding::Withheld { kept })
+                    if *kept == second.tip()
+            ),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_fetched_commit_that_the_store_does_not_hold_is_an_error() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    let mia = Identity::human("mia").unwrap();
+    let key = Seeded::new(3).public();
+    let mut register = Register::with_owner(Identity::of(&actor()), signer().public()).unwrap();
+    register
+        .add_human(mia.clone(), register::Role::Member, key.clone())
+        .unwrap();
+    register
+        .revoke(&mia, &key, Bound::in_log(40, LogId::from_bytes([0xab; 16])))
+        .unwrap();
+    let missing = CommitId::new(format!("b3:{}", "42".repeat(32)).parse().unwrap());
+    fetch_entry(&repository, missing);
+    let entries = repository.oplog().entries().unwrap();
+    assert!(matches!(
+        repository.register_for_log(&register, &entries),
+        Err(LogAnchorError::Register(_))
+    ));
+}
+
+#[test]
+fn a_missing_id_of_the_log_is_no_reason_to_read_every_bound_as_foreign() {
+    let dir = TempDir::new();
+    let repository = repository(&dir);
+    let mia = Identity::human("mia").unwrap();
+    let key = Seeded::new(3).public();
+    let mut register = Register::with_owner(Identity::of(&actor()), signer().public()).unwrap();
+    register
+        .add_human(mia.clone(), register::Role::Member, key.clone())
+        .unwrap();
+    let own = repository.log_id().unwrap();
+    register.revoke(&mia, &key, Bound::in_log(40, own)).unwrap();
+    let entries = repository.oplog().entries().unwrap();
+    fs::remove_file(repository.metadata_dir().join(LOG_ID_FILE)).unwrap();
+    assert!(matches!(
+        repository.register_for_log(&register, &entries),
+        Err(LogAnchorError::LogIdMissing { .. })
+    ));
+    // A repository from before version 19 has no ID yet, and reads every bound with a log as
+    // one of another log.
+    fs::write(
+        repository.metadata_dir().join("format"),
+        "stemma-repository 18\n",
+    )
+    .unwrap();
+    let local = repository.register_for_log(&register, &entries).unwrap();
+    assert_eq!(
+        local.entry(&mia).unwrap().keys()[0].state,
+        KeyState::Revoked { from: 1 }
     );
 }

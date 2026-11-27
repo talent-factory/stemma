@@ -106,6 +106,11 @@ struct Hub {
 
 impl Hub {
     fn new() -> Self {
+        Self::with_register(&register_text())
+    }
+
+    /// A hub whose `main` holds the register `text`.
+    fn with_register(text: &str) -> Self {
         let dir = TempDir::new();
         let owner = Actor::human("operator").unwrap();
         let repository = Repository::init_bare(dir.path().join("hub"), &owner, &AllowAll).unwrap();
@@ -116,7 +121,7 @@ impl Hub {
             anchors: RefCell::default(),
             time: std::cell::Cell::new(START),
         };
-        let root = hub.commit(&[(register::FILE, &register_text())]);
+        let root = hub.commit(&[(register::FILE, text)]);
         let main = "heads/main".parse().unwrap();
         hub.push(vec![
             Move::try_new(main, None, None, Some(root), None).unwrap()
@@ -335,6 +340,31 @@ fn an_anchor_for_another_hub_or_repository_or_of_a_stranger_is_refused_and_not_k
         Err(AnchorError::Refused(AnchorRefusal::Key { .. }))
     ));
     assert!(hub.held().is_empty());
+}
+
+#[test]
+fn an_anchor_of_a_key_that_is_retired_or_revoked_is_refused_and_not_kept() {
+    let mia_identity = Identity::human("mia").unwrap();
+    for revoke in [false, true] {
+        let mut register = Register::parse(register_text().as_bytes()).unwrap();
+        if revoke {
+            register.revoke(&mia_identity, &mia().public(), 5).unwrap();
+        } else {
+            register.retire(&mia_identity, &mia().public(), 5).unwrap();
+        }
+        let hub = Hub::with_register(&register.encode());
+        assert!(
+            matches!(
+                hub.send(&anchor(point(1, 1), None)),
+                Err(AnchorError::Refused(AnchorRefusal::Key { .. }))
+            ),
+            "revoke: {revoke}"
+        );
+        assert!(hub.held().is_empty());
+        // The owner, whose key is active, is confirmed.
+        let owner = anchor_for(&daniel(), ADDRESS, point(1, 1), None);
+        assert!(hub.send(&owner).unwrap().is_confirmed());
+    }
 }
 
 #[test]

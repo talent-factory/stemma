@@ -243,17 +243,34 @@ How it is built (STEMMA-300):
   at least one log, so a register has one encoding; a bound of version 1 names none and counts
   by its number in every log, as before. The command `register` writes the ID of its own log.
   A revocation keeps a bound of another log that the key had already: it was written first,
-  so it lies earlier in the order of the hub, and two numbers of two logs are not compared.
+  so it lies earlier in the order of the hub, and two numbers of two logs are not compared. A
+  bound of version 1 counts in every log, so it is compared, and the earlier number wins with
+  its log.
 - **The bound in another log** is resolved by the core (`Register::for_log`,
   `Repository::register_for_log`): the number of the first `fetch` entry whose fetched commit
   holds a register that shows the key retired or revoked in that log, whatever the number, so a
   retirement that a later fetch turned into a revocation counts from the first fetch. If no
   such entry exists, no entry of the log stands before the bound; a fetched commit that the
-  store no longer holds is damage, as a purge does not rewrite what a remote reference names. The checks of the proofs in `op verify` use this register.
+  store no longer holds is damage, as a purge does not rewrite what a remote reference names.
+  The checks of the proofs in `op verify` use this register; the other readers of the register
+  (the recount of a pull, the gate of a merge) still compare a bound by its number.
 - **The order across clones** is the function `stands_before` of the protocol module: an entry
   of another log lies before the record entry that brought a revocation if a confirmed anchor of
   that log covers it (its tip is the entry or a later one) and names a smaller record number.
-  Contradicting anchors and anchors of other logs count for nothing.
+  Contradicting anchors and anchors of other logs count for nothing. The function trusts the
+  number of the tip, so the caller passes only anchors that the log holds with their hash, as
+  `Repository::verify_anchors` checks them.
+- **The reader of the list** (`Repository::verify_anchors`) checks what the hub checks when it
+  reads it: every held anchor carries the number of its position, and the list holds the
+  confirmation that the clone keeps at its number. A relay that leaves out the anchor that
+  shows a cut tail is found.
+- **A known limit.** The hub asks only whether the key is active; it does not know which actor
+  writes in which log, as several actors write in one, and it sees no entry. An active key can
+  therefore have a number confirmed for a log that is not its own and that the log never
+  reached: the ID of a log is no secret, as the register names it. The real anchors of that log
+  then stand as contradicting, and its clone reads a cut tail (`AnchorFinding::Cut`). The
+  signature of the actor is in the held anchor, so the list names who did it; an owner revokes
+  the key. Binding a log to its actors is left to a later decision.
 
 ### The hub holds no copy of a policy
 

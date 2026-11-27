@@ -112,6 +112,18 @@ pub enum AnchorFinding {
         /// The position of the held anchor.
         position: usize,
     },
+    /// A held anchor does not carry the running number of its position in the list: the list
+    /// misses an anchor or holds one twice. Carries the position, from 1.
+    Order {
+        /// The position of the held anchor.
+        position: usize,
+    },
+    /// The list does not hold the confirmation that the clone keeps for the remote, at its
+    /// number: a confirmed anchor was left out. Carries the entry of the kept confirmation.
+    Withheld {
+        /// The entry of the kept confirmation.
+        kept: Point,
+    },
 }
 
 impl fmt::Display for AnchorFinding {
@@ -152,6 +164,16 @@ impl fmt::Display for AnchorFinding {
                 f,
                 "held anchor {position} names another log or another repository"
             ),
+            Self::Order { position } => write!(
+                f,
+                "held anchor {position} does not carry the number {position}: the list misses \
+                 an anchor or holds one twice"
+            ),
+            Self::Withheld { kept } => write!(
+                f,
+                "the list does not hold the kept confirmation of entry {} with the hash {}",
+                kept.number, kept.hash
+            ),
         }
     }
 }
@@ -179,6 +201,12 @@ pub enum LogAnchorError {
     Format(Box<StoreError>),
     /// The file of the ID of the log is not in canonical form.
     LogIdDamaged {
+        /// The path of the file.
+        path: PathBuf,
+    },
+    /// The file of the ID of the log is missing in a repository of version 19 or later, whose
+    /// rise wrote it: it was removed.
+    LogIdMissing {
         /// The path of the file.
         path: PathBuf,
     },
@@ -235,6 +263,12 @@ impl fmt::Display for LogAnchorError {
             Self::LogIdDamaged { path } => write!(
                 f,
                 "{} is not `{LOG_ID_HEADER}` and the ID of the log",
+                path.display()
+            ),
+            Self::LogIdMissing { path } => write!(
+                f,
+                "{} is missing; a repository of format {LOG_ID_SINCE} or later always has it, so \
+                 it was removed",
                 path.display()
             ),
             Self::ConfirmationDamaged { path, error } => {
@@ -300,7 +334,9 @@ fn io_error(operation: &'static str, path: &Path) -> impl FnOnce(io::Error) -> L
     }
 }
 
-/// Reads a small file, or `None` if there is none.
+/// Reads a small file, or `None` if there is none. A file over the limit is read to one byte
+/// past it, which no reader takes, so it is reported as damage by the reader and not as a failure
+/// to read.
 fn read_small(path: &Path, operation: &'static str) -> Result<Option<Vec<u8>>, LogAnchorError> {
     let file = match fault::open(path) {
         Ok(file) => file,
@@ -313,12 +349,6 @@ fn read_small(path: &Path, operation: &'static str) -> Result<Option<Vec<u8>>, L
         &mut bytes,
     )
     .map_err(io_error(operation, path))?;
-    if bytes.len() as u64 > MAX_CONFIRMATION_LEN {
-        return Err(io_error(operation, path)(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "the file is larger than 64 KiB",
-        )));
-    }
     Ok(Some(bytes))
 }
 
@@ -429,8 +459,9 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// [`LogAnchorError::LogIdDamaged`] for a file that is not in canonical form, or that is
-    /// missing in a repository of version 19 or later,
+    /// [`LogAnchorError::LogIdDamaged`] for a file that is not in canonical form,
+    /// [`LogAnchorError::LogIdMissing`] for one that is missing in a repository of version 19 or
+    /// later,
     /// [`LogAnchorError::Refs`] for the lock, [`LogAnchorError::Format`] if the format cannot
     /// be raised, and [`LogAnchorError::Io`] if the file cannot be read or written or the
     /// random source fails.
@@ -451,8 +482,8 @@ impl Repository {
         // (`raise_format`). A file that is missing then was removed, which would give the log
         // another identity without a word.
         let path = self.shared_path(LOG_ID_FILE);
-        if format_version(&self.shared).is_some_and(|version| version >= LOG_ID_SINCE) {
-            return Err(LogAnchorError::LogIdDamaged { path });
+        if knows_log_id(&self.shared) {
+            return Err(LogAnchorError::LogIdMissing { path });
         }
         raise_format(&self.shared, FORMAT_VERSION)
             .map_err(|error| LogAnchorError::Format(Box::new(error)))?;
@@ -643,9 +674,11 @@ impl Repository {
     /// # Errors
     ///
     /// [`LogAnchorError::Confirmation`] with the first finding: a cut tail
-    /// ([`AnchorFinding::Cut`]), a rewritten entry ([`AnchorFinding::Rewritten`]), or a held
-    /// anchor of another key, log, or repository. The errors of the configuration, the pinned
-    /// key, the log, and its ID otherwise.
+    /// ([`AnchorFinding::Cut`]), a rewritten entry ([`AnchorFinding::Rewritten`]), a held
+    /// anchor of another key, log, or repository, a list out of order ([`AnchorFinding::Order`]),
+    /// or a list without the confirmation that the clone keeps ([`AnchorFinding::Withheld`]).
+    /// The errors of the configuration, the pinned key, the log, its ID, and
+    /// [`last_confirmation`](Self::last_confirmation) otherwise.
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see
@@ -662,8 +695,33 @@ impl Repository {
         let key = config.pinned_key().map_err(LogAnchorError::HubKey)?;
         let log = self.log_id()?;
         let entries = self.oplog().verify()?;
-        check_anchors(&entries, log, config.repository, key, held)
-            .map_err(LogAnchorError::Confirmation)
+        let check = check_anchors(&entries, log, config.repository, key, held)
+            .map_err(LogAnchorError::Confirmation)?;
+        // The hub refuses a list out of order as damaged (`read_list`); the reader does so too,
+        // or a relay could leave out the anchor that shows a cut tail.
+        if let Some(position) = held
+            .iter()
+            .zip(1..)
+            .find_map(|(anchor, position)| (anchor.number() != position).then_some(position))
+        {
+            return Err(LogAnchorError::Confirmation(AnchorFinding::Order {
+                position: usize::try_from(position).unwrap_or(usize::MAX),
+            }));
+        }
+        // The list keeps every anchor, so it holds the kept confirmation at its number; a list
+        // without it left a confirmed anchor out.
+        if let Some(kept) = self.last_confirmation(remote)? {
+            let at = usize::try_from(kept.number())
+                .ok()
+                .and_then(|number| number.checked_sub(1))
+                .and_then(|index| held.get(index));
+            if at != Some(&kept) {
+                return Err(LogAnchorError::Confirmation(AnchorFinding::Withheld {
+                    kept: kept.tip(),
+                }));
+            }
+        }
+        Ok(check)
     }
 
     /// The register as it counts for the entries of this log (ADR-026): a bound that the
@@ -671,14 +729,15 @@ impl Repository {
     /// that brought a commit whose register shows the key retired or revoked in that log, so
     /// the entries before it count and the ones from it on do not; a retirement that a later
     /// fetch turned into a revocation counts from the first fetch. If no `fetch` entry brought
-    /// it, no entry of this log stands before the bound. A bound of this log and a bound without a log (version 1 of the
-    /// register) keep their number. `entries` are the entries of the log, which the caller
-    /// verified. The ID of the log is read, not made: a log without one has every bound with a
-    /// log as one of another log.
+    /// it, no entry of this log stands before the bound. A bound of this log and a bound without
+    /// a log (version 1 of the register) keep their number. `entries` are the entries of the
+    /// log, which the caller verified. The ID of the log is read, not made: a log of a version
+    /// before 19 without one has every bound with a log as one of another log.
     ///
     /// # Errors
     ///
-    /// [`LogAnchorError::LogIdDamaged`] and [`LogAnchorError::Io`] for the file of the ID, and
+    /// [`LogAnchorError::LogIdDamaged`], [`LogAnchorError::LogIdMissing`], and
+    /// [`LogAnchorError::Io`] for the file of the ID, and
     /// [`LogAnchorError::Register`] if the register of a fetched commit cannot be read, which
     /// includes a fetched commit that the store no longer holds.
     ///
@@ -692,6 +751,12 @@ impl Repository {
     ) -> Result<Register, LogAnchorError> {
         self.require_oplog("read the register for the log")?;
         let own = self.read_log_id()?;
+        if own.is_none() && knows_log_id(&self.shared) {
+            // Without its ID every bound of this log would count as one of another log.
+            return Err(LogAnchorError::LogIdMissing {
+                path: self.shared_path(LOG_ID_FILE),
+            });
+        }
         let foreign = register
             .entries()
             .iter()
@@ -746,6 +811,12 @@ impl Repository {
         };
         Ok(register.for_log(own, brought))
     }
+}
+
+/// Whether the metadata directory `dir` is of version 19 or later, whose rise writes the file
+/// `log-id`, so that a missing one was removed.
+fn knows_log_id(dir: &Path) -> bool {
+    format_version(dir).is_some_and(|version| version >= LOG_ID_SINCE)
 }
 
 /// The version that the file `format` in `dir` names, or `None` if it cannot be read as one.

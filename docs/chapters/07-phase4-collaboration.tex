@@ -1291,6 +1291,8 @@ brachte: Die Einträge davor zählen, die ab ihm nicht.
 Hat kein solcher Eintrag die Grenze gebracht, zählt kein Eintrag dieses Logs vor ihr.
 Widerruft ein Klon einen Schlüssel, den ein anderer schon ausgemustert hat, bleibt die frühere
 Grenze, denn sie wurde zuerst geschrieben.
+So rechnet \type{op verify}; die übrigen Leser des Registers, etwa die Nachzählung eines Pull,
+vergleichen eine Grenze noch nach ihrer Nummer.
 Wie der Hub die Einträge verschiedener Klone ordnet, steht in \in{Abschnitt}[sec:anchor-confirm].
 \in{Abbildung}[fig:key-states] fasst die Zustände eines Schlüssels und die Kaskade zusammen.
 

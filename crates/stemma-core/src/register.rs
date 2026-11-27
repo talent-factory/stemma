@@ -275,8 +275,10 @@ pub enum KeyState {
 }
 
 /// Revokes `held` from `bound`: an active key from the bound, a key that is retired or revoked
-/// in the same log from the earlier of both numbers. A key whose bound counts in another log
-/// keeps it, as it was written first (see [`Register::revoke`]).
+/// in the same log from the earlier of both numbers, with the log of that number. A bound
+/// without a log (version 1 of the file) counts in every log by its number, so it is compared
+/// as well. A key whose bound counts in another log keeps it, as it was written first (see
+/// [`Register::revoke`]).
 fn revoke_held(held: &mut KeyEntry, bound: Bound) {
     match held.state {
         KeyState::Active => {
@@ -284,8 +286,10 @@ fn revoke_held(held: &mut KeyEntry, bound: Bound) {
             held.log = bound.log;
         }
         KeyState::Retired { from } | KeyState::Revoked { from } => {
-            let from = if held.log == bound.log {
-                from.min(bound.number)
+            let comparable = held.log.is_none() || bound.log.is_none() || held.log == bound.log;
+            let from = if comparable && bound.number < from {
+                held.log = bound.log;
+                bound.number
             } else {
                 from
             };
@@ -2540,6 +2544,47 @@ mod tests {
             .unwrap();
         let held = &same.entry(&mia()).unwrap().keys()[0];
         assert_eq!(held.state, KeyState::Revoked { from: 5 });
+    }
+
+    #[test]
+    fn a_revocation_in_a_log_lowers_a_bound_without_a_log() {
+        // A bound of version 1 counts in every log by its number, so an earlier revocation in a
+        // log wins, and carries its log.
+        let mut register = register();
+        let key = Seeded::new(2).public();
+        register.retire(&mia(), &key, 50).unwrap();
+        register
+            .revoke(&mia(), &key, Bound::in_log(30, log(0xab)))
+            .unwrap();
+        let held = &register.entry(&mia()).unwrap().keys()[0];
+        assert_eq!(held.state, KeyState::Revoked { from: 30 });
+        assert_eq!(held.log, Some(log(0xab)));
+        // A later one keeps the bound without a log.
+        let mut later = super::tests::register();
+        later.retire(&mia(), &key, 20).unwrap();
+        later
+            .revoke(&mia(), &key, Bound::in_log(30, log(0xab)))
+            .unwrap();
+        let held = &later.entry(&mia()).unwrap().keys()[0];
+        assert_eq!(held.state, KeyState::Revoked { from: 20 });
+        assert_eq!(held.log, None);
+        // The cascade lowers a bound of an agent without a log as well, so the file reads.
+        let mut cascade = with_bot();
+        cascade.add_key(&bot(), Seeded::new(6).public()).unwrap();
+        cascade
+            .retire(&bot(), &Seeded::new(3).public(), 50)
+            .unwrap();
+        cascade
+            .revoke(&mia(), &key, Bound::in_log(30, log(0xab)))
+            .unwrap();
+        for held in cascade.entry(&bot()).unwrap().keys() {
+            assert_eq!(held.state, KeyState::Revoked { from: 30 });
+            assert_eq!(held.log, Some(log(0xab)));
+        }
+        assert_eq!(
+            Register::parse(cascade.encode().as_bytes()).unwrap(),
+            cascade
+        );
     }
 
     #[test]

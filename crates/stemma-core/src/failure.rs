@@ -446,14 +446,15 @@ impl Classify for crate::repository::LogAnchorError {
             // A file of the anchors that is not in canonical form, and a log that no longer
             // holds what the hub confirmed.
             Self::LogIdDamaged { .. }
+            | Self::LogIdMissing { .. }
             | Self::ConfirmationDamaged { .. }
             | Self::Diverged(_)
             | Self::Confirmation(
                 crate::repository::AnchorFinding::Cut { .. }
                 | crate::repository::AnchorFinding::Rewritten { .. },
             ) => FailureKind::Damaged,
-            // An anchor of another key, log, or repository: an answer of the hub, not the state
-            // of this repository.
+            // An anchor of another key, log, or repository, and a list out of order or without
+            // the kept confirmation: an answer of the hub, not the state of this repository.
             Self::Confirmation(_) => FailureKind::Other,
             Self::Register(error) => match &**error {
                 crate::register::ModeError::Io(_) | crate::register::ModeError::Head(_) => {

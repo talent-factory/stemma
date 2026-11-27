@@ -938,8 +938,10 @@ pub(super) fn read_refusal(lines: &mut Lines<'_>) -> Result<AnchorRefusal, Parse
 /// the entry counts as after it. A revocation acts across clones from the record entry that
 /// moves `main` to the commit that holds it, so an entry of another clone counts before the
 /// revocation only by this rule. `held` are the anchors that the hub holds, checked by the
-/// caller against the key of the hub; anchors of other logs and contradicting ones count for
-/// nothing.
+/// caller against the key of the hub and against the log, whose entries they must hold with
+/// their hashes ([`Repository::verify_anchors`](crate::repository::Repository::verify_anchors)):
+/// the function trusts the number of the tip. Anchors of other logs and contradicting ones count
+/// for nothing.
 pub fn stands_before(held: &[HeldAnchor], log: LogId, entry: u64, record: u64) -> bool {
     held.iter().any(|anchor| {
         anchor.is_confirmed()
