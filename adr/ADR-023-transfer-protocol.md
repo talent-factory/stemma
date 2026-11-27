@@ -100,6 +100,17 @@ know; that costs bytes and nothing else. A refused push leaves unnamed objects o
 are never served. Fetch and push mirror each other (the same stream, order, check and way of
 resumption), and the core needs no quarantine area.
 
+*Built in STEMMA-309* on the client side: `Repository::push` with the request `upload` of
+`Transport`. The upload is computed by `Repository::upload_of`, the walk of the answering side
+with the commits of the remote references of the remote as `have`. It is cut into pieces of
+about 64 MiB of bodies (`PIECE_BYTES`) at commit boundaries, each a stream of its own with its
+first line, and an object goes once across the pieces. A piece whose request fails on the
+carrier is sent again, at most three times (`PIECE_ATTEMPTS`); a piece that was confirmed is not
+sent again within the push. A push that stops keeps no journal: the next push computes the same
+upload from the remote references, which did not move, and the hub stores what it has already
+once more, as the request is idempotent. A refusal of the ref update with an `incomplete`
+reference (422) uploads once more and sends the same update again, once.
+
 Rejected: a question to the hub before sending (it can be added as an optional request later), a
 negotiation of common commits, one request with objects and ref update (a quarantine area in the
 sealed store, and a first push of a large history as one request that must pass whole), and an
@@ -587,8 +598,10 @@ a new protocol number and, where it concerns the store, a new version of `stemma
       Windows (`GetFileInformationByHandle`), or a journal that is emptied in place of being
       removed, so that its file never changes.
 - [ ] The kind of the error message for a bound that was exceeded (see "Error"). The receiver
-      refuses with a typed error of the core; the message on the wire comes with the slice that
-      carries an upload over a transport, and until then `StreamError::answer` has none for it.
+      refuses with a typed error of the core. The request `upload` of `Transport` is built
+      (STEMMA-309), and a push reports any error message that answers it; the kind of the
+      message comes with the slice that answers an upload over HTTP on a hub, and until then
+      `StreamError::answer` has none for it.
 - [ ] Whether `push` reads the references first to report a stale state early. It belongs to the
       command surface.
 - [ ] The list of references carries the former keys without the signature of the current key

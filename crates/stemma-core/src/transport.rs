@@ -9,12 +9,13 @@
 //! without a socket.
 //!
 //! The trait has one method per request of the protocol (ADR-023). This version has the list of
-//! references, the fetch, the two requests of the sign-in (ADR-024), and the ref update, which is
-//! answered with its receipt ([`record`](crate::protocol::record), ADR-025); the slices that add
-//! a request add its method. The sign-in is the one place where a transport reads a message: the
+//! references, the fetch, the two requests of the sign-in (ADR-024), the upload, the ref update,
+//! which is answered with its receipt ([`record`](crate::protocol::record), ADR-025), and the
+//! anchor of a log (ADR-026); the slices that add a request add its method. The sign-in is the one place where a transport reads a message: the
 //! token answer holds the token, which stays inside the transport
 //! ([`Transport::answer_challenge`]). The procedure of the client is [`sign_in`]. The upload of
-//! the objects that a ref update names comes with the slice of `push`. The submission of a
+//! the objects that a ref update names and the sending of an anchor came with the slice of
+//! `push` (STEMMA-309). The submission of a
 //! signed statement and the two reading requests by a range of numbers, for the statements and
 //! for the record, belong to the statements on a hub (ADR-025).
 //!
@@ -39,6 +40,8 @@ use crate::protocol::sign_in::{Challenge, SignedChallenge, Token, TokenAnswer};
 use crate::protocol::held::{HeldStatement, Range};
 use crate::protocol::statement::Statement;
 use crate::protocol::{ErrorMessage, FetchRequest, RefList};
+// The upload and the anchor of a push (STEMMA-309).
+use crate::protocol::anchor::{Anchor, HeldAnchor};
 
 mod sign_in;
 
@@ -197,6 +200,39 @@ pub trait Transport {
     fn record(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
         let _ = request;
         Err(not_carried("read the record"))
+    }
+
+    // The upload and the anchor of a push (ADR-023, ADR-026, STEMMA-309). Both have a body that
+    // fails with `TransportError::Carrier` of the kind `Unsupported`, as the statements do.
+
+    /// Uploads an object stream, which `request` holds as an
+    /// [`ObjectStreamWriter`](crate::protocol::ObjectStreamWriter) writes it: the first step of
+    /// a push (ADR-023). The message of the answer is empty, and it comes once the other side has
+    /// made every object of the stream durable. The objects stay unnamed until a ref update names
+    /// them. The request is idempotent: a stream that was cut off is sent again.
+    ///
+    /// # Errors
+    ///
+    /// As [`submit_statement`](Self::submit_statement). After a failure of the carrier the
+    /// caller does not know which objects arrived, and sends the stream again.
+    fn upload(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let _ = request;
+        Err(not_carried("upload objects"))
+    }
+
+    /// Sends a signed anchor of the operation log, which `request` holds as
+    /// [`Anchor::encode`] writes it (ADR-026). The message of the answer is the anchor as the
+    /// other side holds it ([`HeldAnchor`]), and a refused one is answered with
+    /// [`ErrorMessage::AnchorRefused`].
+    ///
+    /// # Errors
+    ///
+    /// As [`submit_statement`](Self::submit_statement). After a failure of the carrier the
+    /// caller may send the same anchor again: the other side answers an anchor that it holds
+    /// with its confirmation.
+    fn anchor(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let _ = request;
+        Err(not_carried("send an anchor"))
     }
 }
 
@@ -377,6 +413,36 @@ pub trait OtherSide {
     fn record(&self, range: &Range) -> Result<Vec<RecordEntry>, Refusal> {
         let _ = range;
         Err(Refusal::Failed("this side keeps no record".to_owned()))
+    }
+
+    // The upload and the anchor of a push (STEMMA-309). A side answers an upload by calling the
+    // receiving operation of a hub
+    // ([`Repository::receive_objects`](crate::repository::Repository::receive_objects)), and an
+    // anchor by calling
+    // [`Repository::accept_anchor`](crate::repository::Repository::accept_anchor). A side that
+    // answers neither need not implement the methods.
+
+    /// Answers an upload: reads the object stream from `stream`, with its first line, and
+    /// returns once its objects are durable.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers, or the failure that kept it from
+    /// answering, such as a stream that its reader refuses.
+    fn upload(&self, stream: &mut dyn BufRead) -> Result<(), Refusal> {
+        let _ = stream;
+        Err(Refusal::Failed("this side accepts no upload".to_owned()))
+    }
+
+    /// Answers an anchor with the anchor as this side holds it.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`]: the error message that this side answers
+    /// ([`ErrorMessage::AnchorRefused`]), or the failure that kept it from answering.
+    fn anchor(&self, anchor: &Anchor) -> Result<HeldAnchor, Refusal> {
+        let _ = anchor;
+        Err(Refusal::Failed("this side accepts no anchor".to_owned()))
     }
 }
 
@@ -594,6 +660,24 @@ impl<S: OtherSide> Transport for MemoryTransport<S> {
                 .record(&range)
                 .map(|entries| entries.iter().flat_map(RecordEntry::encode).collect()),
         )
+    }
+
+    // The upload and the anchor of a push (STEMMA-309).
+
+    fn upload(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        // The stream is passed on as it is: the side reads it with the reader of the protocol,
+        // as a hub does.
+        let bytes = read_request(request)?;
+        answer(self.side.upload(&mut bytes.as_slice()).map(|()| Vec::new()))
+    }
+
+    fn anchor(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        let bytes = read_request(request)?;
+        let anchor = match Anchor::parse(&bytes) {
+            Ok(anchor) => anchor,
+            Err(error) => return answer(Err(ErrorMessage::from(&error).into())),
+        };
+        answer(self.side.anchor(&anchor).map(|held| held.encode()))
     }
 }
 

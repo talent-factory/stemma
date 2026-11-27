@@ -356,7 +356,12 @@ impl Error for GateError {
 
 impl GateError {
     /// The error of the local gate for a refusal of the verdict about `main`.
-    fn refused(refusal: Refusal, number: u64, tip: CommitId, pull: &PullRequest) -> Self {
+    pub(super) fn refused(
+        refusal: Refusal,
+        number: u64,
+        tip: CommitId,
+        pull: &PullRequest,
+    ) -> Self {
         match refusal {
             Refusal::BranchMoved { head: Some(_) } => Self::BranchMoved { number },
             Refusal::BranchMoved { head: None } => Self::Pull(PullError::NoSuchBranch {

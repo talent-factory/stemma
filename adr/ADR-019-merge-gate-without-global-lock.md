@@ -13,7 +13,8 @@ what "`main` is always green" means for the gate (ADR-006 decides the GitHub sid
 open) and gives ADR-004 the meaning of its "merge gate".
 The gate on a hub was decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, see "The gate
 and a hub"); the verdict about `main` that a clone and a hub share, with the approvals and the
-escalation for weakened tests, is implemented (STEMMA-303).
+escalation for weakened tests, is implemented (STEMMA-303), and so is the swap across the network
+in a repository whose `main` follows a remote (STEMMA-309).
 
 ## Context
 
@@ -283,7 +284,8 @@ meaning: different actor IDs.
 ### The gate and a hub
 
 Decided for phase 5 (STEMMA-273, ADR-025). The second item is implemented (STEMMA-290), and the
-first, the third and the last are (STEMMA-303); the swap across the network is not yet.
+first, the third and the last are (STEMMA-303), and the swap across the network as well
+(STEMMA-309).
 
 - The verdict about `main` is a pure function over the commits, the register and the policy of
   the tip `T`, the namespace policy (ADR-027), and the signed statements. `merge_gate` calls it
@@ -322,6 +324,16 @@ first, the third and the last are (STEMMA-303); the swap across the network is n
   the gate builds `M` on the tip `T` of the remote without a move, sends the ref update, and
   moves `main` only after the receipt. On `Stale` the command fetches and repeats, bounded, and
   signs again each time. Without a remote the gate stays as described above.
+  *(STEMMA-309)* The entry is `Repository::merge_gate_remote`. One attempt fetches, takes `T`
+  from the remote reference of `main`, judges with `judge_main` by the policy of `T`, writes
+  `M` with the single parent `T`, and sends the move from `T` to `M` with the opening as its
+  evidence, through the upload and the receipt of a push (ADR-025). After the receipt, under
+  the lock, one entry `push` moves the local `main` and its remote reference to `M`, and then
+  `pr-merge` follows (ADR-011). `Stale` starts the next attempt with a new fetch and a new
+  signature, at most `MAX_ATTEMPTS` times, the cap of the local loop. A refusal of the hub
+  leaves `M` unnamed, as the failed attempts of the local gate leave their objects. A change
+  that the hub holds already is recorded as merged without a move, the repair path across the
+  network. The local `main` therefore never names an `M` that the hub did not accept.
 - The write owner of an unprotected branch may push a move that is no fast-forward, and the
   record of the hub says so, which is the way of this ADR for a rebase.
 - The accepting operation takes `refs.lock` itself in the middle, as the gate does. Pure

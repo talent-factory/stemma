@@ -251,6 +251,10 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             value(moved.after().map(|reference| &reference.commit)),
         );
     }
+    // The receipt of the hub that the entry `push` names (STEMMA-309).
+    if let Some(receipt) = change.receipt() {
+        let _ = writeln!(out, "    receipt {}  {}", receipt.number, receipt.hash);
+    }
     match outcome {
         Outcome::Took => {}
         Outcome::NotTaken => out.push_str("    ! the move did not take effect\n"),

@@ -2694,6 +2694,20 @@ Ein Purge ersetzt ein \type{remote-remove} durch einen Stub, wenn er einen der C
     remote origin  address https://hub.example/ns/project  key SHA256:6zzhw7QG...
 \stoptyping
 
+{\bf Push.} Der Eintrag \type{push} (ADR-008, ADR-011) zeigt je Remote-Referenz, die er bewegt,
+eine Zeile mit dem alten und dem neuen Commit, beim Merge eines Pull Requests über einen Remote
+davor die Zeile des lokalen \type{main}, und zuletzt die Quittung des Hubs: ihre Nummer in der
+Aufzeichnung und ihren Hash.
+Die JSON-Form nennt die Quittung nicht eigens; der Eintrag jeder bewegten Remote-Referenz ist ihr
+Hash.
+Einen Befehl \type{push} gibt es noch nicht; der Kern schreibt den Eintrag.
+
+\starttyping
+7  2026-11-27T10:02:11Z  human daniel  push
+    remote remotes/origin/heads/main  b3:2cfe...4b8f -> b3:91aa...0c3e
+    receipt 4  b3:5d0e...7a21
+\stoptyping
+
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
 \type{change}, \type{stub}, \type{purge}, \type{lease}, \type{pull}, \type{check},
 \type{remote-pin} oder \type{remote}.

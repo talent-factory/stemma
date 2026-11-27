@@ -277,6 +277,7 @@ impl Repository {
                             branches: plan.branches.clone(),
                             tags: Vec::new(),
                             remotes: plan.remotes.clone(),
+                            receipt: None,
                         },
                     )
                     .map_err(|error| {

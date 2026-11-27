@@ -130,8 +130,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 20, the version of the entries `remote-add`
-  and `remote-remove` (STEMMA-305), and `open` reads the versions 2 to 20.
+  supports: `init` and `init_bare` write version 21, the version of the entry `push` with its
+  line `receipt` (STEMMA-309), and `open` reads the versions 2 to 21.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
@@ -140,8 +140,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
   (11), before the former owner of a worktree (12), before the remotes (13), before the bare
   repository (14), before the signed statements (15), before the line `remote` (16), or before
-  the entry `remote-pin` (17), before the ID of the log (18), or before the entries of a remote
-  (19) rises to 20 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  the entry `remote-pin` (17), before the ID of the log (18), before the entries of a remote
+  (19), or before the entry `push` (20) rises to 21 with its next entry or purge (ADR-014,
+  ADR-011, ADR-010). Version 21 changes no file: a program that knows only version 20 would
+  refuse the line `receipt` of a `push` entry as damage, so it refuses the repository instead.
   Version 19 adds the file `log-id` and the directory `anchors/` (ADR-026, see "The layout in
   Phase 5"). `init` and `clone` write the ID; a repository of version 18 or before rises to 19
   when it gets its ID or keeps a confirmation, and with its next entry or purge, as every

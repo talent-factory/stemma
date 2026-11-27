@@ -410,7 +410,7 @@ fn read_list(transport: &mut dyn Transport) -> Result<RefList, FetchError> {
 }
 
 /// Reads a small answer to its end, up to `bound` bytes.
-fn read_bounded(body: Body<'_>, bound: u64) -> Result<Vec<u8>, FetchError> {
+pub(super) fn read_bounded(body: Body<'_>, bound: u64) -> Result<Vec<u8>, FetchError> {
     let mut bytes = Vec::new();
     body.take(bound + 1)
         .read_to_end(&mut bytes)
@@ -422,7 +422,7 @@ fn read_bounded(body: Body<'_>, bound: u64) -> Result<Vec<u8>, FetchError> {
 }
 
 /// The error that the other side answered, or why it cannot be read.
-fn refused(body: Body<'_>) -> FetchError {
+pub(super) fn refused(body: Body<'_>) -> FetchError {
     match read_bounded(body, MAX_ERROR_MESSAGE) {
         Ok(bytes) => match ErrorMessage::parse(&bytes) {
             Ok(message) => FetchError::Refused(message),

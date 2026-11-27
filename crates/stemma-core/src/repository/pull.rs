@@ -944,7 +944,7 @@ mod tests {
         let pull = entry.pull().unwrap();
         assert_eq!(pull.kind(), PullKind::Open);
         assert_eq!(pull.commit(), Some(&start));
-        assert_eq!(format(&dir), "stemma-repository 20\n");
+        assert_eq!(format(&dir), "stemma-repository 21\n");
         let pulls = repository.pull_requests(None).unwrap();
         assert_eq!(pulls.len(), 1);
         assert_eq!(pulls[0].number(), entry.number());
