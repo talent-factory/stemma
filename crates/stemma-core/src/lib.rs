@@ -64,6 +64,7 @@ pub mod lease;
 pub mod merge;
 pub mod merge_base;
 pub mod moved;
+pub mod namespace;
 pub mod object;
 pub mod oplog;
 pub mod policy;

@@ -740,6 +740,8 @@ impl Classify for crate::repository::FetchError {
             Self::Receive(error) => error.kind(),
             Self::Connectivity(error) => error.kind(),
             Self::JournalLeft { source, .. } => source.kind(),
+            Self::Namespace(crate::repository::KeepNamespaceError::Format(error)) => error.kind(),
+            Self::Namespace(_) => FailureKind::Other,
             // The other side and the carrier: nothing of this repository is damaged or locked.
             Self::NoSuchRemote(_)
             | Self::Transport(_)

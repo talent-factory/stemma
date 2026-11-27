@@ -130,8 +130,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 20, the version of the entries `remote-add`
-  and `remote-remove` (STEMMA-305), and `open` reads the versions 2 to 20.
+  supports: `init` and `init_bare` write version 22, the version of the directory
+  `namespaces/` (STEMMA-311), and `open` reads the versions 2 to 22. Version 21 belongs to
+  STEMMA-309.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
@@ -142,6 +143,10 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   repository (14), before the signed statements (15), before the line `remote` (16), or before
   the entry `remote-pin` (17), before the ID of the log (18), or before the entries of a remote
   (19) rises to 20 with its next entry or purge (ADR-014, ADR-011, ADR-010).
+  Version 22 adds the directory `namespaces/` with the namespace policy that a fetch kept for
+  each remote (ADR-027, see "The layout in Phase 5"). A program that knows only version 21
+  would merge without the namespace policy, so it has to refuse the repository. The repository
+  rises to 22 before a fetch writes the first file, and with its next entry or purge.
   Version 19 adds the file `log-id` and the directory `anchors/` (ADR-026, see "The layout in
   Phase 5"). `init` and `clone` write the ID; a repository of version 18 or before rises to 19
   when it gets its ID or keeps a confirmation, and with its next entry or purge, as every
@@ -297,8 +302,24 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     on it. Unlike `purge-pending` it stops no other command and raises no version of the
     format: it names objects that no reference and no entry names, an older program does not
     read it, and a fetch that finds none starts from its references.
-  - The namespace policy that the clone last fetched (ADR-027), and the last confirmation of an
-    anchor (ADR-026); where they are kept is left to their slices.
+  - The namespace policy that the clone last fetched (ADR-027) *(STEMMA-311, decided here, as
+    ADR-027 left it to the slice)*: the directory `namespaces/`, with one file per remote,
+    `namespaces/<remote>`, whose name is the name of the remote, in the metadata directory that
+    every worktree shares. The file has the line `stemma-namespace 1`, the line `commit <id>`
+    with the commit of the namespace repository that the list of references names, and then the
+    namespace policy in its canonical form (`Policy::encode`), from its header on; it is at
+    most 8 MiB, and the reader accepts what the writer writes and nothing else. A fetch replaces
+    it under the lock of the references, through a temporary file in `tmp/` that is flushed and
+    renamed into place, before the remote references move, and removes it when the list names
+    no namespace policy; the repository rises to version 22 before the first file. The local
+    gate reads the files of the configured remotes and combines their policies with the policy
+    of `main` by the maximum (ADR-027), so the file of a removed remote counts no more. It is
+    the answer of the hub and no history: no entry of the log names it, and `op restore` does
+    not bring an older one back. Rejected: a line of the configuration of the remote (the
+    configuration is what a human pins, the policy changes with the namespace repository) and
+    an object in the store with a reference (the namespace repository is another repository,
+    and a reference would make its history a root of a purge).
+    The last confirmation of an anchor (ADR-026) is described above.
 - **A bare repository** *(decided in STEMMA-269 and STEMMA-272; implemented in STEMMA-284)*. A
   hub opens a bare `Repository`: the layout above without a working copy.
   - **Where it lies.** The directory of a bare repository is the metadata directory itself; there

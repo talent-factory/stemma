@@ -1,8 +1,9 @@
 # ADR-027: Namespaces
 
 **Status:** Accepted for phase 5. Decided by the author on 2026-11-24 (STEMMA-276, with the
-addendum of STEMMA-278) and carried into the ADRs by STEMMA-280. Nothing of it was measured or
-built. `.stemma-namespace-policy` is a working name.
+addendum of STEMMA-278) and carried into the ADRs by STEMMA-280. The core side of the namespace
+policy is built (STEMMA-311, see "The namespace policy as built"); the rest is not, and nothing
+of it was measured.
 
 ## Context
 
@@ -69,8 +70,8 @@ The accepting operation (ADR-025) reads `.stemma-policy` of `T` and the namespac
 tip of `main` of the namespace repository and takes the maximum per change: the level over the
 touched paths, the number of approvals, the tighter bounds.
 
-- The namespace policy is a file with a fixed name in the root of the namespace repository
-  (working name `.stemma-namespace-policy`), apart from the `.stemma-policy` of that repository,
+- The namespace policy is a file with a fixed name in the root of the namespace repository,
+  `.stemma-namespace-policy` (STEMMA-311), apart from the `.stemma-policy` of that repository,
   which rules the namespace repository alone. It has the format `stemma-policy` with the same
   rules of validity, so by its form it can only raise.
 - The core takes the name into the list that is always level 3 and that no policy lowers (rule 8
@@ -181,6 +182,59 @@ break (point 9 of the hand-over in ADR-003, which stays out of scope):
 3. Every further policy is again content of a Stemma repository with a register and level 3, never
    a setting of an operator.
 
+### The namespace policy as built
+
+*(STEMMA-311)* The core holds the rules of this section that a clone and the core must know;
+what a hub keeps of a namespace stays with stemma-hub.
+
+- **The file.** `.stemma-namespace-policy` in the root of the tip of `main` of the namespace
+  repository. It has the format of the policy file with its rules of validity (ADR-004), and
+  version 2 of that format adds the line `demand-namespace-owners`. The reader refuses the line
+  in a file of version 1, and a program that knows only version 1 refuses the header
+  `stemma-policy 2`, so the change of the format is versioned and an older program never reads
+  a policy without the line. The line is valid in the policy file of a repository as well and
+  has no effect there. The core takes the name into the list that is always level 3 (rule 8 of
+  ADR-004), in every repository, so no policy lowers it.
+- **What a hub reads.** `Repository::namespace` reads, on the namespace repository, the file at
+  the tip of `main`, the commit of that tip, and the demanded owners: if the policy has the line,
+  every human with the role owner in the register of that tip, with each of its active keys
+  (`Namespace`). The hub passes the value with every ref update of a repository of the
+  namespace (`AcceptContext::with_namespace`) and with its list of references
+  (`ListFacts::with_namespace`).
+- **The combination.** The verdict about `main` combines any number of policies of the same
+  format by the maximum per change (`Combined`): the highest level that a policy gives a path,
+  and the highest escalation for weakened tests; the most agent approvals for the level; the
+  smallest `reservation` and `max-unverified`. The lease and the levels of the operations stay
+  with the policy of the repository. The order of the policies does not matter, and no further
+  policy lowers what another one asks for. A path that a namespace policy does not name has
+  level 2 by it, as by every policy, so a namespace policy that should raise single paths names
+  the others with their lower levels; it cannot name all paths at once, because such a line
+  would lower the policy files.
+- **The demanded owners.** Where the namespace demands them, the accepting operation refuses a
+  first push and every update of `main` whose register (the pushed one, or that of `M`) does not
+  hold each demanded owner: the same identity with the role owner, and each of its active keys
+  in the namespace repository as an active key of that identity. The name alone would be a claim
+  of whoever wrote the register. The reason is `namespace-owner <identity>` (ADR-025). A key
+  that an owner of the namespace adds therefore has to reach every register of the namespace
+  before its next update of `main`, which is the price named below.
+- **The record.** The `policy` lines of a record entry name the commit of `T` and, after it, the
+  commit of the namespace repository whose namespace policy the verdict read; a first push into
+  a namespace names the latter alone.
+- **The clone.** The list of references names the namespace policy in the line
+  `namespace-policy <commit> <hexadecimal policy>` (ADR-023). A fetch keeps it in
+  `namespaces/<remote>` (ADR-009, layout version 22) before the remote references move, and
+  removes the file when the list names none. The local gate combines the kept policies of the
+  configured remotes with the policy of `T`, so a clone and the hub reach the same verdict from
+  the same namespace policy. The tests run both on one change and compare.
+- **One human owner.** A level 3 change of a namespace repository whose register has one human
+  owner, a course with one teacher, is workable under the rule of phase 4 without a change: an
+  agent of the teacher writes and opens the pull request, the teacher approves it as the owner,
+  and a second agent of the teacher records the check, which counts because its sponsor is not
+  the opener. A change that the teacher writes and opens alone cannot land: the hub refuses the
+  approval of the opener, the checks of the agents of the opener do not count, and no other
+  owner can approve. Such a course needs a second human owner, or the teacher lets an agent
+  write the change.
+
 ## Consequences
 
 - A course is a namespace: the teacher owns the namespace repository, sets the namespace policy
@@ -194,9 +248,9 @@ break (point 9 of the hand-over in ADR-003, which stays out of scope):
 
 ## Open items
 
-- [ ] How a level 3 change is approved in a namespace repository with a single human owner. The
-      rule of phase 4 applies unchanged; the slice checks that it is workable for a course with
-      one teacher.
+- [x] How a level 3 change is approved in a namespace repository with a single human owner. The
+      rule of phase 4 applies unchanged and is workable when an agent of the teacher writes the
+      change (STEMMA-311, "The namespace policy as built").
 - [ ] The change of a namespace by a repository. The model does not rule it out, because the ID
       stays, but it would need the consent of both sides and changes the namespace policy that
       holds without a commit.

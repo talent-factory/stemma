@@ -28,7 +28,7 @@ use crate::check::{self, Check};
 use crate::history::{self, Parents};
 use crate::merge::merge_commits;
 use crate::object::{CommitId, EntryMode, ObjectId, TreeId};
-use crate::policy::{Policy, RiskLevel, DEFAULT_MAX_UNVERIFIED};
+use crate::policy::{Combined, Policy, RiskLevel, DEFAULT_MAX_UNVERIFIED};
 use crate::pull::{PullRequest, TARGET};
 use crate::refs::BranchName;
 use crate::register::Register;
@@ -158,7 +158,7 @@ impl Repository {
         }
         let count = bounds::unverified(&verification, main.len());
         let max = policies
-            .and_then(|policies| policies.iter().map(Policy::max_unverified).min())
+            .map(|policies| Combined::new(policies).max_unverified())
             .unwrap_or(DEFAULT_MAX_UNVERIFIED);
         if count >= usize::try_from(max).unwrap_or(usize::MAX) {
             return Ok(Some(Pause::Unverified { count, max }));
@@ -166,9 +166,7 @@ impl Repository {
         let Some(policies) = policies else {
             return Ok(None);
         };
-        let Some(n) = policies.iter().map(Policy::reservation_after).min() else {
-            return Ok(None);
-        };
+        let n = Combined::new(policies).reservation_after();
         let mut candidates = Vec::new();
         // A pull request that a closing without its proof ended keeps its reservation: that
         // closing may only make things stricter.

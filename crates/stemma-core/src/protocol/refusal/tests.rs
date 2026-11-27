@@ -249,6 +249,11 @@ fn a_refusal_of_references_carries_every_reason_with_its_facts() {
         ),
         (RefusalReason::NotOwner, "not-owner -"),
         (RefusalReason::Gate, "gate -"),
+        // The owners that a namespace demands (ADR-027, STEMMA-311).
+        (
+            RefusalReason::NamespaceOwner("human teacher".parse().unwrap()),
+            "namespace-owner human teacher",
+        ),
     ] {
         let message = references(vec![refused("heads/main", reason)]);
         assert!(round_trip(&message).ends_with(&format!("ref heads/main {line}\n")));
@@ -267,6 +272,11 @@ fn a_reason_fits_its_reference_for_the_constructor_and_for_the_reader() {
         ("tags/main", RefusalReason::Gate, "gate -"),
         ("heads/a", RefusalReason::NoRegister, "no-register -"),
         ("heads/a", RefusalReason::NotOwner, "not-owner -"),
+        (
+            "heads/a",
+            RefusalReason::NamespaceOwner("human teacher".parse().unwrap()),
+            "namespace-owner human teacher",
+        ),
         (
             "heads/a",
             RefusalReason::BadRegister(reason("x")),
@@ -613,4 +623,33 @@ fn the_reader_refuses_a_verdict_of_the_gate_that_breaks_its_form() {
         let line = format!("error refused\nref heads/main gate {facts}\n");
         assert!(parse(&line).is_err(), "{facts}");
     }
+}
+
+// The owners that a namespace demands (ADR-027, STEMMA-311).
+
+/// The example `error-refused-namespace-owner`: the register of the new commit of `main` does
+/// not hold an owner that the namespace demands.
+pub(crate) fn example_refused_namespace_owner() -> ErrorMessage {
+    references(vec![refused(
+        "heads/main",
+        RefusalReason::NamespaceOwner("human teacher".parse().unwrap()),
+    )])
+}
+
+#[test]
+fn the_identity_of_a_demanded_owner_has_one_spelling() {
+    for line in [
+        "namespace-owner -",
+        "namespace-owner human",
+        "namespace-owner human  teacher",
+        "namespace-owner person teacher",
+    ] {
+        assert!(
+            parse(&format!("error refused\nref heads/main {line}\n")).is_err(),
+            "{line}"
+        );
+    }
+    assert!(example_refused_namespace_owner()
+        .to_string()
+        .contains("does not hold human teacher as an owner"));
 }
