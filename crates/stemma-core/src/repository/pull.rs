@@ -458,7 +458,7 @@ impl Repository {
     /// the authorizer let in (in open mode that is a claim as well, ADR-003). So a commit under a
     /// foreign author name still counts the actor that put it on a branch (ADR-004 rule 4,
     /// STEMMA-255).
-    fn pull_authors(&self, head: &CommitId) -> Result<Vec<Actor>, PullError> {
+    pub(super) fn pull_authors(&self, head: &CommitId) -> Result<Vec<Actor>, PullError> {
         let store = self.objects();
         let own = history::ancestors(store, *head, Parents::All, None)?;
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");

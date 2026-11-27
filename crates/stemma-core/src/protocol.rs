@@ -2147,6 +2147,8 @@ pub mod examples {
         example!("held-anchor", HeldAnchor),
         example!("anchors", AnchorsRequest),
         example!("error-anchor-refused", Error),
+        // The gate on a hub (STEMMA-303).
+        example!("error-refused-gate", Error),
     ];
 }
 

@@ -27,9 +27,11 @@ das Akteursregister, die Policy-Datei mit der Eskalation und das Merge-Gate samt
 die Befehle \type{lease}, \type{pr}, \type{check}, \type{register} und \type{enforce} bedienen
 sie (\in{Kapitel}[chap:cli]).
 Als Folgearbeit bleiben die Anbindung der Lease an die übrigen schreibenden Befehle,
-die Prüfung der Freigaben im Gate, die Regel für registrierte Autoren,
+die Regel für registrierte Autoren,
 die Ableitung der Stufe aus der Policy in \type{pr merge} und die Policy-Datei dieses Repositorys
 selbst.
+Die Prüfung der Freigaben im Gate ist mit Phase 5 im Kern dazugekommen
+(\in{Abschnitt}[sec:main-verdict]); \type{pr merge} ruft sie noch nicht auf.
 Das Kapitel kennzeichnet an jeder Stelle, was davon noch fehlt, und Kapitel
 \in{}[chap:outlook] sammelt es.
 
@@ -440,10 +442,48 @@ Dafür muss es klären, was ein grünes Prüfergebnis noch heisst, wenn während
 Der Kern des Gates ist umgesetzt: die Regel nach Stufe, der optimistische Tausch, die Objekte vor
 der Sperre und die Schranken (Pause bei roter Spitze mit der Ausnahme für eine erklärte Behebung,
 Reservierung und Fenster ungeprüfter Commits).
-Noch nicht umgesetzt sind die Prüfung der Freigaben (ADR-004) und die Regel, dass die Autoren
-einer Änderung registrierte Akteure sind; bis dahin muss der Aufrufer des Kerns sie durchsetzen.
+Seit Phase 5 prüft das Gate nach der Policy auch die Freigaben (ADR-004) und die Eskalation bei
+abgeschwächten Tests, mit derselben Funktion, die ein Hub aufruft
+(\in{Abschnitt}[sec:main-verdict]).
+Noch nicht umgesetzt ist die Regel, dass die Autoren einer Änderung registrierte Akteure sind;
+bis dahin muss der Aufrufer des Kerns sie durchsetzen.
 Der Befehl \type{pr merge} ruft das Gate mit der Stufe aus \type{--level} auf (Standard 3),
-denn die Ableitung der Stufe aus der Policy ist in ihm noch nicht angeschlossen.
+denn die Ableitung der Stufe aus der Policy ist in ihm noch nicht angeschlossen;
+mit einer eigenen Stufe fragt das Gate keine Freigaben ab.
+
+\subsection[sec:main-verdict]{Das Urteil über main}
+
+Ob eine Änderung auf \type{main} darf, entscheidet eine einzige Funktion
+(\type{judge_main}).
+Das lokale Gate ruft sie in jedem Versuch auf, und ein Hub ruft sie für ein Ref-Update auf, das
+\type{main} bewegt (\in{Abschnitt}[sec:hub-gate]).
+Sie liest nur den Objektspeicher und das, was ihr Aufrufer übergibt: die Faltung der
+Erklärungen, die Reihenfolge, in der er sie hält, die Köpfe seiner Branches, das Register und die
+Policy der Spitze $T$ und seine Zeit.
+Ein Log, eine Aufzeichnung, eine Sperre oder eine Arbeitskopie braucht sie nicht, und sie
+erzeugt keinen Commit; nur der Tree-Merge schreibt Blobs und Trees.
+
+\startitemize[n]
+\item Der Branch steht auf dem Kopf, den die Eröffnung nennt.
+\item Der Merge des Kopfs auf $T$ ist sauber; ändert er nichts, enthält \type{main} die Änderung
+schon.
+\item Die Stufe ist die höchste Stufe der geänderten Pfade nach der Policy von $T$ und nach jeder
+weiteren Policy, angehoben durch die Eskalation bei abgeschwächten Tests über die alten und neuen
+Blobs (\in{Abschnitt}[sec:policy-file]).
+\item Ein Prüfergebnis zählt nach der Regel der Stufe (\in{Tabelle}[tab:gate-rule]).
+\item Wo ein Register und eine Policy gelten, zählen die Freigaben nach der Neuzählung: so viele
+Freigaben registrierter Agenten, wie die Policy für die Stufe verlangt, und auf den Stufen 2
+und 3 eine Freigabe eines registrierten Menschen, auf Stufe 3 die eines Owners.
+Reichen sie nicht, nennt die Ablehnung jede Freigabe, die nicht zählt, mit ihrem Grund.
+\item Die Schranken: die Pause bei roter Spitze, das Fenster ungeprüfter Commits und die
+Reservierung.
+\stopitemize
+
+Wer das Gate mit einer eigenen Stufe aufruft, bekommt keine Eskalation und keine Prüfung der
+Freigaben, denn ohne Policy kennt das Gate weder die Zahl der Freigaben noch die Stufen der
+anderen Änderungen.
+Eine Signatur beurteilt der Halter der Erklärungen: Der Klon fragt das Register nach der Nummer
+des Eintrags, der eine Erklärung platziert, der Hub nach ihrem Platz in seiner Reihenfolge.
 
 \subsection{Der Ablauf}
 

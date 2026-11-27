@@ -180,6 +180,8 @@ fn written(example_name: &str) -> Vec<u8> {
         "held-anchor" => anchor::tests::example_held().encode(),
         "anchors" => anchor::tests::example_request().encode(),
         "error-anchor-refused" => anchor::tests::example_refused().encode(),
+        // The gate on a hub (STEMMA-303).
+        "error-refused-gate" => refusal::tests::example_refused_gate().encode(),
         other => {
             let kind = statement::StatementKind::ALL
                 .into_iter()

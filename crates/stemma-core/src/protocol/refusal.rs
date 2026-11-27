@@ -40,7 +40,27 @@
 //! no-register -                      not-owner -
 //! bad-register <one line>            conflict <name>
 //! incomplete <one line>              policy <one line>
+//! gate <verdict> <facts>
 //! ```
+//!
+//! `gate -` refuses a move of `main` that is no move from its tip `T` to a merge `M`, such as
+//! its deletion. `gate <verdict> <facts>` is the refusal of the gate on a hub (STEMMA-303), whose
+//! verdicts and facts are those of [`GateRefusal`]:
+//!
+//! ```text
+//! no-pull -                          not-open -
+//! parents -                          not-the-merge -
+//! branch-moved <commit or ->         conflict -
+//! policy <one line>                  level <one line>
+//! unusable <one line>
+//! not-checked <level> <source>
+//! not-approved <level> <source> <agents> <agents needed> <humans> <humans needed>
+//! red-tip <commit>                   unverified <commits> <bound>
+//! reserved <pull> <end of the reservation>
+//! ```
+//!
+//! `source` is `paths` for the level of the paths of the change and `weakened` where the
+//! escalation for weakened tests set it (ADR-004, rule 10).
 //!
 //! Nothing of it leaks: who is answered a refusal may read the repository and could compute all
 //! of it. A refusal is recorded in no shared format; the record of ref updates holds accepted
@@ -52,6 +72,8 @@
 use std::error::Error;
 use std::fmt;
 
+use super::parse_positive;
+use super::record::StatementHash;
 use super::record::{HubAddress, RecordProblem, Stale, StaleReference};
 use super::{
     is_reason, malformed, parse_commit, Lines, Malformed, ParseError, QualifiedName, Reason,
@@ -59,6 +81,7 @@ use super::{
 };
 use crate::object::{parse_seconds, CommitId};
 use crate::oplog::OperationName;
+use crate::policy::RiskLevel;
 use crate::pull::TARGET;
 use crate::refs::{BranchName, RefKind};
 use crate::register::Identity;
@@ -110,6 +133,9 @@ pub enum RefusalReason {
     /// The policy at the tip of `main`, which names the duration of the lease, cannot be used.
     /// Carries what its reader reported.
     Policy(Reason),
+    /// The gate on a hub refuses the move of `main` from its tip `T` to the merge `M`
+    /// (STEMMA-303), with the verdict and its facts.
+    Verdict(GateRefusal),
 }
 
 impl fmt::Display for RefusalReason {
@@ -146,6 +172,7 @@ impl fmt::Display for RefusalReason {
                     "the policy at the tip of `main` cannot be used: {reason}"
                 )
             }
+            Self::Verdict(verdict) => write!(f, "the gate refuses the merge: {verdict}"),
         }
     }
 }
@@ -164,6 +191,7 @@ impl RefusalReason {
             Self::Conflict(with) => format!("conflict {with}"),
             Self::Incomplete(reason) => format!("incomplete {reason}"),
             Self::Policy(reason) => format!("policy {reason}"),
+            Self::Verdict(verdict) => format!("gate {}", verdict.encode()),
         }
     }
 
@@ -202,7 +230,8 @@ impl RefusalReason {
                     parse_seconds(expires).map_err(|_| problem(line, RecordProblem::Time))?;
                 Ok(Self::Leased { holder, expires })
             }
-            "gate" => none(Self::Gate),
+            "gate" if facts == NONE => Ok(Self::Gate),
+            "gate" => GateRefusal::parse(line, facts).map(Self::Verdict),
             "reserved" => none(Self::Reserved),
             "no-register" => none(Self::NoRegister),
             "bad-register" => text(Self::BadRegister),
@@ -236,7 +265,8 @@ impl RefusedReference {
     /// # Errors
     ///
     /// [`RecordProblem::RefusalReason`] if the reason does not fit the reference:
-    /// [`Gate`](RefusalReason::Gate), [`NoRegister`](RefusalReason::NoRegister),
+    /// [`Gate`](RefusalReason::Gate), [`Verdict`](RefusalReason::Verdict),
+    /// [`NoRegister`](RefusalReason::NoRegister),
     /// [`BadRegister`](RefusalReason::BadRegister), and [`NotOwner`](RefusalReason::NotOwner)
     /// are reasons of `heads/main` only; [`Leased`](RefusalReason::Leased) and
     /// [`Policy`](RefusalReason::Policy) are reasons of a branch other than `main`; and
@@ -248,6 +278,7 @@ impl RefusedReference {
         let main = branch && name.name().as_str() == TARGET;
         let fits = match &reason {
             RefusalReason::Gate
+            | RefusalReason::Verdict(_)
             | RefusalReason::NoRegister
             | RefusalReason::BadRegister(_)
             | RefusalReason::NotOwner => main,
@@ -438,6 +469,310 @@ impl fmt::Display for Refused {
 }
 
 impl Error for Refused {}
+
+// The verdict of the gate on a hub (STEMMA-303).
+
+/// Where the level of a change that the gate refuses comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LevelSource {
+    /// The paths of the difference between `T` and `M`, by the policies.
+    Paths,
+    /// The escalation for weakened tests (ADR-004, rule 10), which raised the level of the paths.
+    Weakened,
+}
+
+impl LevelSource {
+    /// The word of the source: `paths` or `weakened`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Paths => "paths",
+            Self::Weakened => "weakened",
+        }
+    }
+
+    fn parse(word: &str) -> Option<Self> {
+        [Self::Paths, Self::Weakened]
+            .into_iter()
+            .find(|source| source.name() == word)
+    }
+}
+
+/// Why the gate on a hub refuses to move `main` from its tip `T` to the merge `M` (ADR-025,
+/// STEMMA-303). The hub recomputes the verdict that the local gate reaches, from the commits,
+/// the register and the policy of `T`, and the statements it holds; nothing that the sender
+/// claims enters it. The facts are what the sender needs to see why; the statements that do
+/// not count are visible to every reader, who recomputes the rest (ADR-025).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GateRefusal {
+    /// The move names no evidence, or an opening that the hub does not hold.
+    NoPull,
+    /// The pull request that the move names has ended: it was closed or merged.
+    NotOpen,
+    /// `M` is no commit with the single parent `T`.
+    Parents,
+    /// The tree of `M` is not the clean merge of the head onto `T`.
+    NotTheMerge,
+    /// The branch of the pull request is not at the head of its opening on the hub. Carries the
+    /// commit of the branch, or `None` if it does not exist.
+    BranchMoved {
+        /// The commit of the branch.
+        head: Option<CommitId>,
+    },
+    /// The merge of the head onto `T` has a conflict, which never enters `main`.
+    Conflict,
+    /// The policy of `T` cannot be used. Carries what its reader reported.
+    Policy(Reason),
+    /// The level of the change cannot be told, or the change has no file that differs from `T`.
+    /// Carries what was found.
+    Level(Reason),
+    /// The register or the policy of `M` cannot be used: `M` holds no register, or one or a
+    /// policy that its reader refuses. Every later update reads the register of the tip of
+    /// `main`, and every later move of `main` its policy, so such an `M` would end the use of
+    /// the repository on the hub. Carries what the reader reported.
+    Unusable(Reason),
+    /// No result of a check counts at the level of the change (ADR-019).
+    NotChecked {
+        /// The level of the change.
+        level: RiskLevel,
+        /// Where the level comes from.
+        source: LevelSource,
+    },
+    /// The approvals that count are fewer than the level asks for (ADR-004).
+    NotApproved {
+        /// The level of the change.
+        level: RiskLevel,
+        /// Where the level comes from.
+        source: LevelSource,
+        /// The approvals of agents that count.
+        agents: u32,
+        /// The approvals of agents that the level asks for.
+        agents_needed: u32,
+        /// The approvals of humans that count for the level: of a member at level 2, of an
+        /// owner at level 3.
+        humans: u32,
+        /// The approvals of humans that the level asks for: 1 at the levels 2 and 3, else 0.
+        humans_needed: u32,
+    },
+    /// The latest verified tip of `main` is red, and the change has level 2 or 3 and is no
+    /// repair of it (ADR-019). Carries the first red tip.
+    RedTip {
+        /// The oldest commit after the last green tip that a failing run covered.
+        red: CommitId,
+    },
+    /// The bound `max_unverified` is reached (ADR-019).
+    Unverified {
+        /// The commits after the latest verified tip.
+        count: u64,
+        /// The bound of the policy.
+        max: u32,
+    },
+    /// Another pull request holds the reservation (ADR-019).
+    Reserved {
+        /// The pull request that holds it: the hash of its opening.
+        pull: StatementHash,
+        /// The end of the reservation, in seconds since the Unix epoch, by the time of the hub.
+        until: i64,
+    },
+}
+
+impl fmt::Display for GateRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let source = |source: &LevelSource| match source {
+            LevelSource::Paths => "by its paths",
+            LevelSource::Weakened => "by the escalation for weakened tests",
+        };
+        match self {
+            Self::NoPull => f.write_str("the move names no pull request that the hub holds"),
+            Self::NotOpen => f.write_str("the pull request is not open"),
+            Self::Parents => {
+                f.write_str("the merge does not have the tip of `main` as its only parent")
+            }
+            Self::NotTheMerge => {
+                f.write_str("the tree of the merge is not the clean merge of the head onto the tip")
+            }
+            Self::BranchMoved { head: Some(head) } => write!(
+                f,
+                "the branch of the pull request is at {head}, not at the head of its opening"
+            ),
+            Self::BranchMoved { head: None } => {
+                f.write_str("the branch of the pull request does not exist")
+            }
+            Self::Conflict => f.write_str("the head conflicts with the tip of `main`"),
+            Self::Policy(reason) => write!(f, "the policy of the tip cannot be used: {reason}"),
+            Self::Level(reason) => write!(f, "the level of the change cannot be told: {reason}"),
+            Self::Unusable(reason) => {
+                write!(
+                    f,
+                    "the register or the policy of the merge cannot be used: {reason}"
+                )
+            }
+            Self::NotChecked {
+                level,
+                source: from,
+            } => write!(
+                f,
+                "no result of a check counts at level {level}, {}",
+                source(from)
+            ),
+            Self::NotApproved {
+                level,
+                source: from,
+                agents,
+                agents_needed,
+                humans,
+                humans_needed,
+            } => write!(
+                f,
+                "level {level}, {}, needs {agents_needed} approvals of agents and \
+                 {humans_needed} of humans; {agents} and {humans} count",
+                source(from)
+            ),
+            Self::RedTip { red } => write!(
+                f,
+                "the latest verified tip of `main` is red since {red}; only a repair of it lands \
+                 at level 2 or 3"
+            ),
+            Self::Unverified { count, max } => write!(
+                f,
+                "{count} commits of `main` lie after the latest verified tip (the bound is {max})"
+            ),
+            Self::Reserved { pull, until } => write!(
+                f,
+                "pull request {pull} holds the reservation until {until} (seconds since the Unix \
+                 epoch)"
+            ),
+        }
+    }
+}
+
+impl GateRefusal {
+    /// The word of the verdict and its facts, as the `ref` line carries them after `gate`.
+    fn encode(&self) -> String {
+        match self {
+            Self::NoPull => format!("no-pull {NONE}"),
+            Self::NotOpen => format!("not-open {NONE}"),
+            Self::Parents => format!("parents {NONE}"),
+            Self::NotTheMerge => format!("not-the-merge {NONE}"),
+            Self::BranchMoved { head } => format!("branch-moved {}", or_none(head)),
+            Self::Conflict => format!("conflict {NONE}"),
+            Self::Policy(reason) => format!("policy {reason}"),
+            Self::Level(reason) => format!("level {reason}"),
+            Self::Unusable(reason) => format!("unusable {reason}"),
+            Self::NotChecked { level, source } => {
+                format!("not-checked {level} {}", source.name())
+            }
+            Self::NotApproved {
+                level,
+                source,
+                agents,
+                agents_needed,
+                humans,
+                humans_needed,
+            } => format!(
+                "not-approved {level} {} {agents} {agents_needed} {humans} {humans_needed}",
+                source.name()
+            ),
+            Self::RedTip { red } => format!("red-tip {red}"),
+            Self::Unverified { count, max } => format!("unverified {count} {max}"),
+            Self::Reserved { pull, until } => format!("reserved {pull} {until}"),
+        }
+    }
+
+    /// Reads the word of a verdict and its facts, the text after `gate`.
+    fn parse(line: usize, text: &str) -> Result<Self, ParseError> {
+        let fields = || malformed(line, Malformed::Fields);
+        let (word, facts) = text.split_once(' ').ok_or_else(fields)?;
+        let none = |verdict: Self| {
+            if facts == NONE {
+                Ok(verdict)
+            } else {
+                Err(fields())
+            }
+        };
+        let reason = |wrap: fn(Reason) -> Self| {
+            if is_reason(facts) {
+                Ok(wrap(Reason(facts.to_owned())))
+            } else {
+                Err(malformed(line, Malformed::Reason))
+            }
+        };
+        let count = |text: &str| parse_count::<u32>(text).ok_or(malformed(line, Malformed::Number));
+        let level = |text: &str| {
+            text.parse::<u32>()
+                .ok()
+                .filter(|_| text.len() == 1)
+                .and_then(RiskLevel::from_number)
+                .ok_or(malformed(line, Malformed::Fields))
+        };
+        let source =
+            |text: &str| LevelSource::parse(text).ok_or(malformed(line, Malformed::Fields));
+        let words: Vec<&str> = facts.split(' ').collect();
+        match word {
+            "no-pull" => none(Self::NoPull),
+            "not-open" => none(Self::NotOpen),
+            "parents" => none(Self::Parents),
+            "not-the-merge" => none(Self::NotTheMerge),
+            "conflict" => none(Self::Conflict),
+            "branch-moved" if facts == NONE => Ok(Self::BranchMoved { head: None }),
+            "branch-moved" => Ok(Self::BranchMoved {
+                head: Some(parse_commit(line, facts)?),
+            }),
+            "policy" => reason(Self::Policy),
+            "level" => reason(Self::Level),
+            "unusable" => reason(Self::Unusable),
+            "not-checked" => match words.as_slice() {
+                [found, from] => Ok(Self::NotChecked {
+                    level: level(found)?,
+                    source: source(from)?,
+                }),
+                _ => Err(fields()),
+            },
+            "not-approved" => match words.as_slice() {
+                [found, from, agents, agents_needed, humans, humans_needed] => {
+                    Ok(Self::NotApproved {
+                        level: level(found)?,
+                        source: source(from)?,
+                        agents: count(agents)?,
+                        agents_needed: count(agents_needed)?,
+                        humans: count(humans)?,
+                        humans_needed: count(humans_needed)?,
+                    })
+                }
+                _ => Err(fields()),
+            },
+            "red-tip" => Ok(Self::RedTip {
+                red: parse_commit(line, facts)?,
+            }),
+            "unverified" => match words.as_slice() {
+                [found, max] => Ok(Self::Unverified {
+                    count: parse_count::<u64>(found).ok_or(malformed(line, Malformed::Number))?,
+                    max: count(max)?,
+                }),
+                _ => Err(fields()),
+            },
+            "reserved" => match words.as_slice() {
+                [pull, until] => Ok(Self::Reserved {
+                    pull: pull
+                        .parse()
+                        .map_err(|source| ParseError::InvalidObjectId { line, source })?,
+                    until: parse_seconds(until).map_err(|_| problem(line, RecordProblem::Time))?,
+                }),
+                _ => Err(fields()),
+            },
+            _ => Err(fields()),
+        }
+    }
+}
+
+/// Reads a count: `0`, or a number from 1 in decimal digits without a leading zero.
+fn parse_count<T: std::str::FromStr + From<u8>>(text: &str) -> Option<T> {
+    if text == "0" {
+        Some(T::from(0))
+    } else {
+        parse_positive(text)
+    }
+}
 
 /// Writes a value, or `-` where there is none.
 fn or_none<T: fmt::Display>(value: &Option<T>) -> String {
