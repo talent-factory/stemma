@@ -175,6 +175,8 @@ fn written(example_name: &str) -> Vec<u8> {
         "range-to-the-end" => held::tests::example_range_to_the_end().encode(),
         "error-statement-refused" => held::tests::example_refused().encode(),
         "error-not-readable" => ErrorMessage::NotReadable.encode(),
+        // The gate on a hub (STEMMA-303).
+        "error-refused-gate" => refusal::tests::example_refused_gate().encode(),
         other => {
             let kind = statement::StatementKind::ALL
                 .into_iter()

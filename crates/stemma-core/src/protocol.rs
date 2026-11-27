@@ -2105,6 +2105,8 @@ pub mod examples {
         example!("range-to-the-end", Range),
         example!("error-statement-refused", Error),
         example!("error-not-readable", Error),
+        // The gate on a hub (STEMMA-303).
+        example!("error-refused-gate", Error),
     ];
 }
 

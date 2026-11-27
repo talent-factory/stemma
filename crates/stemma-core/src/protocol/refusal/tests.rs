@@ -472,3 +472,141 @@ fn the_messages_say_what_is_refused() {
         .starts_with("the ref update does not name the last record entry of heads/main"));
     assert!(Refused::NoMain.to_string().contains("the first push"));
 }
+
+// The verdict of the gate on a hub (STEMMA-303).
+
+/// The example `error-refused-gate`: the gate on a hub refuses a merge whose approvals do not
+/// suffice for the level that the escalation for weakened tests set.
+pub(crate) fn example_refused_gate() -> ErrorMessage {
+    references(vec![refused(
+        "heads/main",
+        RefusalReason::Verdict(GateRefusal::NotApproved {
+            level: RiskLevel::Two,
+            source: LevelSource::Weakened,
+            agents: 1,
+            agents_needed: 2,
+            humans: 0,
+            humans_needed: 1,
+        }),
+    )])
+}
+
+/// Every verdict of the gate once, with the text of its facts.
+fn every_verdict() -> Vec<(GateRefusal, String)> {
+    let pull: StatementHash = id_text(0x44).parse().unwrap();
+    vec![
+        (GateRefusal::NoPull, "no-pull -".to_owned()),
+        (GateRefusal::NotOpen, "not-open -".to_owned()),
+        (GateRefusal::Parents, "parents -".to_owned()),
+        (GateRefusal::NotTheMerge, "not-the-merge -".to_owned()),
+        (
+            GateRefusal::BranchMoved { head: None },
+            "branch-moved -".to_owned(),
+        ),
+        (
+            GateRefusal::BranchMoved {
+                head: Some(commit(0x11)),
+            },
+            format!("branch-moved {}", id_text(0x11)),
+        ),
+        (GateRefusal::Conflict, "conflict -".to_owned()),
+        (
+            GateRefusal::Policy(reason("the policy is not valid")),
+            "policy the policy is not valid".to_owned(),
+        ),
+        (
+            GateRefusal::Level(reason("no file differs")),
+            "level no file differs".to_owned(),
+        ),
+        (
+            GateRefusal::NotChecked {
+                level: RiskLevel::Three,
+                source: LevelSource::Paths,
+            },
+            "not-checked 3 paths".to_owned(),
+        ),
+        (
+            GateRefusal::NotApproved {
+                level: RiskLevel::Zero,
+                source: LevelSource::Paths,
+                agents: 0,
+                agents_needed: 1,
+                humans: 0,
+                humans_needed: 0,
+            },
+            "not-approved 0 paths 0 1 0 0".to_owned(),
+        ),
+        (
+            GateRefusal::RedTip { red: commit(0x22) },
+            format!("red-tip {}", id_text(0x22)),
+        ),
+        (
+            GateRefusal::Unverified { count: 12, max: 10 },
+            "unverified 12 10".to_owned(),
+        ),
+        (
+            GateRefusal::Reserved {
+                pull,
+                until: 1_767_225_600,
+            },
+            format!("reserved {} 1767225600", id_text(0x44)),
+        ),
+    ]
+}
+
+#[test]
+fn every_verdict_of_the_gate_is_written_after_gate_and_read_back() {
+    for (verdict, facts) in every_verdict() {
+        let message = references(vec![refused(
+            "heads/main",
+            RefusalReason::Verdict(verdict.clone()),
+        )]);
+        let text = round_trip(&message);
+        assert_eq!(
+            text,
+            format!("stemma-protocol 1\nerror refused\nref heads/main gate {facts}\n")
+        );
+        assert!(!verdict.to_string().is_empty());
+    }
+    // `gate -` stays the refusal of a move that is no merge.
+    let gate = references(vec![refused("heads/main", RefusalReason::Gate)]);
+    assert!(round_trip(&gate).ends_with("ref heads/main gate -\n"));
+}
+
+#[test]
+fn a_verdict_of_the_gate_is_a_reason_of_main_only() {
+    let verdict = RefusalReason::Verdict(GateRefusal::Conflict);
+    assert!(RefusedReference::try_new(name("heads/main"), verdict.clone()).is_ok());
+    for other in ["heads/feature", "tags/v1"] {
+        assert_eq!(
+            RefusedReference::try_new(name(other), verdict.clone()),
+            Err(RecordProblem::RefusalReason)
+        );
+    }
+    assert!(parse("error refused\nref heads/feature gate conflict -\n").is_err());
+}
+
+#[test]
+fn the_reader_refuses_a_verdict_of_the_gate_that_breaks_its_form() {
+    for facts in [
+        "unknown -",
+        "conflict",
+        "conflict x",
+        "no-pull something",
+        "not-checked 4 paths",
+        "not-checked 2 guessed",
+        "not-checked 02 paths",
+        "not-checked 2",
+        "not-approved 2 paths 1 2 0",
+        "not-approved 2 paths 01 2 0 1",
+        "not-approved 2 paths -1 2 0 1",
+        "unverified 1",
+        "reserved b3:00 1",
+        "red-tip -",
+        "branch-moved b3:zz",
+        "policy ",
+    ] {
+        let line = format!("error refused\nref heads/main gate {facts}\n");
+        assert!(parse(&line).is_err(), "{facts}");
+    }
+}

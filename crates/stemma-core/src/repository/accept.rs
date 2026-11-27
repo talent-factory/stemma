@@ -10,12 +10,13 @@ use std::io;
 use std::path::PathBuf;
 
 use super::revision::require_unreserved;
-use super::{PolicyError, Repository};
+use super::{GateError, PolicyError, Repository};
 use crate::allowed::Allowed;
 use crate::conflict::AnyCommit;
 use crate::history::HistoryError;
 use crate::merge_base::merge_bases;
 use crate::object::CommitId;
+use crate::policy::Policy;
 use crate::protocol::record::{
     read_record, Acceptance, Chain, ChainError, HubAddress, Move, RecordEntry, RecordParseError,
     RefUpdate, Stale, WriteError,
@@ -67,9 +68,11 @@ pub trait RecordDestination {
 
 /// What a hub passes to the accepting operation with a ref update or a statement (ADR-025): who
 /// it is, which repository the update was sent to, where the record lies, its time, and its
-/// signer. The slices of the gate add to it (the namespace policy), so a caller outside the
-/// crate builds it with [`new`](Self::new). The destination of the statements is a parameter of
-/// [`accept_statement`](Repository::accept_statement) of its own.
+/// signer. The slices of the gate add to it, so a caller outside the crate builds it with
+/// [`new`](Self::new) and the methods `with_...`. The destination of the statements is a
+/// parameter of [`accept_statement`](Repository::accept_statement) of its own; for a ref update
+/// it is part of the context ([`with_statements`](Self::with_statements)), because the gate on a
+/// hub counts the evidence of a move of `main` from it.
 #[non_exhaustive]
 pub struct AcceptContext<'a> {
     /// The public address under which the hub was called. An update that names another address
@@ -84,6 +87,15 @@ pub struct AcceptContext<'a> {
     pub time: i64,
     /// The signer of the hub (ADR-026). The core never holds the key.
     pub signer: &'a dyn Signer,
+    // The gate on a hub (STEMMA-303).
+    /// The held statements of the repository, which the gate on a hub folds for a move of
+    /// `main`. `None` holds no statement: every move of `main` after the first push is then
+    /// refused for want of a pull request. [`accept_statement`](Repository::accept_statement)
+    /// takes its destination as a parameter and does not read this one.
+    pub statements: Option<&'a mut dyn StatementDestination>,
+    /// The policies that count beside the policy of the tip of `main`, combined with it by the
+    /// maximum: the namespace policy of ADR-027, when it comes. Empty by default.
+    pub policies: &'a [Policy],
 }
 
 impl<'a> AcceptContext<'a> {
@@ -103,7 +115,27 @@ impl<'a> AcceptContext<'a> {
             record,
             time,
             signer,
+            statements: None,
+            policies: &[],
         }
+    }
+
+    // The gate on a hub (STEMMA-303).
+
+    /// The context with the held statements of the repository, which the gate on a hub folds
+    /// for a move of `main`.
+    #[must_use]
+    pub fn with_statements(mut self, statements: &'a mut dyn StatementDestination) -> Self {
+        self.statements = Some(statements);
+        self
+    }
+
+    /// The context with policies that count beside the policy of the tip of `main`, combined
+    /// with it by the maximum (ADR-027).
+    #[must_use]
+    pub fn with_policies(mut self, policies: &'a [Policy]) -> Self {
+        self.policies = policies;
+        self
     }
 }
 
@@ -114,6 +146,7 @@ impl fmt::Debug for AcceptContext<'_> {
             .field("hub", &self.hub)
             .field("repository", &self.repository)
             .field("time", &self.time)
+            .field("policies", &self.policies)
             .finish_non_exhaustive()
     }
 }
@@ -203,6 +236,14 @@ pub enum AcceptError {
     /// No entry was written and no reference of this update moved; an earlier update may have
     /// been completed.
     Write(Box<WriteError>),
+    // The gate on a hub (STEMMA-303).
+    /// The held statements, which the gate on a hub folds for a move of `main`, cannot be read
+    /// or are damaged. No entry was written and no reference of this update moved.
+    Statements(Box<StatementError>),
+    /// The verdict about `main` could not be reached: the store failed while the tree merge,
+    /// the difference, or the history was read. A verdict that refuses is
+    /// [`Refused`](Self::Refused) instead.
+    Verdict(Box<GateError>),
     /// The entry is in the record, and a reference did not move: the storage failed. The update
     /// is accepted, and the next call for this repository completes its moves from the entry.
     NotCompleted {
@@ -243,6 +284,8 @@ impl AcceptError {
             Self::Refs(source) | Self::NotCompleted { source, .. } => source.io_error(),
             Self::Connectivity(source) => source.io_error(),
             Self::Write(source) => source.io_error(),
+            Self::Statements(source) => source.io_error(),
+            Self::Verdict(source) => io_error_of(source),
             Self::Register(source) => match &**source {
                 ModeError::Io(error) => Some(error),
                 _ => None,
@@ -308,6 +351,10 @@ impl fmt::Display for AcceptError {
             Self::Connectivity(error) => error.fmt(f),
             Self::History(error) => error.fmt(f),
             Self::Write(error) => error.fmt(f),
+            Self::Statements(error) => error.fmt(f),
+            Self::Verdict(error) => {
+                write!(f, "cannot reach the verdict about `main`: {error}")
+            }
             Self::NotCompleted { receipt, source } => write!(
                 f,
                 "the record entry {} is written, but a reference did not move: {source}",
@@ -320,6 +367,18 @@ impl fmt::Display for AcceptError {
 // Each message is or includes the message of its cause, so no source is named (see the crate
 // documentation).
 impl Error for AcceptError {}
+
+/// The error of the file system behind a failure of the verdict, if that is what failed.
+fn io_error_of(error: &GateError) -> Option<&io::Error> {
+    let mut source: Option<&(dyn Error + 'static)> = Some(error);
+    while let Some(found) = source {
+        if let Some(io) = found.downcast_ref::<io::Error>() {
+            return Some(io);
+        }
+        source = found.source();
+    }
+    None
+}
 
 impl From<RefError> for AcceptError {
     fn from(source: RefError) -> Self {
@@ -435,6 +494,14 @@ struct Sender {
 }
 
 impl Sender {
+    /// The register that counts for the update.
+    fn register_of(&self) -> &Register {
+        match &self.mode {
+            Mode::Enforcing(register) => register,
+            Mode::Open => unreachable!("a hub judges by an enforcing register only"),
+        }
+    }
+
     /// Asks the authorizer of the register, and `also`, for the move of one reference. Both
     /// must allow it.
     fn ask(&self, moved: &Move, also: &dyn Authorizer) -> Result<Allowed, RefusalReason> {
@@ -548,8 +615,15 @@ impl Repository {
     ///   `untag`, and never moved from one commit to another (ADR-008).
     /// - **`main`.** It is set by the first push into an empty repository, whose pushed register
     ///   must hold the key of the update as an active key of an owner (ADR-024). Every later
-    ///   update of `main` is refused: it belongs to the merge gate, which comes with its own
-    ///   slice.
+    ///   update of `main` goes through the gate on a hub (STEMMA-303): the authorizer for `push`,
+    ///   and then the verdict about `main` that the local gate reaches as well. `M` must have the
+    ///   single parent `T`, its evidence must name the opening of an open pull request that the
+    ///   hub holds ([`AcceptContext::with_statements`]), and its tree must be the clean merge of
+    ///   the head onto `T`; the level, the checks, the approvals, and the bounds are counted over
+    ///   the held statements in the order of the hub, by the register and the policy of `T` and
+    ///   the policies of the context. A deletion of `main` is refused as
+    ///   [`RefusalReason::Gate`], every verdict as [`RefusalReason::Verdict`]. The first version
+    ///   computes the verdict under the lock.
     ///
     /// The operation demands nothing from the sender that only a clone has: no operation log, no
     /// anchor, and no ID of a log (ADR-025). It reads the whole record under the lock; the
@@ -584,6 +658,8 @@ impl Repository {
     /// update that stopped cannot be completed, [`AcceptError::Write`] if the signer fails, the
     /// time of the hub lies before the time of the last entry, or the record is full, and
     /// [`AcceptError::NotCompleted`] if the entry is written and a reference did not move.
+    /// [`AcceptError::Statements`] if the held statements cannot be read or are damaged, and
+    /// [`AcceptError::Verdict`] if the store fails under the verdict about `main`.
     pub fn accept_ref_update(
         &self,
         update: &RefUpdate,
@@ -597,7 +673,7 @@ impl Repository {
     pub(crate) fn accept_ref_update_with(
         &self,
         update: &RefUpdate,
-        context: AcceptContext<'_>,
+        mut context: AcceptContext<'_>,
         also: &dyn Authorizer,
     ) -> Result<RecordEntry, AcceptError> {
         if !self.is_bare() {
@@ -659,22 +735,43 @@ impl Repository {
         }
         let sender = self.sender_of(update, main_tip)?;
         let identity = Identity::of(sender.verified.actor());
+        // The gate on a hub folds the held statements for a move of `main` after the first push.
+        let gated = !sender.first && moves.iter().any(|moved| moved.name() == &main);
+        let held = match (&mut context.statements, gated) {
+            (Some(statements), true) => {
+                statement::read_destination(&mut **statements, record.chain.last_number())
+                    .map_err(|error| AcceptError::Statements(Box::new(error)))?
+            }
+            _ => Vec::new(),
+        };
         let mut policies = Vec::new();
         let mut proof = None;
         for moved in moves {
             if refused.contains_key(moved.name()) {
                 continue;
             }
-            let verdict = if moved.name() == &main && !sender.first {
-                Err(RefusalReason::Gate)
-            } else {
-                match sender.ask(moved, also) {
-                    Ok(allowed) => {
+            let verdict = match sender.ask(moved, also) {
+                Ok(allowed) if moved.name() == &main && !sender.first => {
+                    let state = main::HubState {
+                        tip: sender.register,
+                        record: &record,
+                        held: &held,
+                        register: sender.register_of(),
+                        policies: context.policies,
+                        now: context.time,
+                    };
+                    let verdict = self.gate_on_hub(moved, &state)?;
+                    if verdict.is_ok() {
                         proof = Some(allowed);
-                        self.write_ownership(moved, &record, &sender, &identity, context.time)?
                     }
-                    Err(reason) => Err(reason),
+                    // The verdict rests on the policy of `T`.
+                    verdict.map(|()| Some(sender.register))
                 }
+                Ok(allowed) => {
+                    proof = Some(allowed);
+                    self.write_ownership(moved, &record, &sender, &identity, context.time)?
+                }
+                Err(reason) => Err(reason),
             };
             match verdict {
                 Ok(policy) => policies.extend(policy),
@@ -1081,6 +1178,9 @@ impl Repository {
 
 // The second entry of the accepting operation, for a signed statement (STEMMA-299).
 mod statement;
+
+// The gate on a hub (STEMMA-303).
+mod main;
 
 pub use statement::{
     held_in, record_in, statements_of_open_pulls, RangeError, ReadAccess, StatementDestination,

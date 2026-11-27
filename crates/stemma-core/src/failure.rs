@@ -393,6 +393,20 @@ impl Classify for crate::repository::AcceptError {
             Self::Policy { damaged: false, .. } => FailureKind::Other,
             // An entry that the operation did not write.
             Self::LastEntry { .. } => FailureKind::Damaged,
+            // Held statements that do not read or break the order that the writer keeps.
+            Self::Statements(error) => match &**error {
+                crate::repository::StatementError::Statements(_)
+                | crate::repository::StatementError::Order { .. } => FailureKind::Damaged,
+                _ => FailureKind::Other,
+            },
+            // The store failed under the verdict; whether it is damage, its error says.
+            Self::Verdict(error) => match &**error {
+                crate::repository::GateError::Store(error) => error.kind(),
+                crate::repository::GateError::Read(error) => error
+                    .store_error()
+                    .map_or(FailureKind::Damaged, Classify::kind),
+                _ => FailureKind::Other,
+            },
             // A register of `main` that does not parse, or a `main` without one, is no state
             // that an accepted update left.
             Self::Register(error) => match &**error {

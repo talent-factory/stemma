@@ -21,7 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::difference;
-use super::{now, CheckError, GateError, LevelError, PullError, Repository};
+use super::verdict::{has_proof, Case};
+use super::{CheckError, GateError, LevelError, Repository};
 use crate::bounds::{self, Verification};
 use crate::check::{self, Check};
 use crate::history::{self, Parents};
@@ -100,22 +101,31 @@ pub(super) struct Subject<'a> {
 impl Repository {
     /// The reason that the change `subject` has to wait, or `None` (see the module).
     ///
-    /// `policy` is the policy of the tip: it gives `N` (`reservation`) and `max_unverified`, and
-    /// the levels of the other changes for the reservation. Without one (the caller of
+    /// `policies` are the policy of the tip and the further policies of the verdict: they give
+    /// `N` (`reservation`) and `max_unverified`, the stricter value of all of them, and the
+    /// levels of the other changes for the reservation. Without them (the caller of
     /// [`merge_gate`](Self::merge_gate) gave the level and no policy is read) the bounds have
     /// their defaults and no reservation is applied, as the levels of the other changes are the
-    /// policy's to tell. `register` decides which results count, as in
-    /// [`counted_checks`](Self::counted_checks).
+    /// policy's to tell. The register, the proofs, the pull requests, the runs, the heads of the
+    /// branches, and the time are those of `case`; nothing else is read but the store.
     pub(super) fn pause_of(
         &self,
         subject: &Subject<'_>,
-        policy: Option<&Policy>,
-        register: Option<&Register>,
+        case: &Case<'_>,
+        policies: Option<&[Policy]>,
     ) -> Result<Option<Pause>, GateError> {
         let tip = subject.tip;
+        let register = case.register;
+        let now = case.now;
         // Only a run of a writer who is independent of the change counts for its bounds: the
         // opener, the authors, and their sponsors could clear a red tip for their own change.
-        let with_stand_ins = self.proven_checks(register)?;
+        let with_stand_ins: Vec<Check> = case
+            .evidence
+            .checks
+            .iter()
+            .filter(|check| has_proof(case, check))
+            .cloned()
+            .collect();
         // A failing run that stands in for a lost statement counts without a signature where a
         // register is asked, so it may only make the tip red: it moves no verified tip, ends no
         // row of runs, and opens no red window for a repair (ADR-011, ADR-019). In the open mode
@@ -147,19 +157,24 @@ impl Repository {
             return Ok(Some(Pause::RedTip { red: main[red] }));
         }
         let count = bounds::unverified(&verification, main.len());
-        let max = policy.map_or(DEFAULT_MAX_UNVERIFIED, Policy::max_unverified);
+        let max = policies
+            .and_then(|policies| policies.iter().map(Policy::max_unverified).min())
+            .unwrap_or(DEFAULT_MAX_UNVERIFIED);
         if count >= usize::try_from(max).unwrap_or(usize::MAX) {
             return Ok(Some(Pause::Unverified { count, max }));
         }
-        let Some(policy) = policy else {
+        let Some(policies) = policies else {
             return Ok(None);
         };
-        let n = policy.reservation_after();
+        let Some(n) = policies.iter().map(Policy::reservation_after).min() else {
+            return Ok(None);
+        };
         let mut candidates = Vec::new();
         // A pull request that a closing without its proof ended keeps its reservation: that
         // closing may only make things stricter.
-        for other in self
-            .pull_requests(register)?
+        for other in case
+            .evidence
+            .pulls
             .iter()
             .filter(|pull| pull.is_open() || (register.is_some() && pull.ended_without_proof()))
         {
@@ -167,7 +182,7 @@ impl Repository {
             let runs = if own { &checks } else { &proven };
             let held = |runs: &[Check]| {
                 bounds::reservation(runs, other.head(), &tip, other.opened(), n)
-                    .filter(|window| window.holds_at(now()))
+                    .filter(|window| window.holds_at(now))
             };
             // A cheap look first: without a window on all proven runs there is none on the
             // independent runs either (dropping passing runs only removes counted ones). The
@@ -187,13 +202,13 @@ impl Repository {
             let level = if own {
                 Some(subject.level)
             } else {
-                self.level_of_other(policy, &tip, other)?
+                self.level_of_other(policies, &tip, other, case.heads)?
             };
             if level.is_some_and(|level| level >= RiskLevel::Two) {
                 candidates.push((other.number(), other.opened(), window));
             }
         }
-        Ok(bounds::holder(&candidates, now())
+        Ok(bounds::holder(&candidates, now)
             .filter(|holder| holder.number != subject.pull.number())
             .map(|holder| Pause::Reserved {
                 holder: holder.number,
@@ -283,28 +298,28 @@ impl Repository {
     /// The level of another open pull request merged onto the tip, or `None` if the change cannot
     /// land as it is, so that it holds no reservation: its branch is gone or moved away from the
     /// opening, the merge conflicts, the merge changes nothing, or a path of it has no level.
+    /// The level is the one that the verdict would find for it ([`level_by`](Self::level_by)).
     ///
     /// # Errors
     ///
-    /// A failure to read the refs or the objects is an error: a reservation that
-    /// vanishes with a flaky store would let others pass the change that waits.
+    /// A failure to read the objects is an error: a reservation that vanishes with a flaky store
+    /// would let others pass the change that waits.
     fn level_of_other(
         &self,
-        policy: &Policy,
+        policies: &[Policy],
         tip: &CommitId,
         other: &PullRequest,
+        heads: &BTreeMap<BranchName, CommitId>,
     ) -> Result<Option<RiskLevel>, GateError> {
-        match self.branch_head(other.branch()) {
-            Ok(head) if head == *other.head() => {}
-            Ok(_) | Err(PullError::NoSuchBranch { .. }) => return Ok(None),
-            Err(error) => return Err(error.into()),
+        if heads.get(other.branch()) != Some(other.head()) {
+            return Ok(None);
         }
         let sum = merge_commits(self.objects(), *tip, *other.head())?.simplify();
         let [tree] = sum.terms() else {
             return Ok(None);
         };
-        match self.level_of_change(policy, tip, *tree) {
-            Ok(level) => Ok(Some(level)),
+        match self.level_by(policies, tip, *tree) {
+            Ok((level, _)) => Ok(Some(level)),
             // The change has a path that no level can be told for, or changes nothing: the gate
             // refuses it at its own merge, so it cannot land and holds no reservation. It must not
             // stop the merge of another change, and its author chooses the paths.

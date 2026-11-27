@@ -8,9 +8,10 @@ Built are the formats of the ref update and of the record with their writers and
 entries of the log that name them, and the fold (STEMMA-290, see "The statements as built"), and
 the accepting operation for branches and tags (STEMMA-296, see "The accepting operation as
 built"), and the lines that a hub adds to a statement, the request that submits one, the two
-reading requests and `accept_statement` (STEMMA-299, see "The statements on a hub as built").
-The gate on a hub is not built. The names of functions that are not built yet are a direction
-for the slices.
+reading requests and `accept_statement` (STEMMA-299, see "The statements on a hub as built"),
+and the gate on a hub for a move of `main` (STEMMA-303, see "The gate on a hub as built"). The
+purge and the owner override on a hub are not built. The names of functions that are not built
+yet are a direction for the slices.
 
 ## Context
 
@@ -462,9 +463,9 @@ without a clone (ADR-015):
 ### The accepting operation as built
 
 Built in STEMMA-296 for branches and tags: `Repository::accept_ref_update` in `stemma-core`, with
-the reasons of a refusal in `stemma_core::protocol::refusal`. The gate on a hub, the purge and
-the owner override are not built; `accept_statement` is (see "The statements on a hub as
-built").
+the reasons of a refusal in `stemma_core::protocol::refusal`. The purge and the owner override
+are not built; `accept_statement` is (see "The statements on a hub as built"), and so is the
+gate on a hub (see "The gate on a hub as built").
 
 **The call.** It takes the ref update and a context: the address under which the hub was called,
 the ID of the repository, the destination of the record, the time of the hub, and the signer of
@@ -541,9 +542,9 @@ from one commit to another (ADR-008).
 
 **`main`.** The first push sets it, alone or with further references, which are judged by the
 register of the pushed commit as well. A repository without `main` accepts no update that does
-not set it. Every later update of `main` is refused with the reason `gate`, for an owner too,
-until the gate on a hub is built; so a push that removes the register of `main` is refused, and
-the deletion of `main` is too.
+not set it. Every later update of `main` goes through the gate on a hub, for an owner too (see
+"The gate on a hub as built"); the deletion of `main` is refused with `gate -`, as no move to a
+merge.
 
 **The actor.** The payload names no actor. The identity follows from the key, which stands once
 in a register. The authorizer is the one of an enforcing repository, as locally, so it is asked
@@ -710,6 +711,73 @@ error not-readable                                             may not read
 
 Example messages are checked in beside the others (`held-statement`, `range`,
 `range-to-the-end`, `error-statement-refused`, `error-not-readable`).
+
+### The gate on a hub as built
+
+Built in STEMMA-303: the verdict about `main` as one function of `stemma-core`
+(`Repository::judge_main`, crate-internal), which `merge_gate_by_policy` calls in a clone and
+`accept_ref_update` calls on a hub, and the reason `gate <verdict> <facts>` of a refused `main`.
+
+**The verdict.** It reads the object store and what its caller passes, and nothing else: the fold
+of the statements, the order in which the caller holds them, the heads of its branches, the
+register and the policy of `T`, further policies, and the time of the caller. It takes no lock,
+reads no log and no record, creates no commit and moves no reference; the tree merge writes blobs
+and trees only, so the requirement 1 above holds. In this order: the branch is at the head of the
+opening, the merge of the head onto `T` is clean (a merge that changes nothing means that `main`
+holds the change), the level is the maximum over the policies of the level of the paths and of
+the escalation for weakened tests over the old and the new blobs, a check counts by the rule
+table of ADR-019, the approvals suffice, and the bounds of ADR-019 hold. The approvals are asked
+where a register and a policy are: as many approvals of registered agents as the policies name
+for the level (the highest number of all of them), and at the levels 2 and 3 one approval of a
+registered human, at level 3 of an owner. They are counted by the recount of phase 4, with the
+writers of the change of the holder: the log in a clone, the record on a hub. A caller that gives
+its own level (`merge_gate`) gets no escalation and no approvals, as before. The bounds take
+`max_unverified` and `N` as the strictest value of the policies.
+
+**The signatures.** The holder judges them. A clone asks the register for the number of the entry
+of its log, as before. A hub asks the register of `T`, and a key that is not active there counts
+by the order of the hub: a retired key for a statement that lies before the first record entry
+that moved `main` to a commit whose register holds the key as no longer active, a revoked key the
+same for every kind but an approval, whose statements of a revoked key never count.
+
+**On a hub.** The context carries the destination of the held statements and the further
+policies (`AcceptContext::with_statements`, `with_policies`; the namespace policy of ADR-027 is
+one of them later). For a move of `main` after the first push, the operation asks the authorizer
+for `push` and then the gate: `M` is a commit with the single parent `T`, its evidence line names
+an opening that the hub holds and whose pull request is open, the hub folds its held statements
+and the merges of its record in its order, and the tree of `M` is the tree that the verdict
+computes. Nothing that the sender claims enters it: the update names no level, and an `M` that
+changes `.stemma-policy` is judged by the policy of `T`. An accepted entry names the commit of the
+policy of `T` in its `policy` line, as the verdict rests on it. The first version computes all of
+it under the lock; moving the tree merge and the verdict before the lock waits for the measured
+holding time. A hub without a destination of statements holds none, so every move of `main` is
+refused for want of a pull request. Held statements that cannot be read are
+`AcceptError::Statements`, and a store that fails under the verdict `AcceptError::Verdict`; both
+are failures of the hub.
+
+**The refusal.** `ref heads/main gate -` stays the refusal of a move that is no merge, the
+deletion of `main`. Every verdict of the gate is `ref heads/main gate <verdict> <facts>`:
+
+```text
+no-pull -                          the evidence names no opening that the hub holds
+not-open -                         the pull request is closed or merged
+parents -                          M is no commit with the single parent T
+not-the-merge -                    the tree of M is not the clean merge
+branch-moved <commit or ->         the branch is not at the head of the opening
+conflict -                         the merge onto T has a conflict
+policy <text>                      the policy of T cannot be used
+level <text>                       the level cannot be told, or the change changes nothing
+not-checked <level> <source>       no result of a check counts
+not-approved <level> <source> <agents> <agents needed> <humans> <humans needed>
+red-tip <commit>                   the first red tip
+unverified <commits> <bound>       the unverified window
+reserved <pull> <end>              the pull request that holds the reservation
+```
+
+`source` is `paths` or `weakened`, where the escalation for weakened tests set the level. The
+refusal carries the facts that the sender acts on; the statements that do not count, each with
+its reason, are not listed in it, because every reader sees them and recomputes the recount.
+The example `error-refused-gate` is checked in beside the others.
 
 ### A refusal names its reason, and only the evidence is shared
 

@@ -25,19 +25,21 @@
 //! on the old tip until [`follow_main`](Repository::follow_main) brings it along, which the
 //! command calls after the gate (STEMMA-261).
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
-use super::bounds::Subject;
+use super::verdict::{Case, LogProofs, Refusal, Rules, Verdict};
 use super::{now, Pause, Repository};
 use crate::change::{ChangeId, GenerateError};
 use crate::conflict::FromSumError;
 use crate::history::HistoryError;
-use crate::merge::{merge_commits, MergeError};
+use crate::merge::MergeError;
 use crate::object::{Commit, CommitId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, PR_MERGE};
 use crate::policy::RiskLevel;
-use crate::pull::TARGET;
+use crate::protocol::refusal::LevelSource;
+use crate::pull::{PullRequest, TARGET};
 use crate::refs::{BranchName, Logged, RefError};
 use crate::register::Mode;
 use crate::register::Register;
@@ -141,6 +143,26 @@ pub enum GateError {
         /// The tip of `main` that the rule was applied to.
         tip: CommitId,
     },
+    /// The approvals that count are fewer than the level of the change asks for (ADR-004): the
+    /// approvals of agents that the policy names, and a human at the levels 2 and 3, an owner
+    /// at level 3. Only an enforcing gate by the policy asks for them
+    /// ([`merge_gate_by_policy`](Repository::merge_gate_by_policy) with a register).
+    NotApproved {
+        /// The number of the pull request.
+        number: u64,
+        /// The level of the change.
+        level: RiskLevel,
+        /// Whether the escalation for weakened tests set the level.
+        source: LevelSource,
+        /// The approvals of agents that count.
+        agents: u32,
+        /// The approvals of agents that the level asks for.
+        agents_needed: u32,
+        /// The approvals of humans that count for the level.
+        humans: u32,
+        /// The approvals of humans that the level asks for.
+        humans_needed: u32,
+    },
     /// A bound of ADR-019 holds the change back: a red tip, the unverified window, or the
     /// reservation of another change. Nothing was written but objects; the call can be repeated
     /// when the reason has gone (see [`Pause`]).
@@ -242,6 +264,26 @@ impl fmt::Display for GateError {
                 "no result of a check counts for pull request {number} at level {} on the tip {tip}",
                 *level as u8
             ),
+            Self::NotApproved {
+                number,
+                level,
+                source,
+                agents,
+                agents_needed,
+                humans,
+                humans_needed,
+            } => {
+                let by = match source {
+                    LevelSource::Paths => "",
+                    LevelSource::Weakened => " (raised for weakened tests)",
+                };
+                write!(
+                    f,
+                    "pull request {number} has level {}{by} and needs {agents_needed} approvals \
+                     of agents and {humans_needed} of humans; {agents} and {humans} count",
+                    *level as u8
+                )
+            }
             Self::Paused { number, pause } => {
                 write!(f, "pull request {number} waits: {pause}")
             }
@@ -300,6 +342,39 @@ impl Error for GateError {
             Self::Policy(error) => Some(error),
             Self::Level(error) => Some(error),
             _ => None,
+        }
+    }
+}
+
+impl GateError {
+    /// The error of the local gate for a refusal of the verdict about `main`.
+    fn refused(refusal: Refusal, number: u64, tip: CommitId, pull: &PullRequest) -> Self {
+        match refusal {
+            Refusal::BranchMoved { head: Some(_) } => Self::BranchMoved { number },
+            Refusal::BranchMoved { head: None } => Self::Pull(PullError::NoSuchBranch {
+                branch: pull.branch().clone(),
+            }),
+            Refusal::Conflict => Self::Conflict { number, tip },
+            Refusal::Policy(error) => Self::Policy(error),
+            Refusal::Level(error) => Self::Level(error),
+            Refusal::NotChecked { level, .. } => Self::NotChecked { number, level, tip },
+            Refusal::NotApproved {
+                level,
+                source,
+                agents,
+                agents_needed,
+                humans,
+                humans_needed,
+            } => Self::NotApproved {
+                number,
+                level,
+                source,
+                agents,
+                agents_needed,
+                humans,
+                humans_needed,
+            },
+            Refusal::Paused(pause) => Self::Paused { number, pause },
         }
     }
 }
@@ -523,58 +598,53 @@ impl Repository {
         allowed: &crate::Allowed,
     ) -> Result<Result<GateMerge, Retry>, GateError> {
         let objects = self.objects();
-        let pulls = self.pull_requests(register)?;
-        let pull = super::pull::open_pull_of(&pulls, number)?;
+        let evidence = self.evidence(register).map_err(PullError::from)?;
+        let pull = super::pull::open_pull_of(&evidence.pulls, number)?;
         let head = self.branch_head(pull.branch())?;
         if head != *pull.head() {
             return Err(GateError::BranchMoved { number });
         }
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let tip = self.refs().branch(&main)?.ok_or(GateError::NoMain)?;
-
-        // Step 1: the merge, written before the lock.
-        let sum = merge_commits(objects, tip, head)?.simplify();
-        let [tree] = sum.terms() else {
-            return Err(GateError::Conflict { number, tip });
+        let heads: BTreeMap<BranchName, CommitId> = self.refs().branches()?.into_iter().collect();
+        // The writers are read for the ban on self-approval, which only a register and a policy
+        // ask for.
+        let writers = match (fixed, register) {
+            (None, Some(_)) => self.pull_authors(&head)?,
+            _ => Vec::new(),
         };
-        // The change is on `main` already if merging it changes nothing: its commits are in
-        // `main`, or an earlier call moved `main` to its squash commit and stopped before
-        // `pr-merge`. Only the record is missing then.
-        let tip_tree = objects.get_commit(&tip)?.map(|commit| commit.tree());
-        if tip_tree == Some(*tree) {
-            return self.record_landed(number, head, tip, actor, register, allowed);
-        }
 
-        // Step 2: the rule table, at the level of the caller or of the policy of the tip.
-        let (level, policy) = match fixed {
-            Some(level) => (level, None),
-            None => {
-                let policy = self.policy_at(&tip, register.is_some())?;
-                (self.level_of_change(&policy, &tip, *tree)?, Some(policy))
-            }
-        };
-        if self
-            .counted_checks(number, &head, &tip, level, register)?
-            .is_empty()
-        {
-            return Err(GateError::NotChecked { number, level, tip });
-        }
-        // The bounds of ADR-019 come after the rule table, so that a repair is exempt only with
-        // a result that counts, and they are read again for every attempt: a run, a landing, or
-        // a reservation can appear while the gate starts again.
-        let subject = Subject {
-            pull,
+        // Steps 1 and 2: the verdict about `main` (STEMMA-303), the function that a hub calls
+        // as well. The merge writes its blobs and trees before the lock.
+        let proofs = LogProofs(register);
+        let case = Case {
             tip,
-            tree: *tree,
-            level,
+            pull,
+            evidence: &evidence,
+            writers: &writers,
+            heads: &heads,
+            register,
+            proofs: &proofs,
+            rules: match fixed {
+                Some(level) => Rules::Level(level),
+                None => Rules::Policies(&[]),
+            },
+            now: now(),
         };
-        if let Some(pause) = self.pause_of(&subject, policy.as_ref(), register)? {
-            return Err(GateError::Paused { number, pause });
-        }
+        let tree = match self.judge_main(&case)? {
+            Ok(Verdict::Merge(merge)) => merge.tree,
+            // The change is on `main` already if merging it changes nothing: its commits are in
+            // `main`, or an earlier call moved `main` to its squash commit and stopped before
+            // `pr-merge`. Only the record is missing then.
+            Ok(Verdict::Landed) => {
+                return self.record_landed(number, head, tip, actor, register, allowed)
+            }
+            Err(refusal) => return Err(GateError::refused(refusal, number, tip, pull)),
+        };
 
         let message = format!("Merge pull request {number} ({})", pull.branch());
         let commit = Commit::try_new(
-            *tree,
+            tree,
             vec![tip],
             ChangeId::generate()?,
             actor.clone(),
@@ -833,7 +903,8 @@ mod tests {
         }
     }
 
-    /// Ana and Mia are members, Daniel owns the register.
+    /// Ana and Mia are members, Daniel owns the register, and Daniel sponsors the agents `bot`
+    /// and `cat` (keys of the seeds 4 and 5), which approve with him ([`approve`]).
     fn register() -> Register {
         let text = format!(
             "stemma-register 1\nentry human ana member\nkey {} active\n\
@@ -843,7 +914,47 @@ mod tests {
             Seeded::new(1).public(),
             Seeded::new(3).public()
         );
-        Register::parse(text.as_bytes()).unwrap()
+        let mut register = Register::parse(text.as_bytes()).unwrap();
+        let daniel = crate::register::Identity::of(&human("daniel"));
+        for (id, seed) in [("bot", 4), ("cat", 5)] {
+            let agent = crate::register::Identity::of(&agent(id));
+            let role = crate::register::Role::Member;
+            let cosign = crate::signature::sign(
+                &Seeded::new(1),
+                crate::signature::PayloadKind::Sponsorship,
+                &crate::register::sponsorship_payload(&agent, role, &daniel),
+            )
+            .unwrap();
+            register
+                .add_agent(
+                    agent,
+                    role,
+                    daniel.clone(),
+                    Seeded::new(seed).public(),
+                    cosign,
+                )
+                .unwrap();
+        }
+        register
+    }
+
+    /// An agent of Daniel.
+    fn agent(id: &str) -> Actor {
+        Actor::agent(id, "model", "session", "daniel").unwrap()
+    }
+
+    /// Signed approvals of `head` for the pull request `number` that every level asks for in an
+    /// enforcing repository (ADR-004): the agents `bot` and `cat`, and Daniel, a human owner.
+    fn approve(f: &Fixture, number: u64, head: CommitId) {
+        for (actor, seed) in [(agent("bot"), 4), (agent("cat"), 5), (human("daniel"), 1)] {
+            by_hand::approve(
+                &f.repository,
+                &actor,
+                number,
+                head,
+                Some(&Seeded::new(seed)),
+            );
+        }
     }
 
     fn human(id: &str) -> Actor {
@@ -1718,6 +1829,7 @@ mod tests {
             (5, 20)
         );
         f.proven(f.head, Some(f.main()), CheckResult::Pass);
+        approve(&f, f.number, f.head);
 
         let merged = gate_by_policy(&f, &Mode::Enforcing(register)).unwrap();
 
@@ -1770,6 +1882,7 @@ mod tests {
         let f = fixture("zero\n");
         let first = land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
         f.proven(f.head, Some(first), CheckResult::Pass);
+        approve(&f, f.number, f.head);
         let path = f.path();
         let second = commit_of(
             &f.repository,
@@ -2924,6 +3037,7 @@ mod tests {
                 .unwrap()
                 .head();
             f.proven(z, Some(tip), CheckResult::Pass);
+            approve(&f, other, z);
 
             let result = by_policy(&f, other, &Mode::Enforcing(register));
 
@@ -3068,6 +3182,7 @@ mod tests {
             let holder = pulls.iter().find(|pull| pull.number() == f.number).unwrap();
             assert!(!holder.is_open());
             assert_eq!(holder.ended_without_proof(), !proof);
+            approve(&f, other, z);
 
             let result = by_policy(&f, other, &Mode::Enforcing(register));
 

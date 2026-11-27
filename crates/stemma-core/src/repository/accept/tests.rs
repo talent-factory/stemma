@@ -17,6 +17,7 @@ use crate::oplog::OperationName;
 use crate::policy;
 use crate::protocol::record::tests::Seeded;
 use crate::protocol::record::{RecordProblem, RefUpdatePayload, StaleReference};
+use crate::protocol::refusal::GateRefusal;
 use crate::protocol::{FetchRequest, ParseError, RecordHash, RefList, Reference};
 use crate::register::{self, Role};
 use crate::signature::{SignError, Signature};
@@ -516,22 +517,26 @@ fn an_empty_repository_takes_no_update_that_does_not_set_main() {
 fn main_moves_through_the_gate_only_and_cannot_lose_its_register() {
     let (mut wire, root) = started();
     let before = record_of(&wire);
-    // A descendant, also for the owner: the gate is not part of this operation.
+    // A descendant, also for the owner: without a pull request as its evidence the gate on the
+    // hub refuses it (STEMMA-303), and so a commit that removes the register.
     let next = wire.side().governed("two\n", vec![root]);
-    let moved = to(&mut wire, "heads/main", Some(next));
+    let stripped = wire.side().commit(&[("a.txt", "one\n")], vec![root]);
+    for new in [next, stripped] {
+        let moved = to(&mut wire, "heads/main", Some(new));
+        assert_eq!(
+            refused(push(&mut wire, &daniel(), vec![moved])),
+            [(
+                "heads/main".to_owned(),
+                RefusalReason::Verdict(GateRefusal::NoPull)
+            )]
+        );
+    }
+    // The deletion of `main` is no move to a merge.
+    let moved = to(&mut wire, "heads/main", None);
     assert_eq!(
         refused(push(&mut wire, &daniel(), vec![moved])),
         [("heads/main".to_owned(), RefusalReason::Gate)]
     );
-    // A commit that removes the register, and the deletion of `main`.
-    let stripped = wire.side().commit(&[("a.txt", "one\n")], vec![root]);
-    for new in [Some(stripped), None] {
-        let moved = to(&mut wire, "heads/main", new);
-        assert_eq!(
-            refused(push(&mut wire, &daniel(), vec![moved])),
-            [("heads/main".to_owned(), RefusalReason::Gate)]
-        );
-    }
     unchanged(&wire, &before, &[("heads/main", Some(root))]);
 }
 
@@ -726,7 +731,13 @@ fn an_update_with_one_refused_reference_moves_nothing() {
     let reasons = refused(push(&mut wire, &ana(), moves));
     assert_eq!(reasons.len(), 2, "{reasons:?}");
     assert!(matches!(reasons[0].1, RefusalReason::Leased { .. }));
-    assert_eq!(reasons[1], ("heads/main".to_owned(), RefusalReason::Gate));
+    assert_eq!(
+        reasons[1],
+        (
+            "heads/main".to_owned(),
+            RefusalReason::Verdict(GateRefusal::NoPull)
+        )
+    );
     unchanged(&wire, &before, &state);
 }
 
@@ -1017,18 +1028,12 @@ fn only_a_bare_repository_accepts_a_ref_update() {
     let update = signed(&daniel(), vec![moved]);
     let (hub, signer) = (address(), hub_key());
     let mut record = MemoryRecord::default();
-    let context = AcceptContext {
-        hub: &hub,
-        repository: repository_id(),
-        record: &mut record,
-        time: START,
-        signer: &signer,
-    };
+    let context = AcceptContext::new(&hub, repository_id(), &mut record, START, &signer);
     assert_eq!(
         format!("{context:?}"),
         format!(
             "AcceptContext {{ hub: HubAddress({ADDRESS:?}), repository: RepositoryId({REPOSITORY}), \
-             time: {START}, .. }}"
+             time: {START}, policies: [], .. }}"
         )
     );
     let error = repository.accept_ref_update(&update, context).unwrap_err();
@@ -1194,13 +1199,7 @@ fn a_signer_of_the_hub_that_fails_leaves_nothing_behind() {
     let hub = address();
     let error = {
         let mut record = wire.side().record.borrow_mut();
-        let context = AcceptContext {
-            hub: &hub,
-            repository: repository_id(),
-            record: &mut *record,
-            time: START,
-            signer: &Broken,
-        };
+        let context = AcceptContext::new(&hub, repository_id(), &mut *record, START, &Broken);
         wire.side()
             .repository
             .accept_ref_update(&update, context)

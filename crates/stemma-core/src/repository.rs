@@ -83,6 +83,7 @@ mod statements;
 mod status;
 mod switch;
 mod track;
+mod verdict;
 mod worktree;
 
 pub use accept::{AcceptContext, AcceptError, RecordDestination, RecordStep};

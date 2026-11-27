@@ -34,6 +34,7 @@ die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
 die signierten Erklärungen mit ihrer Menge im Klon,
 die annehmende Operation für Branches, Tags und eingereichte Erklärungen,
+das Gate auf dem Hub für die Bewegung von \type{main},
 das Festhalten des Schlüssels des Hubs im Klon
 und der HTTP-Client des Klons.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
@@ -1066,6 +1067,94 @@ reparieren muss (\in{Abschnitt}[sec:merge-gate]), entsteht auf dem Hub nicht.
 Der Zustand \type{merged} ist dort keine Erklärung: Er folgt aus dem Eintrag der Aufzeichnung,
 der den Pull Request nennt, und Bewegung und Merge sind ein Schritt unter einer Sperre.
 
+\subsection[sec:hub-gate]{Das Gate auf dem Hub}
+
+Die annehmende Operation urteilt über eine Bewegung von \type{main} mit derselben Funktion wie
+das lokale Gate (\in{Abschnitt}[sec:main-verdict]).
+Vom Absender nimmt sie nur $M$ und die Zeile \type{evidence}, die den Pull Request mit dem Hash
+seiner Eröffnung nennt; alles andere rechnet sie selbst.
+Der Hub übergibt dafür im Kontext den Ort seiner gehaltenen Erklärungen und, für die
+Namespace-Policy, weitere Policies, die mit der Policy von $T$ nach dem Maximum zählen.
+
+\startitemize[n]
+\item $M$ ist ein Commit mit dem einzigen Elternteil $T$.
+\item Der Pull Request ist eine Eröffnung, die der Hub hält, und er ist offen.
+\item Der Hub faltet seine Erklärungen und die Merges seiner Aufzeichnung in seiner Reihenfolge
+und ruft das Urteil auf, mit dem Register und der Policy von $T$, den Branches des Hubs und
+seiner Zeit.
+\item Der Tree von $M$ ist der Tree, den das Urteil als sauberen Merge berechnet.
+\stopitemize
+
+Ob eine Signatur zählt, beurteilt das Register von $T$.
+Ein Schlüssel, der dort nicht mehr aktiv ist, zählt nach der Reihenfolge des Hubs:
+Ein ausgemusterter für eine Erklärung, die vor dem Eintrag liegt, der die Ausmusterung nach
+\type{main} brachte, ein widerrufener ebenso, ausser für eine Freigabe.
+Die Freigaben eines widerrufenen Schlüssels zählen nie.
+Der Eintrag eines angenommenen Merges nennt den Commit der Policy von $T$, denn das Urteil beruht
+auf ihr; dass der Pull Request gemergt ist, folgt aus diesem Eintrag.
+Die erste Fassung rechnet alles unter der Sperre.
+Der Tree-Merge und das Urteil sind reine Funktionen über unveränderliche Objekte, also können sie
+später vor die Sperre wandern, wenn die gemessene Haltezeit es verlangt.
+
+\starttyping
+stemma-protocol 1
+error refused
+ref heads/main gate not-approved 2 weakened 1 2 0 1
+\stoptyping
+
+Eine Ablehnung des Gates steht hinter \type{gate} und nennt das Urteil mit seinen Fakten
+(\in{Tabelle}[tab:gate-verdicts]).
+Im Beispiel hebt die Eskalation bei abgeschwächten Tests die Änderung auf Stufe 2; eine Freigabe
+eines Agenten zählt, zwei und eine eines Menschen wären nötig.
+Welche Erklärungen nicht zählen und warum, nennt die Ablehnung nicht: Jeder Leser des Repositorys
+sieht sie und rechnet es nach.
+
+\startplacetable[title={Die Urteile des Gates auf dem Hub hinter \type{gate}},
+reference=tab:gate-verdicts]
+\startxtable[frame=off,option=stretch]
+\startxrow[topframe=on,bottomframe=on]
+\startxcell[width=0.3\textwidth] {\bf Urteil} \stopxcell
+\startxcell {\bf Bedeutung} \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{no-pull}, \type{not-open} \stopxcell
+\startxcell Die Bewegung nennt keine Eröffnung, die der Hub hält, oder der Pull Request ist
+geschlossen oder gemergt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{parents}, \type{not-the-merge} \stopxcell
+\startxcell $M$ hat nicht den einzigen Elternteil $T$, oder sein Tree ist nicht der saubere
+Merge des Kopfs auf $T$. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{branch-moved}, \type{conflict} \stopxcell
+\startxcell Der Branch steht nicht auf dem Kopf der Eröffnung, oder der Merge hat einen
+Konflikt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{policy}, \type{level} \stopxcell
+\startxcell Die Policy von $T$ lässt sich nicht verwenden, oder die Stufe lässt sich nicht
+bestimmen, auch weil die Änderung nichts ändert. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{not-checked} \stopxcell
+\startxcell Kein Prüfergebnis zählt; die Zeile nennt die Stufe und ob die Eskalation sie gesetzt
+hat. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{not-approved} \stopxcell
+\startxcell Zu wenige Freigaben zählen; die Zeile nennt die Stufe, ihre Herkunft und die
+gezählten und verlangten Freigaben von Agenten und Menschen. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{red-tip}, \type{unverified}, \type{reserved} \stopxcell
+\startxcell Eine Schranke hält die Änderung zurück: die erste rote Spitze, die Zahl ungeprüfter
+Commits mit der Grenze, oder der Pull Request, der die Reservierung hält, mit ihrem Ende.
+\stopxcell
+\stopxrow
+\stopxtable
+\stopplacetable
+
 \subsection{Branches, Tags und Purge}
 
 Der Schreibinhaber eines ungeschützten Branch ist auf dem Hub der Akteur des letzten Eintrags der
@@ -1095,9 +1184,8 @@ Der Kern bietet dafür einen einzigen Aufruf auf einem Bare-Repository
 zusammensetzt.
 Der Hub übergibt das Ref-Update und einen Kontext: seine öffentliche Adresse, die ID des
 Repositorys, den Ort der Aufzeichnung, seine Zeit und seinen Signierer.
-Gebaut ist der Teil für Branches und Tags.
-\type{main} nimmt die Operation bisher nur beim ersten Push an; das Gate auf dem Hub, der Purge
-und der Owner-Override folgen.
+Gebaut ist der Teil für Branches und Tags und das Gate auf dem Hub für \type{main}
+(\in{Abschnitt}[sec:hub-gate]); der Purge und der Owner-Override folgen.
 
 \startitemize[n]
 \item Vor der Sperre vergleicht die Operation die Adresse und die ID mit der Payload.
@@ -1116,7 +1204,8 @@ Danach muss jeder Branch und jeder Tag dort stehen, wo die Aufzeichnung ihn läs
 \item Sie bestimmt den Absender: den Eintrag des Registers an der Spitze von \type{main} vor dem
 Ref-Update, der den Schlüssel des Ref-Updates als aktiven Schlüssel führt.
 \item Sie urteilt über jede Referenz: Der Authorizer wird mit \type{push}, \type{tag} oder
-\type{untag} gefragt, und für einen Branch gilt die Schreibhoheit.
+\type{untag} gefragt, für einen Branch gilt die Schreibhoheit, und für \type{main} nach dem
+ersten Push das Gate.
 \item Sie schreibt den Eintrag mit der Signatur des Hubs und lässt ihn dauerhaft ablegen.
 \item Sie bewegt die Referenzen, die Löschungen zuerst, und gibt den Eintrag als Quittung zurück.
 \stopitemize
@@ -1178,7 +1267,9 @@ reference=tab:refusal-reasons]
 \stopxrow
 \startxrow
 \startxcell \type{gate} \stopxcell
-\startxcell \type{main} bewegt sich nach dem ersten Push nur durch das Merge-Gate. \stopxcell
+\startxcell \type{main} bewegt sich nach dem ersten Push nur durch das Merge-Gate:
+\type{gate -} für eine Bewegung, die kein Merge ist, wie das Löschen, sonst das Urteil des Gates
+(\in{Tabelle}[tab:gate-verdicts]). \stopxcell
 \stopxrow
 \startxrow
 \startxcell \type{reserved}, \type{conflict} \stopxcell
@@ -1208,9 +1299,8 @@ nicht verwenden. \stopxcell
 Der erste Push setzt \type{main}, allein oder zusammen mit weiteren Referenzen; für alle gilt
 das Register des hochgeladenen Commits.
 Ein Repository ohne \type{main} nimmt kein Ref-Update an, das \type{main} nicht setzt.
-Jedes spätere Ref-Update von \type{main} lehnt diese Fassung ab, auch das eines Owners; ein
-Push, der das Register von \type{main} entfernt, scheitert also ebenso wie das Löschen von
-\type{main}.
+Jedes spätere Ref-Update von \type{main} geht durch das Gate, auch das eines Owners; ein Push
+ohne Pull Request als Beleg scheitert also ebenso wie das Löschen von \type{main}.
 Jede angenommene Bewegung eines Branch ist sein nächster Eintrag, deshalb beginnt mit jeder
 Bewegung des Schreibinhabers eine neue Lease.
 Der Eintrag nennt den Commit der Policy genau dann, wenn das Urteil auf ihr beruht: wenn eine
