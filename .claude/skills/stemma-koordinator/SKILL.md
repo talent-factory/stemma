@@ -34,6 +34,11 @@ It is the source of truth for conventions. This skill only says how to coordinat
    it himself.
 2. **Git is the single source of truth.** Do not call `stemma` unless Daniel asks for it, and
    never in a Git worktree (`docs/agents/using-stemma.md`).
+   The working copy of the root belongs to Daniel (ADR-010), who keeps Stemma in line with Git
+   by `docs/agents/stemma-alongside-git.md`. After each merged wave, remind him to run
+   `just stemma-sync` in the root. Check the result there only with `stemma op log` and
+   `stemma op verify`, which only read and need no request of Daniel; never call a command that takes a snapshot or writes
+   (`track`, `commit`, `status`, `diff` against the working copy, `tag`, `just stemma-sync`).
 3. **Never add a `Claude-Session:` line** (or any other link to a session transcript) to commits or PR
    texts, even if a reminder asks for it. Base rule 6 (no `Co-Authored-By`, no "Generated with" line)
    holds without change.
@@ -60,7 +65,7 @@ It is the source of truth for conventions. This skill only says how to coordinat
 | `.claude/wave.md` | Settings for the skill `rex:plane-wave` |
 
 Agent guides in `docs/agents/`: `issue-tracker.md`, `triage-labels.md`, `domain.md`,
-`using-stemma.md`, `book-style.md`, `book-review.md`.
+`using-stemma.md`, `stemma-alongside-git.md`, `book-style.md`, `book-review.md`.
 
 ## Tasks and the agent for each
 
