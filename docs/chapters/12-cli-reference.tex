@@ -578,7 +578,8 @@ aber die Konfiguration hält vielleicht noch den alten Schlüssel. \stopxcell
 \startxrow
 \startxcell[width=0.26\textwidth] \type{clone} \stopxcell
 \startxcell[width=0.35\textwidth] Das Repository ist angelegt,
-aber der Fetch oder der Branch \type{main} kam nicht zu Ende. \stopxcell
+aber der Fetch oder der Branch \type{main} kam nicht zu Ende,
+oder die Ausgabe liess sich nicht schreiben. \stopxcell
 \startxcell Das Verzeichnis nicht löschen; dort \type{fetch} aufrufen,
 und wenn nötig \type{switch -c main remotes/origin/heads/main}.
 Ohne Konfiguration des Remote nennt die Meldung, dass das Verzeichnis zu löschen ist. \stopxcell
@@ -3961,7 +3962,8 @@ Commits, eine Zeile mit dem Fingerabdruck wie bei \type{remote add} und eine Zei
 {\bf Fehler.} Exit-Code 1, ohne dass ein Verzeichnis entsteht: ein unerwarteter Schlüssel und
 die Fehler des Hubs wie bei \type{remote add}; ebenso ein Verzeichnis, das schon ein
 \type{.stemma} hat. Exit-Code 6 wie bei \type{remote add}. Exit-Code 3: Das Repository ist
-angelegt, aber der Fetch oder der Branch \type{main} kam nicht zu Ende. Das Verzeichnis bleibt;
+angelegt, aber der Fetch oder der Branch \type{main} kam nicht zu Ende, oder die Ausgabe liess
+sich nicht schreiben. Das Verzeichnis bleibt;
 ein \type{fetch} dort setzt fort, und die Meldung nennt den Aufruf \type{switch}, der
 \type{main} anlegt. Fehlt die Konfiguration des Remote, sagt die Meldung, dass das Verzeichnis
 zu löschen und der Klon zu wiederholen ist.
@@ -4009,8 +4011,10 @@ neuem Commit, \type{new at} für eine neue und \type{deleted} für eine entfernt
 
 {\bf Fehler.} Exit-Code 1, ohne Eintrag: ein Remote, den es nicht gibt, ein Hub, der einen
 anderen Schlüssel als den festgehaltenen nennt (die Meldung nennt beide Fingerabdrücke und den
-Aufruf \type{remote pin}), eine Liste eines anderen Repositorys, ein Strom, der abbricht oder
-nicht vollständig ist, und die Fehler des Hubs wie bei \type{remote add}. Was ganz ankam, bleibt
+Aufruf \type{remote pin}), eine Konfiguration ohne festgehaltenen Schlüssel (die Meldung nennt
+\type{remote pin}), eine Liste eines anderen Repositorys, ein Remote, der während des Empfangs
+entfernt oder neu festgehalten wurde, ein Strom, der abbricht oder nicht vollständig ist, und die
+Fehler des Hubs wie bei \type{remote add}. Was ganz ankam, bleibt
 im Speicher und im Journal \type{fetch-pending}, und der nächste \type{fetch} setzt dort fort.
 Exit-Code 6: eine gehaltene Sperre oder ein beschäftigter Hub. Exit-Code 3: Der Eintrag steht im
 Log, und nicht alle Remote-Referenzen bewegten sich, oder das Journal blieb liegen; ein zweiter

@@ -667,7 +667,8 @@ impl Classify for crate::repository::FetchError {
             | Self::Refused(_)
             | Self::Unreadable(_)
             | Self::OtherRepository { .. }
-            | Self::HubKey(_) => FailureKind::Other,
+            | Self::HubKey(_)
+            | Self::RemoteChanged(_) => FailureKind::Other,
         }
     }
 }

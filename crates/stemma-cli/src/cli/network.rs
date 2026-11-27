@@ -351,7 +351,13 @@ fn connect(config: &RemoteConfig, key: Option<&Path>) -> Result<HttpTransport, N
             )
         })?;
         let public = read_public_key(key)?;
-        let hub = hub_of(&config.address).expect("an address of a remote names its hub");
+        let hub = hub_of(&config.address).ok_or_else(|| {
+            NetworkError::refused(format!(
+                "the address `{}` of the remote names no namespace and repository, so the hub \
+                 to sign in to is not known; nothing was written",
+                config.address
+            ))
+        })?;
         let called = HubAddress::try_new(hub.clone()).map_err(|error| {
             NetworkError::refused(format!("the address of the hub `{hub}`: {error}"))
         })?;
@@ -369,22 +375,28 @@ fn connect(config: &RemoteConfig, key: Option<&Path>) -> Result<HttpTransport, N
 /// The public key of a key file: the file itself if it holds a public key, and otherwise the
 /// file with `.pub` appended.
 fn read_public_key(key: &Path) -> Result<PublicKey, NetworkError> {
-    let read = |path: &Path| std::fs::read_to_string(path).ok();
-    if let Some(key) = read(key).and_then(|text| PublicKey::from_openssh(text.trim()).ok()) {
-        return Ok(key);
+    let read = |path: &Path| {
+        std::fs::read_to_string(path).map_err(|error| {
+            NetworkError::refused(format!(
+                "cannot read the key file {}: {error}",
+                path.display()
+            ))
+        })
+    };
+    let text = read(key)?;
+    if let Ok(public) = PublicKey::from_openssh(text.trim()) {
+        return Ok(public);
     }
+    // The file holds no public key, so it is the private key, and its public key lies beside it.
     let mut public = key.as_os_str().to_owned();
     public.push(".pub");
     let public = PathBuf::from(public);
-    let text = read(&public).ok_or_else(|| {
+    PublicKey::from_openssh(read(&public)?.trim()).map_err(|error| {
         NetworkError::refused(format!(
-            "cannot read the public key {} of the key file {}",
-            public.display(),
-            key.display()
+            "the key file {} holds no public key, and {} is none either: {error}",
+            key.display(),
+            public.display()
         ))
-    })?;
-    PublicKey::from_openssh(text.trim()).map_err(|error| {
-        NetworkError::refused(format!("the public key {}: {error}", public.display()))
     })
 }
 
@@ -425,6 +437,10 @@ fn key_hint(error: &HubKeyError, remote: &RemoteName) -> String {
         HubKeyError::Changed { offered, .. } => {
             format!("; then run `stemma remote pin {remote} --expect-key {offered}`")
         }
+        HubKeyError::NotPinned => format!(
+            "; compare the fingerprint of the key of the hub on a second channel and run \
+             `stemma remote pin {remote} --expect-key FINGERPRINT`"
+        ),
         _ => String::new(),
     }
 }
@@ -834,12 +850,18 @@ pub(super) fn clone(args: CloneArgs, out: &mut dyn Write) -> Result<(), CliError
         &AllowAll,
     )
     .map_err(|error| clone_error(error, &transport))?;
+    let made = |what: String| {
+        NetworkError::incomplete(format!(
+            "the clone in `{}` is made, but {what}",
+            directory.display()
+        ))
+    };
     let config = repository
         .remote(&args.remote)
-        .ok()
-        .flatten()
-        .expect("a clone has the configuration of its remote");
-    let fingerprint = fingerprint_of(&config).expect("a clone pins the key of the hub");
+        .map_err(|error| made(format!("its remote cannot be read: {error}")))?
+        .ok_or_else(|| made(format!("its remote `{}` is gone", args.remote)))?;
+    let fingerprint = fingerprint_of(&config)
+        .ok_or_else(|| made(format!("its remote `{}` holds no key", args.remote)))?;
     let main = BranchName::try_new("main").expect("`main` is a branch name");
     let upstream = RemoteRefName {
         remote: args.remote.clone(),
@@ -902,8 +924,13 @@ pub(super) fn clone(args: CloneArgs, out: &mut dyn Write) -> Result<(), CliError
         }
         text
     };
-    // The directory names the clone, so a failed write of the result is code 1.
-    write_out(out, &text, None)
+    // The clone is made: a result that cannot be written is code 3. A closed pipe is none, as
+    // the directory names the clone.
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(made(format!("the result could not be written: {error}")).into()),
+        Ok(()) => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -923,6 +950,28 @@ mod tests {
         );
         assert_eq!(hub("https://hub.example/stemma"), None);
         assert_eq!(hub("https://hub.example"), None);
+    }
+
+    #[test]
+    fn the_public_key_of_a_key_file_is_the_file_or_the_file_with_pub() {
+        const KEY: &str =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIjwWEZ4603dDnTO8ilPzaYzYG5PnbKb6TxOzauTQ9du";
+        let dir = std::env::temp_dir().join(format!("stemma-key-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let public = dir.join("id.pub");
+        std::fs::write(&public, format!("{KEY} daniel\n")).unwrap();
+        let private = dir.join("id");
+        std::fs::write(&private, "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+        let expected = PublicKey::from_openssh(KEY).unwrap();
+        assert_eq!(read_public_key(&public).unwrap(), expected);
+        assert_eq!(read_public_key(&private).unwrap(), expected);
+        // A missing file is named with the error of the file system.
+        let missing = read_public_key(&dir.join("none")).unwrap_err().to_string();
+        assert!(missing.contains("cannot read the key file"), "{missing}");
+        std::fs::remove_file(&public).unwrap();
+        let error = read_public_key(&private).unwrap_err().to_string();
+        assert!(error.contains("id.pub"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -99,8 +99,9 @@ How it is built (STEMMA-297):
   `--expect-key SHA256:...`, pin the key of the list, and show its fingerprint; a key with
   another fingerprint writes and makes nothing. `remote pin NAME --expect-key SHA256:...` pins
   again. `fetch` refuses a list whose key is not the pinned one and names the call of
-  `remote pin`; a configuration from before the pinning, which holds no key, is fetched
-  without the check.
+  `remote pin`, and it refuses a configuration that pinned no key (`hub-key -`, from before
+  the pinning) in the same way, as a clone must not trust a hub while it holds no key; `remote
+  pin` pins the first key there.
 
 Rejected: the key in a level 3 file of the tree (the tree would know its remotes, and the first
 clone does not have the repository yet), no pinning, and a statement of rotation that the old key

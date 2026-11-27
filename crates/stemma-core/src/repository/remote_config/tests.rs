@@ -363,3 +363,109 @@ fn a_refused_operation_writes_nothing() {
     assert!(error.to_string().contains("remote-remove"), "{error}");
     assert!(repository.remote(&origin()).unwrap().is_some());
 }
+
+/// A side that answers as the hub and runs `during` while it answers a fetch request, as a
+/// command that runs while the fetch receives.
+struct Meanwhile<'a, F: Fn()> {
+    side: Answering<'a>,
+    during: F,
+}
+
+impl<F: Fn()> crate::transport::OtherSide for Meanwhile<'_, F> {
+    fn refs(&self) -> Result<crate::protocol::RefList, crate::transport::Refusal> {
+        self.side.refs()
+    }
+
+    fn fetch(
+        &self,
+        request: &crate::protocol::FetchRequest,
+        stream: &mut dyn std::io::Write,
+    ) -> Result<(), crate::transport::Refusal> {
+        (self.during)();
+        self.side.fetch(request, stream)
+    }
+}
+
+#[test]
+fn a_fetch_does_not_bring_back_the_references_of_a_remote_removed_while_it_received() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let repository = local(&dir);
+    repository
+        .add_remote(
+            &origin(),
+            &setup(),
+            &mut hub.transport(),
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap();
+    let path = repository.path().to_path_buf();
+    let entry = format!("b3:{}", "a1".repeat(32)).parse().unwrap();
+    let side = Meanwhile {
+        side: Answering::new(
+            &hub.repository,
+            ListFacts::new(hub.id, keys(hub.key), move |_| Some(entry)),
+        ),
+        during: || {
+            Repository::open(&path)
+                .unwrap()
+                .remove_remote(&origin(), &daniel(), &AllowAll)
+                .unwrap();
+        },
+    };
+    let error = repository
+        .fetch(
+            &origin(),
+            &mut MemoryTransport::new(side),
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap_err();
+    assert!(matches!(error, FetchError::RemoteChanged(_)), "{error}");
+    assert!(repository.refs_store().remote_refs().unwrap().is_empty());
+    assert_eq!(repository.remote(&origin()).unwrap(), None);
+}
+
+#[test]
+fn a_fetch_does_not_trust_a_remote_that_pinned_no_key() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let repository = local(&dir);
+    let metadata = repository.metadata_dir();
+    let config = RemoteConfig::new(setup().address, hub.id);
+    remote::write_config(&metadata, &metadata.join("tmp"), &origin(), &config).unwrap();
+    let error = repository
+        .fetch(&origin(), &mut hub.transport(), &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(
+        matches!(error, FetchError::HubKey(HubKeyError::NotPinned)),
+        "{error}"
+    );
+    assert!(repository.refs_store().remote_refs().unwrap().is_empty());
+}
+
+#[test]
+fn a_removal_leaves_the_remote_references_of_another_remote_alone() {
+    let dir = TempDir::new();
+    let hub = Hub::new(&dir);
+    let repository = local(&dir);
+    let backup = RemoteName::try_new("backup").unwrap();
+    for name in [origin(), backup.clone()] {
+        repository
+            .add_remote(&name, &setup(), &mut hub.transport(), &daniel(), &AllowAll)
+            .unwrap();
+        repository
+            .fetch(&name, &mut hub.transport(), &daniel(), &AllowAll)
+            .unwrap();
+    }
+    let removed = repository
+        .remove_remote(&origin(), &daniel(), &AllowAll)
+        .unwrap();
+    assert!(removed.refs.iter().all(|(name, _)| name.remote == origin()));
+    assert_eq!(removed.refs.len(), 1);
+    let left = repository.refs_store().remote_refs().unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].0.remote, backup);
+    assert!(repository.remote(&backup).unwrap().is_some());
+}

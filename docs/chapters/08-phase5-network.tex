@@ -932,6 +932,8 @@ Konfiguration und danach die Datei \type{remotes/<Remote>}.
 \stopitemize
 
 Eine Remote-Referenz bewegt \type{remote add} nicht; das tut der erste \type{fetch}.
+Ein \type{fetch} vertraut einem Remote ohne festgehaltenen Schlüssel nicht und lehnt ab; die
+Meldung nennt \type{remote pin}, das den ersten Schlüssel festhält.
 \type{remote remove} fragt den Hub nicht.
 Es schreibt unter der Sperre den Eintrag \type{remote-remove} mit der Konfiguration und mit jeder
 Remote-Referenz des Remote, entfernt danach die Remote-Referenzen und zuletzt die Konfiguration.
@@ -939,6 +941,9 @@ Der Eintrag hält so fest, was da war, auch die Commits, auf die die Remote-Refe
 \type{op restore} macht keinen der beiden Einträge rückgängig; die zwei Befehle heben sich
 gegenseitig auf, und ein \type{fetch} nach einem neuen \type{remote add} holt die
 Remote-Referenzen zurück.
+Ein \type{fetch}, der während eines \type{remote remove} empfängt, liest die Konfiguration
+unter der Sperre noch einmal; ist sie weg oder anders, bewegt er nichts, und die Entfernung
+bleibt bestehen.
 Mit den beiden Einträgen steigt das Repository-Format auf Version 20 (ADR-009).
 
 {\bf Welcher Branch folgt.}

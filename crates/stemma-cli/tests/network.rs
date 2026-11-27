@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use common::{ok, operations, repository, run, track_ok, write, Dir, ACTOR};
+use common::{ok, operations, repository, run, run_failing, track_ok, write, Dir, ACTOR};
 use stemma_core::protocol::record::HubKeys;
 use stemma_core::protocol::{ErrorMessage, FetchRequest, FormerKeys, RepositoryId};
 use stemma_core::repository::Repository;
@@ -56,7 +56,16 @@ struct Hub {
 
 impl Hub {
     fn start() -> Self {
-        let dir = repository();
+        Self::start_on("main")
+    }
+
+    /// A hub whose one commit is on the branch `branch`.
+    fn start_on(branch: &str) -> Self {
+        let dir = Dir::new();
+        ok(
+            dir.path(),
+            &["init", "--actor", ACTOR, "--initial-branch", branch],
+        );
         write(dir.path(), "file.txt", "hello\n");
         track_ok(dir.path(), "file.txt");
         ok(dir.path(), &["commit", "--actor", ACTOR, "-m", "first"]);
@@ -622,4 +631,137 @@ fn after_a_fetch_a_rebase_on_the_remote_reference_brings_main_along() {
         std::fs::read_to_string(copy.join("file.txt")).unwrap(),
         "second\n"
     );
+}
+
+#[test]
+fn a_clone_of_a_hub_without_main_makes_no_local_branch() {
+    let hub = Hub::start_on("dev");
+    let place = Dir::new();
+    let result = ok(
+        place.path(),
+        &["clone", "--actor", ACTOR, "--json", &hub.address, "copy"],
+    );
+    assert!(
+        result.stdout.contains("\"branch\":null"),
+        "{}",
+        result.stdout
+    );
+    let copy = place.path().join("copy");
+    assert!(!ok(&copy, &["branch"]).stdout.contains("main"));
+    let text = ok(
+        place.path(),
+        &["clone", "--actor", ACTOR, &hub.address, "again"],
+    );
+    assert!(
+        text.stdout
+            .contains("The hub has no `main`, so no local branch is made."),
+        "{}",
+        text.stdout
+    );
+}
+
+#[test]
+fn a_clone_into_an_existing_repository_is_refused_and_changes_nothing() {
+    let hub = Hub::start();
+    let place = repository();
+    let before = operations(place.path());
+    let result = run(
+        place.path(),
+        &["clone", "--actor", ACTOR, &hub.address, "."],
+    );
+    assert_eq!(result.code, 1, "{}", result.stderr);
+    assert_eq!(operations(place.path()), before);
+    assert_eq!(ok(place.path(), &["remote", "list"]).stdout, "");
+}
+
+#[test]
+fn the_json_forms_of_list_remove_and_pin_name_their_fields() {
+    let hub = Hub::start();
+    let local = repository();
+    ok(
+        local.path(),
+        &["remote", "add", "--actor", ACTOR, "origin", &hub.address],
+    );
+    let list = ok(local.path(), &["remote", "list", "--json"]).stdout;
+    assert_eq!(
+        list,
+        format!(
+            "{{\"schema\":1,\"remote\":\"origin\",\"address\":\"{}\",\
+             \"repository\":\"{}\",\"fingerprint\":\"{}\",\"ca_file\":null,\
+             \"sign_in\":false}}\n",
+            hub.address,
+            "11".repeat(16),
+            fingerprint(KEY)
+        )
+    );
+    // Pinning the key that is pinned already writes no entry.
+    let count = operations(local.path()).len();
+    let pin = ok(
+        local.path(),
+        &[
+            "remote",
+            "pin",
+            "--actor",
+            ACTOR,
+            "--json",
+            "--expect-key",
+            &fingerprint(KEY),
+            "origin",
+        ],
+    )
+    .stdout;
+    assert_eq!(
+        pin,
+        format!(
+            "{{\"schema\":1,\"remote\":\"origin\",\"fingerprint\":\"{}\",\"entry\":null}}\n",
+            fingerprint(KEY)
+        )
+    );
+    assert_eq!(operations(local.path()).len(), count);
+    let removed = ok(
+        local.path(),
+        &["remote", "remove", "--actor", ACTOR, "--json", "origin"],
+    )
+    .stdout;
+    assert_eq!(
+        removed,
+        format!(
+            "{{\"schema\":1,\"remote\":\"origin\",\"references\":0,\"entry\":{}}}\n",
+            count + 1
+        )
+    );
+}
+
+#[test]
+fn a_configuration_that_cannot_be_written_after_its_entry_is_code_3_and_a_repeat_finishes() {
+    let hub = Hub::start();
+    let local = repository();
+    let remotes = local.path().join(".stemma/remotes");
+    std::fs::create_dir_all(&remotes).unwrap();
+    let args = ["remote", "add", "--actor", ACTOR, "origin", &hub.address];
+    let failed = run_failing(local.path(), &args, &[("write", &remotes)]);
+    assert_eq!(failed.code, 3, "{}", failed.stderr);
+    assert!(
+        failed.stderr.contains("run the command again"),
+        "{}",
+        failed.stderr
+    );
+    assert!(operations(local.path())[0].contains("\"operation\":\"remote-add\""));
+    assert_eq!(ok(local.path(), &["remote", "list"]).stdout, "");
+    ok(local.path(), &args);
+    ok(local.path(), &["fetch", "--actor", ACTOR]);
+    // The removal deletes the references and then fails on the configuration.
+    let args = ["remote", "remove", "--actor", ACTOR, "origin"];
+    let failed = run_failing(local.path(), &args, &[("write", &remotes)]);
+    assert_eq!(failed.code, 3, "{}", failed.stderr);
+    assert!(ok(local.path(), &["remote", "list"])
+        .stdout
+        .starts_with("origin "));
+    let removed = ok(local.path(), &args);
+    assert_eq!(
+        removed.stdout,
+        "Removed the remote `origin` and its 0 remote references.\n"
+    );
+    assert_eq!(ok(local.path(), &["remote", "list"]).stdout, "");
+    ok(local.path(), &["op", "verify"]);
 }

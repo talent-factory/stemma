@@ -276,7 +276,12 @@ impl Repository {
                 .map_err(RemoteConfigError::Refs)?;
             match logged.into_result() {
                 Ok(Some(entry)) => (entry, deleted),
-                Ok(None) => unreachable!("a remote reference that exists moves when it is deleted"),
+                // Every listed reference is deleted under the lock, so a plan without a move is
+                // not expected; the entry is written all the same, without references.
+                Ok(None) => (
+                    entry_of(Vec::new()).map_err(RemoteConfigError::Log)?,
+                    Vec::new(),
+                ),
                 Err(error) => return Err(RemoteConfigError::Update(error)),
             }
         };

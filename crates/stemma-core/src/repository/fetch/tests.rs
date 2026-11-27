@@ -690,7 +690,11 @@ fn a_fetch_leaves_the_references_of_another_remote_alone() {
         &repository.metadata_dir(),
         &repository.metadata_dir().join("tmp"),
         &upstream,
-        &RemoteConfig::new(address(), hub.id),
+        &{
+            let mut config = RemoteConfig::new(address(), hub.id);
+            config.hub_key = Some(PublicKey::from_openssh(KEY).unwrap());
+            config
+        },
     )
     .unwrap();
     repository
