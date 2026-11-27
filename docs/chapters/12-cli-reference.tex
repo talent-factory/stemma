@@ -2798,6 +2798,9 @@ In einem durchsetzenden Repository (\in{Abschnitt}[sec:register]) prüft der Bef
 Register und jeden Beweis in \type{.stemma/proofs/} und fügt vor der Zeile \type{anchor} eine
 Zeile ein: \type{The actor register is valid, and 0 proofs of log entries hold against it.}
 Ein offenes Repository hat keine solche Zeile.
+Eine Grenze, die das Register für das Log eines anderen Klons nennt, zählt dabei ab dem Eintrag
+\type{fetch}, der den Commit mit dieser Grenze brachte; hat keiner sie gebracht, zählt kein
+Eintrag dieses Logs vor ihr (ADR-026).
 Ein Register, das sich nicht lesen lässt, ein durchsetzendes Repository ohne Register in
 seiner Basis und ein Beweis, den das Register nicht annimmt, enden mit Exit-Code 5.
 
@@ -3094,6 +3097,10 @@ Die Änderung ist ein Commit der Stufe~3, den ein Mensch mit der Rolle Owner fre
 \type{add-key} fügt einen aktiven Schlüssel hinzu, für eine Rotation.
 \type{retire} und \type{revoke} tragen die Nummer ein, die der nächste Eintrag des Logs
 erhält; ab ihr zählt der Schlüssel nicht mehr.
+Die Grenze nennt die ID des Logs, das sie geschrieben hat (\type{log <id>}, Version~2 der Datei);
+ein Repository ohne ID bekommt sie dabei (ADR-026).
+In einem anderen Klon gilt als Grenze der Eintrag \type{fetch}, der den Commit mit dem Register
+brachte.
 Ein widerrufener Schlüssel ist für seine Freigaben ungültig, ein ausgemusterter nicht.
 Die Ausgabe nennt die Identität, die Nummer und die Datei, die noch einen Commit braucht.
 \type{revoke} widerruft dazu alle Schlüssel der Agenten, deren Sponsor die Identität ist,

@@ -1273,6 +1273,25 @@ Das Repository könnte sein Register sonst nie wieder ändern.
 Eine Rotation fügt darum zuerst den neuen Schlüssel hinzu und mustert danach den alten aus.
 Die Grenze nimmt der Befehl \type{register} aus dem Log:
 die Nummer, die der nächste Eintrag erhält.
+
+Diese Nummer gilt nur in dem Log, das sie geschrieben hat, denn jeder Klon zählt seine Einträge
+selbst.
+Seit Phase~5 nennt die Grenze deshalb die ID dieses Logs, und die Datei steigt auf Version~2:
+
+\starttyping
+stemma-register 2
+entry human mia member
+key ssh-ed25519 AAAAC3Nzc... revoked 40 log 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+\stoptyping
+
+Eine Datei der Version~2 nennt mindestens ein Log, sonst hat sie die Fassung der Version~1, und
+eine Grenze der Version~1 zählt wie bisher in jedem Log nach ihrer Nummer.
+In jedem anderen Log ist die Grenze der Eintrag \type{fetch}, der den Commit mit dem Register
+brachte: Die Einträge davor zählen, die ab ihm nicht.
+Hat kein solcher Eintrag die Grenze gebracht, zählt kein Eintrag dieses Logs vor ihr.
+Widerruft ein Klon einen Schlüssel, den ein anderer schon ausgemustert hat, bleibt die frühere
+Grenze, denn sie wurde zuerst geschrieben.
+Wie der Hub die Einträge verschiedener Klone ordnet, steht in \in{Abschnitt}[sec:anchor-confirm].
 \in{Abbildung}[fig:key-states] fasst die Zustände eines Schlüssels und die Kaskade zusammen.
 
 \startplacefigure[title={Zustände eines Schlüssels im Akteursregister},

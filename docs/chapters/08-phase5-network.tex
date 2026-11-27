@@ -34,8 +34,9 @@ die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
 die signierten Erklärungen mit ihrer Menge im Klon,
 die annehmende Operation für Branches, Tags und eingereichte Erklärungen,
-das Festhalten des Schlüssels des Hubs im Klon
-und der HTTP-Client des Klons.
+das Festhalten des Schlüssels des Hubs im Klon,
+der HTTP-Client des Klons
+und die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -1375,9 +1376,98 @@ Ein Eintrag im Log eines anderen Klons liegt nur dann davor, wenn ein Anker ihn 
 Bestätigung eine kleinere Nummer nennt.
 Der Hub entscheidet das mit Nummern unter einer Sperre und nie mit seiner Uhr.
 
+Die Grenze im Register nennt dafür das Log, das sie geschrieben hat
+(\in{Abschnitt}[sec:register]); in jedem anderen Log gilt der Eintrag \type{fetch}, der den
+Commit mit dem Register brachte.
+Ob ein Eintrag eines anderen Klons vor einem Widerruf liegt, beantwortet der Kern aus den Ankern
+des Hubs: Er liegt davor, wenn eine Bestätigung ihn deckt, die eine kleinere Nummer der
+Aufzeichnung nennt als der Eintrag mit dem Widerruf.
+
 Eine Kopie der Policy hält der Hub nicht.
 Er liest sie aus dem Basis-Commit, wie der Kern es lokal tut; es gibt also nichts, was er
 signieren müsste.
+
+\subsection[sec:anchor-confirm]{Log-ID, Anker und Bestätigung}
+
+Ein Hub bestätigt die Spitze eines Operation Log, ohne einen Eintrag zu sehen.
+Dafür braucht jedes Log eine Identität, einen Anker als signierte Nachricht des Akteurs und eine
+Bestätigung als signierte Nachricht des Hubs.
+Der Kern baut alle drei; das Senden nach einem Push und die Befehle kommen mit ihren Teilen.
+
+{\bf Die Log-ID.}
+\type{init} und \type{clone} schreiben die Datei \type{log-id} mit 128 zufälligen Bits als
+32 Hexadezimalziffern.
+Ein Repository von früher bekommt sie, wenn sie zum ersten Mal gebraucht wird, unter der Sperre
+der Referenzen.
+Alle Worktrees teilen das Log und damit die ID.
+Mit der Datei und dem Verzeichnis \type{anchors/} steigt das Repository-Format auf Version 19
+(ADR-009).
+
+{\bf Der Anker.}
+Der Klon signiert mit dem Schlüssel des Akteurs eine Nachricht mit Adresse des Hubs, Repository,
+Log-ID, Spitze und der Bestätigung, die er zuletzt bekommen hat:
+
+\starttyping
+stemma-protocol 1
+hub https://hub.example
+repository 0123456789abcdef0123456789abcdef
+log 0f1e2d3c4b5a69788796a5b4c3d2e1f0
+tip 42 b3:4242...4242
+confirmed 40 b3:4040...4040
+key ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhL...
+signature U1NIU0lHAAAAAQAAADMAAAALc3No...
+\stoptyping
+
+Die Adresse bindet den Anker an den Hub, der gerufen wurde, wie beim Ref-Update.
+Bevor er signiert, prüft der Klon sein Log gegen die letzte Bestätigung: Steht ihr Eintrag nicht
+mehr mit diesem Hash im Log, sendet er nichts und meldet den Unterschied.
+Einen Unfall wie ein zurückgespieltes Backup findet er so selbst.
+
+{\bf Die Bestätigung.}
+\startitemize[n]
+\item Der Hub vergleicht Adresse und Repository mit der Nachricht, noch ohne Sperre.
+\item Unter der Sperre der Referenzen, derselben wie beim Ref-Update, liest er die Aufzeichnung
+und das Register an der Spitze von \type{main}; der Schlüssel muss dort aktiv sein.
+\item Er liest die Liste der Anker dieses Logs und vergleicht mit dem letzten bestätigten.
+Dieselbe Spitze ist derselbe Anker, und die Antwort ist die Bestätigung von damals.
+Eine grössere Nummer bestätigt er.
+Dieselbe Nummer mit anderem Hash oder eine kleinere Nummer widerspricht.
+\item Er hängt den Anker mit seinen Zeilen an: laufende Nummer, Zeit, Register-Commit, Nummer des
+letzten Eintrags der Aufzeichnung, Akteur und Zustand \type{confirmed} oder \type{contradicts}.
+Seine Signatur deckt den Anker und diese Zeilen.
+\item Ein bestätigter Anker ist die Antwort.
+Einen widersprechenden behält er als Beleg und antwortet mit dem Fehler
+\type{anchor-refused}, der den bestätigten Anker nennt.
+\stopitemize
+
+Der Klon prüft die Bestätigung gegen den festgehaltenen Schlüssel, gegen seine Log-ID und gegen
+sein Log und hält sie in \type{anchors/<remote>} fest, als die Nachricht des Hubs, die sich mit
+ihren Signaturen selbst prüft.
+Die Nummer darin wächst nur.
+\type{op verify} gegen die Anker des Hubs liest die Liste des Logs und verlangt, dass jeder
+bestätigte Anker einen Eintrag mit diesem Hash nennt.
+Ein Stub behält den Hash seines Eintrags, also hält ein Anker über einen Purge hinweg.
+
+{\bf Garantien.}
+Ein abgeschnittenes Ende fällt auf, sobald ein bestätigter Anker hinter dem letzten Eintrag liegt,
+ein umgeschriebenes, sobald ein bestätigter Eintrag einen anderen Hash hat.
+Verhindert wird beides nicht.
+Ein widersprechender Anker blockiert kein Ref-Update, denn diese zählen nach ihren Beweisen.
+Weil die Bestätigung unter der Sperre der Referenzen entsteht, ordnet ihre Nummer der
+Aufzeichnung den Anker zwischen zwei Ref-Updates ein.
+
+\startinfobox
+{\bf Grenzfälle der Anker.}
+Einträge der Versionen 1 und 2 des Logs stehen ausserhalb der Kette und haben keinen Hash; kein
+Anker deckt sie.
+Ein Log, dessen letzter Eintrag ausserhalb der Kette steht, hat keinen Anker, bis der nächste
+Eintrag die Kette beginnt.
+Wer die Log-ID ändert, beginnt für den Hub ein neues Log; das alte endet sichtbar an seinem
+letzten Anker.
+Die Liste eines Logs lesen alle, die das Repository lesen dürfen, die widersprechenden Anker
+eingeschlossen.
+Der Hub hält Nummer und Hash, also gibt es dort nichts zu purgen.
+\stopinfobox
 
 \section[sec:namespaces]{Namespaces}
 

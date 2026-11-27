@@ -4,7 +4,10 @@
 and carried into the ADRs by STEMMA-280. Built are the signature of the hub over a record entry,
 the check of a receipt and the keys of a hub by record number (STEMMA-291, ADR-025), and the
 pinning of the key in a clone with the signed list of former keys and the entry `remote-pin`
-(STEMMA-297); the anchors and the rest are not implemented yet.
+(STEMMA-297), and the anchors in the core: the ID of the log, the anchor and its confirmation,
+the operation of the bare repository, `op verify` against the anchors, and the bound of the
+register in its log (STEMMA-300). The sending after a push and the commands are not
+implemented yet.
 
 ## Context
 
@@ -151,6 +154,51 @@ Rejected: an anchor on a command only, an anchor on every fetch as well (a publi
 token), the hash of the first entry as the identity of a log (two clones of one actor in the same
 second can have the same first entry), and an anchor per key.
 
+How it is built (STEMMA-300):
+
+- **The ID of the log** is the file `log-id` of the layout (ADR-009): `stemma-log-id 1` and 32
+  lowercase hexadecimal digits.
+- **The anchor** is a message of the protocol whose payload the actor signs as the proof type
+  `anchor`:
+
+  ```text
+  stemma-protocol 1
+  hub <address>                          the address under which the hub is called
+  repository <32 hex digits>
+  log <32 hex digits>
+  tip <number> <hash>                    the last entry of the log
+  confirmed <number> <hash>      or      confirmed -
+  key ssh-ed25519 <base64>
+  signature <SSHSIG signature on one line>
+  ```
+
+  It names the address of the hub for the reason of the section above. The confirmed entry lies
+  at or before the tip, or the reader refuses the anchor.
+- **The held anchor** is what the hub keeps and answers: the anchor, then `number` (its place
+  in the list of the log, from 1), `time`, `register` (the tip of `main`), `record` (the number
+  of the last record entry, 0 for none), `actor`, `state confirmed` or `state contradicts`, and
+  `hub-signature`, the signature of the hub as the proof type `held-anchor` over the hash of
+  everything before it. In the state `confirmed` it is the confirmation.
+- **The operation of the bare repository** (`Repository::accept_anchor`) takes the anchor, the
+  context of the accepting operation (address, repository, record, time, signer) and the
+  destination of the list of the log that the caller chose by its ID. It checks the address and
+  the repository, takes the lock of the references, reads the record and completes an update
+  that stopped, as the accepting operation of a statement does, and asks the register at the tip
+  of `main` for the key as an active key. Then it compares the anchor with the last confirmed
+  anchor of the list: the same entry returns that confirmation and appends nothing, a larger
+  number is confirmed, the same number with another hash or a smaller number contradicts.
+- **The answers.** A refusal is the error `anchor-refused` with the reason `hub`,
+  `repository`, `no-main`, `key`, or `contradicts <number> <hash>`, which names the last
+  confirmed anchor of the log. The request `anchors <log ID>` reads the list of a log, answered
+  by the held anchors one after the other (`anchors_in`); it is readable by everyone who may
+  read the repository.
+- **The clone** builds the anchor of its tip (`Repository::anchor`), checks its log against the
+  kept confirmation before it signs, and keeps a confirmation after checking it against the
+  pinned key, its log ID, the repository and its log (`Repository::keep_confirmation`); the
+  kept number only grows. Where it keeps it is decided in ADR-009: `anchors/<remote>`.
+- **Not built here**: the request in the trait `Transport` and the sending after a push, which
+  come with the slice of `push`, and the commands.
+
 ### A contradicting anchor is recorded and blocks nothing
 
 The anchors of a log are a list that is only appended to. The payload also names the anchor that
@@ -183,6 +231,23 @@ holds only in the log that wrote it.
 Rejected: the record alone (log entries of other clones would have no order), and the time of the
 hub (a clock would decide whether a proof counts).
 
+How it is built (STEMMA-300):
+
+- **The line of a bound** names its log in version 2 of the register: `retired 12 log <ID>` or
+  `revoked 40 log <ID>`, the ID as 32 lowercase hexadecimal digits. A file of version 2 names
+  at least one log, so a register has one encoding; a bound of version 1 names none and counts
+  by its number in every log, as before. The command `register` writes the ID of its own log.
+  A revocation keeps a bound of another log that the key had already: it was written first,
+  so it lies earlier in the order of the hub, and two numbers of two logs are not compared.
+- **The bound in another log** is resolved by the core (`Register::for_log`,
+  `Repository::register_for_log`): the number of the first `fetch` entry whose fetched commit
+  holds a register with the same bound. If no such entry exists, no entry of the log stands
+  before the bound. The checks of the proofs in `op verify` use this register.
+- **The order across clones** is the function `stands_before` of the protocol module: an entry
+  of another log lies before the record entry that brought a revocation if a confirmed anchor of
+  that log covers it (its tip is the entry or a later one) and names a smaller record number.
+  Contradicting anchors and anchors of other logs count for nothing.
+
 ### The hub holds no copy of a policy
 
 The hub reads `.stemma-policy` from the base commit in the bare repository, through the accepting
@@ -212,6 +277,7 @@ command.
 
 - [ ] Log entries from before the hash chain (versions 1 and 2 of the operation log) stay
       uncovered by an anchor of a hub.
-- [ ] Where a clone keeps its last confirmation. Left to the slice.
+- [x] Where a clone keeps its last confirmation: the file `anchors/<remote>`, the held anchor as
+      the hub sent it (STEMMA-300, ADR-009).
 - [ ] Where the key of a hub lies, and how it is created, protected and backed up. It belongs to
       stemma-hub.

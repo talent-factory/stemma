@@ -749,14 +749,28 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     (ADR-025). They come with their slices.
 
 - **The log and a hub** *(decided for phase 5 in STEMMA-56, STEMMA-273 and STEMMA-274; the
-  entries that name a statement are implemented, see above, the rest is not yet)*.
+  entries that name a statement are implemented, see above, and so are the ID of the log, the
+  anchor, its confirmation, `op verify` against the anchors and the bound of the register in its
+  log (STEMMA-300); the rest is not yet)*.
   - **A hub never sees an entry of the log.** The log can hold a secret until it is purged
     (ADR-014), and a purge would not reach a copy. What reaches a hub is the anchor of the tip
     alone: the number and the hash of the last entry, signed by the actor, which the hub confirms
     with its own key (ADR-026). `op verify` checks the log against the anchors that the hub holds.
+    In the core that check is `Repository::verify_anchors` *(STEMMA-300)*: every held anchor
+    must be signed by the pinned key and name this log and the repository, and every confirmed
+    one must name an entry that the log holds with that hash. A confirmed entry past the end of
+    the log is a cut tail, one with another hash or outside the chain a rewrite. The
+    contradicting anchors are returned, not refused. The command comes with its slice.
   - **A log has an ID.** A random ID in `.stemma` names the log (ADR-009), because one actor can
     have two clones with the same key and several actors write into one log. The hub keeps
-    anchors per repository and log ID.
+    anchors per repository and log ID. It is the file `log-id` *(STEMMA-300)*, which `init` and
+    `clone` write and an older repository gets on its first use (`Repository::log_id`); every
+    worktree shares it with the log.
+  - **The anchor checks the log before it is signed** *(STEMMA-300)*. `Repository::anchor`
+    names the last entry of the log and the last confirmation that the clone keeps for the
+    remote (`anchors/<remote>`, ADR-009), and refuses to sign while the log no longer holds the
+    entry of that confirmation with its hash, so a restored backup or a cut tail is found in the
+    clone first. A log whose last entry is outside the chain has no anchor yet.
   - **The evidence of a pull request is signed statements; the log records the act.** The
     opening, an approval, a check result and a closing are signed statements that a clone and a
     hub fold with one function (ADR-025). The entries `pr-open`, `pr-approve` and `check` name
@@ -775,7 +789,13 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   - **The bound of a retired or revoked key** is a number of the local log and counts only in the
     log that wrote it; the register names the ID of that log from now on. In every other log the
     bound is the `fetch` entry that brought the register commit, and across clones the order is
-    the order of the hub (ADR-026).
+    the order of the hub (ADR-026). Built in STEMMA-300: the line of a bound reads
+    `revoked 40 log <ID>` in version 2 of the register, which the command `register` writes
+    with the ID of its own log. `Repository::register_for_log` gives the register as it counts
+    in one log: a bound of another log becomes the number of the first `fetch` entry that
+    brought a commit whose register holds that bound, or 1 if none did, so no entry of the log
+    stands before it; `op verify` checks the proofs against it. A bound of version 1, without a
+    log, counts by its number in every log, as before.
   - **A receiving operation writes outside the lock**, the upload on a hub and the receiving
     side of a fetch alike (STEMMA-289). Its temporary files lie in a subdirectory of its own,
     `tmp/receive-<pid>-<n>-<random>/`, which the cleanup above leaves, because it removes files
@@ -869,7 +889,8 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - [x] The hash chain (STEMMA-41): entry encoding 3, the hash over an envelope that a stub keeps,
       the tip with the hash, format 4, and `stemma op verify` with `--anchor`.
 - [x] An anchor that the actor cannot change: a hub that confirms the tip. Decided in STEMMA-274
-      (ADR-026, see "The log and a hub"); not implemented yet. Until it is, the anchor is a copy
+      (ADR-026, see "The log and a hub"); the core holds it since STEMMA-300, and the sending
+      after a push and the commands come with their slices. Until then, the anchor is a copy
       that a person keeps. Entries from before the chain (versions 1 and 2) stay uncovered.
 - [x] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
       it are ever removed. Not needed: a retention replaces entries by stubs, which keep the

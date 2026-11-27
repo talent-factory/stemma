@@ -10,7 +10,8 @@ layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"). 
 configuration of the remotes and the remote references (STEMMA-285, format 14), the bare
 repository (STEMMA-284, format 15), and the journal of a running fetch with the directory of a
 receiving operation in `tmp/` (STEMMA-289) are implemented, and so are the signed statements
-(STEMMA-290, format 16) and the line `remote` of the entry `fetch` (STEMMA-295, format 17); the
+(STEMMA-290, format 16), the line `remote` of the entry `fetch` (STEMMA-295, format 17), and
+the ID of the log with the last confirmation of an anchor (STEMMA-300, format 19); the
 others are not yet.
 
 ## Context
@@ -128,8 +129,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 18, the version of the entry `remote-pin`
-  (STEMMA-297), and `open` reads the versions 2 to 18.
+  supports: `init` and `init_bare` write version 19, the version of the file `log-id`
+  (STEMMA-300), and `open` reads the versions 2 to 19.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
@@ -138,8 +139,14 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
   (11), before the former owner of a worktree (12), before the remotes (13), before the bare
   repository (14), before the signed statements (15), before the line `remote` (16), or before
-  the entry `remote-pin` (17) rises to 18 with its next entry or purge (ADR-014, ADR-011,
+  the entry `remote-pin` (17) rises to 19 with its next entry or purge (ADR-014, ADR-011,
   ADR-010).
+  Version 19 adds the file `log-id` and the directory `anchors/` (ADR-026, see "The layout in
+  Phase 5"). `init` and `clone` write the ID; a repository of version 18 or before rises to 19
+  when it gets its ID or keeps a confirmation, and with its next entry or purge, as every
+  version does. A program that knows only version 18 would keep no ID: a second program of the
+  same `.stemma` could give the log another one, and the hub would see two logs. It has to
+  refuse the repository. A bare repository has no log, so neither file.
   Version 18 adds the entry `remote-pin`, which pins the key of the hub of a remote again
   (ADR-011, ADR-026). It adds no file. A program that knows only version 17 would read it as a
   change without a pointer, which is damage, so it has to refuse the repository.
@@ -235,7 +242,26 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     (ADR-008). Their file and their readers are built *(STEMMA-285)*; `fetch` and `push` write
     them.
   - The ID of the log: random, created by `init` and `clone`; an existing repository gets it when
-    it is first needed (ADR-026).
+    it is first needed (ADR-026). It is the file `log-id` *(STEMMA-300)*, in the metadata
+    directory that every worktree shares, with two lines: `stemma-log-id 1` and the ID, 128
+    random bits as 32 lowercase hexadecimal digits. The reader accepts what the writer writes and
+    nothing else; a file in another form is damage and no reason for a new ID. `init` writes it
+    into its staging directory; an older repository gets it under the lock of the references,
+    after the rise to version 19, through a temporary file in `tmp/` that is flushed and renamed
+    into place (`Repository::log_id`).
+  - The last confirmation of an anchor *(STEMMA-300, decided here, as ADR-026 left it to the
+    slice)*: the directory `anchors/`, with one file per remote, `anchors/<remote>`, whose name
+    is the name of the remote. The file holds the held anchor in the state `confirmed`, as the
+    hub sent it (ADR-026), so it carries the signature of the actor and of the hub and checks
+    itself; it is at most 64 KiB. One file per remote, because each hub confirms the anchors that
+    it holds. Before it is kept, the confirmation is checked against the pinned key of the
+    remote, the ID of the log, the repository of the remote, and the log, and its number may
+    not be below the kept one; under the lock of the references the repository rises to 19 and
+    the file is replaced atomically (`Repository::keep_confirmation`). A clone that never
+    anchored has no directory. Rejected: a line of the configuration of the remote (the
+    configuration is what a human pins, a confirmation changes with every push) and an entry of
+    the log for each confirmation (an entry cannot name the confirmation of itself, and the log
+    would grow by an entry for each push without saying more than the record of the hub).
   - The set of statements: the signed statements that the clone made and those that a fetch
     brought (ADR-025). It is the directory `statements/` *(STEMMA-290)*, in the metadata
     directory that every worktree shares, and it comes with version 16 of the format. Each

@@ -1136,6 +1136,10 @@ pub enum ErrorMessage {
     /// requester may not read the repository, or it does not exist. The two cases have one
     /// answer, so the error does not say whether a repository exists.
     NotReadable,
+    // The anchors of a log (ADR-026, STEMMA-300).
+    /// An anchor is not confirmed (ADR-026). Carries the typed reason
+    /// ([`anchor::AnchorRefusal`]); a contradicting anchor is kept by the hub as evidence.
+    AnchorRefused(anchor::AnchorRefusal),
 }
 
 impl ErrorMessage {
@@ -1173,6 +1177,12 @@ impl ErrorMessage {
                 held::encode_refusal(refusal)
             ),
             Self::NotReadable => format!("{}error not-readable\n", first_line(VERSION)),
+            // The anchors of a log (STEMMA-300).
+            Self::AnchorRefused(refusal) => format!(
+                "{}error anchor-refused\n{}",
+                first_line(VERSION),
+                anchor::encode_refusal(refusal)
+            ),
         }
         .into_bytes()
     }
@@ -1260,6 +1270,10 @@ impl ErrorMessage {
                 lines.end()?;
                 Ok(Self::NotReadable)
             }
+            // The anchors of a log (STEMMA-300).
+            Some((_, "anchor-refused")) => {
+                anchor::read_refusal(&mut lines).map(Self::AnchorRefused)
+            }
             Some((line, _)) => Err(malformed(line, Malformed::UnknownError)),
             None => Err(malformed(lines.line, Malformed::Expected("error"))),
         }
@@ -1292,6 +1306,8 @@ impl fmt::Display for ErrorMessage {
                 "the other side does not answer for this repository: it may not be read, or it \
                  does not exist",
             ),
+            // The anchors of a log (STEMMA-300).
+            Self::AnchorRefused(refusal) => refusal.fmt(f),
         }
     }
 }
@@ -1477,6 +1493,14 @@ pub enum ParseError {
         /// The rule.
         reason: held::HeldProblem,
     },
+    // The anchors of a log (ADR-026, STEMMA-300).
+    /// A rule of an anchor, of a held anchor, or of a refused anchor is broken ([`anchor`]).
+    Anchor {
+        /// Number of the line.
+        line: usize,
+        /// The rule.
+        reason: anchor::AnchorProblem,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -1508,6 +1532,8 @@ impl fmt::Display for ParseError {
             Self::FormerKeys { line, reason } => write!(f, "line {line}: {reason}"),
             // The statements on a hub (STEMMA-299).
             Self::Held { line, reason } => write!(f, "line {line}: {reason}"),
+            // The anchors of a log (STEMMA-300).
+            Self::Anchor { line, reason } => write!(f, "line {line}: {reason}"),
         }
     }
 }
@@ -1532,6 +1558,8 @@ impl Error for ParseError {
             | Self::FormerKeys { .. } => None,
             // The statements on a hub (STEMMA-299).
             Self::Held { .. } => None,
+            // The anchors of a log (STEMMA-300).
+            Self::Anchor { .. } => None,
         }
     }
 }
@@ -2051,6 +2079,15 @@ pub mod examples {
         /// A range of numbers, the request that reads the statements or the record
         /// ([`Range`](super::held::Range)).
         Range,
+        // The anchors of a log (STEMMA-300).
+        /// An anchor of an operation log ([`Anchor`](super::anchor::Anchor)).
+        Anchor,
+        /// An anchor as a hub holds it, which in the state `confirmed` is its confirmation
+        /// ([`HeldAnchor`](super::anchor::HeldAnchor)).
+        HeldAnchor,
+        /// The request that reads the anchors of a log
+        /// ([`AnchorsRequest`](super::anchor::AnchorsRequest)).
+        AnchorsRequest,
     }
 
     /// One example message.
@@ -2105,6 +2142,11 @@ pub mod examples {
         example!("range-to-the-end", Range),
         example!("error-statement-refused", Error),
         example!("error-not-readable", Error),
+        // The anchors of a log (STEMMA-300).
+        example!("anchor", Anchor),
+        example!("held-anchor", HeldAnchor),
+        example!("anchors", AnchorsRequest),
+        example!("error-anchor-refused", Error),
     ];
 }
 
@@ -2118,6 +2160,9 @@ pub mod sign_in;
 
 // The statements on a hub (ADR-025, STEMMA-299).
 pub mod held;
+
+// The anchors of a log (ADR-026, STEMMA-300).
+pub mod anchor;
 
 #[cfg(test)]
 mod tests;
