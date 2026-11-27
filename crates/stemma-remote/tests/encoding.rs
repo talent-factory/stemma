@@ -205,13 +205,40 @@ fn an_answer_that_is_no_answer_of_the_protocol_turns_compression_off() {
 
 #[test]
 fn a_204_with_zstd_is_a_message_without_a_body_and_one_with_another_encoding_is_not() {
+    let fetch = example("fetch");
     let responder = Responder::start(vec![
-        Action::Respond(response(204, &[("Content-Encoding", "zstd")], b"")),
+        Action::Respond(response(
+            204,
+            &[("Content-Encoding", "zstd"), ("Accept-Encoding", "zstd")],
+            b"",
+        )),
+        Action::Respond(message(example("objects"))),
         Action::Respond(response(204, &[("Content-Encoding", "br")], b"")),
     ]);
     let mut transport = transport(&responder);
     assert_eq!(read_all(transport.refs().unwrap()), (true, Vec::new()));
+    // A 204 is an answer of the protocol, so its `Accept-Encoding` counts.
+    read_all(transport.fetch(&mut &fetch[..]).unwrap());
     assert!(no_answer(transport.refs()).contains("`br`"));
+    assert_eq!(
+        responder.requests()[1].header("content-encoding"),
+        Some("zstd")
+    );
+}
+
+#[test]
+fn a_request_without_an_answer_turns_compression_off() {
+    let fetch = example("fetch");
+    let responder = Responder::start(vec![
+        Action::Respond(message_accepting(example("refs"), "zstd")),
+        Action::Close,
+        Action::Respond(message(example("objects"))),
+    ]);
+    let mut transport = transport(&responder);
+    read_all(transport.refs().unwrap());
+    assert!(transport.refs().is_err());
+    read_all(transport.fetch(&mut &fetch[..]).unwrap());
+    assert_eq!(responder.requests()[2].header("content-encoding"), None);
 }
 
 #[test]
@@ -364,7 +391,10 @@ fn a_compressed_token_answer_that_cannot_be_read_is_no_answer() {
             compressed_token_answer_with_window(28),
             "window larger than",
         ),
-        (Action::Respond(broken_chunks), ""),
+        (
+            Action::Respond(broken_chunks),
+            "chunk length cannot be read",
+        ),
     ] {
         match sign_in(action) {
             Err(TransportError::NoAnswer { detail }) => {
@@ -418,6 +448,7 @@ fn a_body_of_zstd_that_cannot_be_decoded_is_an_error_of_the_body() {
         with(example("objects")),
         with(cut),
         with(&[compressed.clone(), b"trailing".to_vec()].concat()),
+        with(b""),
     ]);
     let mut transport = transport(&responder);
     let error = read_error(transport.refs().unwrap());
@@ -428,6 +459,10 @@ fn a_body_of_zstd_that_cannot_be_decoded_is_an_error_of_the_body() {
     assert!(error.to_string().contains("inside a frame"), "{error}");
     let error = read_error(transport.refs().unwrap());
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    // An empty body holds no frame.
+    let error = read_error(transport.refs().unwrap());
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    assert!(error.to_string().contains("inside a frame"), "{error}");
 }
 
 #[test]

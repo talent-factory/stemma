@@ -36,12 +36,12 @@
 //! The body carries the content encoding zstd or none (ADR-023, ADR-029). The client sends
 //! `Accept-Encoding: zstd`, reads an answer with `Content-Encoding: zstd` through the decoder of
 //! zstd and an answer without one as it is, and compresses an upload, with `Content-Encoding:
-//! zstd`, only when the last answer with a status was a message or an error message of the
-//! protocol and named zstd in its `Accept-Encoding`. The
-//! encoder runs at level 3 with a window of 128 MiB and long-distance matching; the decoder
-//! refuses a frame with a larger window ([`MAX_WINDOW`]) with [`WindowTooLarge`] inside the error
-//! of the body. The client wraps the body in the encoder and the decoder itself; `ureq` is built
-//! without its feature `gzip`, and gzip is not read.
+//! zstd`, only when the answer to the last request was a message or an error message of the
+//! protocol and named zstd in its `Accept-Encoding`. The encoder runs at level 3 with a window
+//! of 128 MiB and long-distance matching; the decoder refuses a frame with a larger window
+//! ([`MAX_WINDOW`]) with [`WindowTooLarge`] inside the error of the body. The client wraps the
+//! body in the encoder and the decoder itself; `ureq` is built without its feature `gzip`, and
+//! gzip is not read.
 //!
 //! # Connections
 //!

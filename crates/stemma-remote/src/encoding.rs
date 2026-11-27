@@ -2,9 +2,9 @@
 //!
 //! The client wraps a body in the encoder and the decoder of zstd itself; `ureq` passes a body
 //! with a content encoding that it does not know through as it is, because its feature `gzip` is
-//! not built (ADR-028). The level, the window, and the bound of the window are fixed here, for
-//! both directions, and a sender of the protocol keeps to the same bound (ADR-023), so no header
-//! has to carry it.
+//! not built (ADR-028). The level and the window of an upload and the bound of the window of an
+//! answer are fixed here; a sender of the protocol keeps to the same bound (ADR-023), so no
+//! header has to carry it.
 
 use std::error::Error;
 use std::fmt;
@@ -131,7 +131,9 @@ pub(crate) fn encoder<'r, R: Read + 'r>(body: R) -> io::Result<Box<dyn Read + 'r
 /// frame, also an empty one, an error of the kind [`io::ErrorKind::UnexpectedEof`];
 /// [`decoding_error`] tells these from the others. An error of `body` comes out as it is, with
 /// its inner error, and so does a failure of the decoder on this side, such as one to allocate
-/// its memory. An error stays: every read after the first one fails with the same kind and text.
+/// its memory. An error stays: every read after the first one fails with the same kind and text,
+/// and keeps the inner error only where it is [`WindowTooLarge`] or one of a frame that cannot
+/// be decoded.
 pub(crate) fn decoder<R: BufRead + 'static>(body: R) -> io::Result<Decoded> {
     let failed = Arc::new(AtomicBool::new(false));
     let source = Source {
@@ -254,6 +256,10 @@ impl Read for Decoded {
                     io::ErrorKind::InvalidData,
                     WindowTooLarge { bound: MAX_WINDOW },
                 )
+            } else if code.is(ZSTD_ErrorCode::ZSTD_error_memory_allocation) {
+                // The window is allocated once the header of the frame is read; a failure to
+                // allocate it is one on this side, not one of the bytes of the other side.
+                error
             } else {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -297,6 +303,72 @@ mod tests {
             );
         }
         accepts_zstd(&headers)
+    }
+
+    /// A body that gives `prefix` and then the errors of `errors`, in turn, before it goes on.
+    struct Scripted {
+        prefix: Vec<u8>,
+        errors: Vec<io::Error>,
+    }
+
+    impl Read for Scripted {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.prefix.is_empty() && !self.errors.is_empty() {
+                return Err(self.errors.remove(0));
+            }
+            let read = self.prefix.len().min(buf.len());
+            buf[..read].copy_from_slice(&self.prefix[..read]);
+            self.prefix.drain(..read);
+            Ok(read)
+        }
+    }
+
+    #[derive(Debug)]
+    struct Custom;
+
+    impl fmt::Display for Custom {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("custom")
+        }
+    }
+
+    impl Error for Custom {}
+
+    fn frame(bytes: &[u8]) -> Vec<u8> {
+        zstd::encode_all(bytes, 3).unwrap()
+    }
+
+    #[test]
+    fn an_error_of_the_body_passes_through_the_decoder_with_its_inner_error() {
+        let whole = frame(&[7; 100_000]);
+        let body = Scripted {
+            prefix: whole[..whole.len() / 2].to_vec(),
+            errors: vec![io::Error::new(io::ErrorKind::ConnectionReset, Custom)],
+        };
+        let mut decoded = decoder(io::BufReader::new(body)).unwrap();
+        let error = decoded.read_to_end(&mut Vec::new()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        assert!(error.get_ref().is_some_and(|inner| inner.is::<Custom>()));
+        assert_eq!(decoding_error(&error), None);
+        let again = decoded.read(&mut [0; 16]).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(decoding_error(&again), None);
+    }
+
+    #[test]
+    fn an_interrupted_read_of_the_body_is_retried_and_does_not_stay() {
+        let bytes = vec![7; 100_000];
+        let whole = frame(&bytes);
+        let half = whole.len() / 2;
+        let body = Scripted {
+            prefix: whole[..half].to_vec(),
+            errors: vec![io::Error::from(io::ErrorKind::Interrupted)],
+        }
+        .chain(io::Cursor::new(whole[half..].to_vec()));
+        let mut decoded = decoder(io::BufReader::new(body)).unwrap();
+        let mut read = Vec::new();
+        decoded.read_to_end(&mut read).unwrap();
+        assert!(read == bytes);
     }
 
     #[test]

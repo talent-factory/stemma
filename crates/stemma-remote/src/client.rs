@@ -158,9 +158,10 @@ pub struct HttpTransport {
     base: Base,
     token: Option<Token>,
     last_status: Option<Status>,
-    /// Whether the last answer with an HTTP status was a message or an error message of the
-    /// protocol and named zstd in `Accept-Encoding`, so that the next upload is compressed
-    /// (ADR-023). Another answer, such as the page of a proxy, sets it back.
+    /// Whether the answer to the last request was a message or an error message of the protocol
+    /// and named zstd in `Accept-Encoding`, so that the next upload is compressed (ADR-023).
+    /// Every request sets it back first; another answer, such as the page of a proxy, or a
+    /// request without an answer leaves it unset.
     hub_accepts_zstd: bool,
 }
 
@@ -255,6 +256,8 @@ impl HttpTransport {
         method: Method<'_>,
     ) -> Result<Response<ureq::Body>, TransportError> {
         self.last_status = None;
+        // Only this request reads the flag; an answer of the protocol to it sets it again.
+        let compress = std::mem::take(&mut self.hub_accepts_zstd);
         let url = self.base.url(endpoint);
         let bearer = match (&self.token, endpoint) {
             (_, Endpoint::Challenge | Endpoint::Token) | (None, _) => None,
@@ -280,7 +283,7 @@ impl HttpTransport {
                 // encoder reads from the body, so an error of the body still counts for this side.
                 // A failure of the encoder, which is on this side as well, counts the same way.
                 let mut encoded;
-                let (body, request) = if self.hub_accepts_zstd {
+                let (body, request) = if compress {
                     encoded = encoding::encoder(body).map_err(TransportError::Request)?;
                     let request = self.agent.post(&url).header(header::CONTENT_ENCODING, ZSTD);
                     (&mut *encoded, request)
@@ -326,8 +329,6 @@ impl HttpTransport {
             location.as_deref(),
         );
         self.last_status = Some(status.clone());
-        // Set again below for an answer of the protocol alone.
-        self.hub_accepts_zstd = false;
         let accepts_zstd = encoding::accepts_zstd(headers);
         let no_answer = |detail: String| Err(TransportError::NoAnswer { detail });
         // Every value of every line is read; a value that is not text is no encoding the client
@@ -392,15 +393,16 @@ impl HttpTransport {
             reader: response.into_body().into_reader(),
             failed: None,
         });
-        self.hub_accepts_zstd = accepts_zstd;
-        Ok(case(match content_encoding {
+        let body: Body<'static> = match content_encoding {
             ContentEncoding::Identity => Box::new(stream),
             ContentEncoding::Zstd => Box::new(BufReader::new(
                 // A decoder that cannot be made, for want of memory, fails on this side; the
                 // answer is not read.
                 encoding::decoder(stream).map_err(TransportError::Carrier)?,
             )),
-        }))
+        };
+        self.hub_accepts_zstd = accepts_zstd;
+        Ok(case(body))
     }
 
     /// Sends a request and sorts its answer.

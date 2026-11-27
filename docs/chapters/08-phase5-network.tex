@@ -164,8 +164,9 @@ kommt das Format ohne Deltas aus.
 Die Zahlen stammen von einem einzigen Verlauf und sind kein Schwellenwert.
 
 Stufe und Fenster sind an einem Stemma-Speicher gemessen und festgelegt (ADR-029).
-Die 349 Commits des Verlaufs von \type{main} dieses Repositorys, als Stemma-Commits
-eingelesen, ergeben für einen ganzen Klon einen Strom von 4548 Objekten und 125,9 MB.
+Die 349 Commits, die der Verlauf von \type{main} dieses Repositorys im November 2026 hatte,
+als Stemma-Commits eingelesen, ergeben für einen ganzen Klon einen Strom von 4548 Objekten
+und 125,9 MB.
 Mit Stufe 3 und einem Fenster von $2^{27}$ Byte (128 MiB) sind es 2,67 MB in 0,13 Sekunden,
 mit Stufe 19 1,98 MB in gut fünf Sekunden, ohne das lange Fenster mit Stufe 3 16,8 MB.
 Der Sender komprimiert deshalb mit Stufe 3 und diesem Fenster.
@@ -571,9 +572,10 @@ kennt er nicht.
 Jede Anfrage sendet \type{Accept-Encoding: zstd}.
 Eine Antwort mit \type{Content-Encoding: zstd} liest er durch den Decoder, eine Antwort ohne
 Kompression, wie sie ist.
-Einen Upload komprimiert er erst, wenn die letzte Antwort des Hubs zstd in ihrem
-\type{Accept-Encoding} nennt; sonst geht der Rumpf unkomprimiert, und das muss jeder Hub
-annehmen.
+Einen Upload komprimiert er erst, wenn die letzte Antwort eine Nachricht oder eine
+Fehlermeldung des Protokolls war und zstd in ihrem \type{Accept-Encoding} nennt;
+die Seite eines Proxys zählt nicht.
+Sonst geht der Rumpf unkomprimiert, und das muss jeder Hub annehmen.
 Ein Rumpf, den der Decoder nicht lesen kann, ist ein Fehler beim Lesen des Rumpfs, ebenso ein
 Fenster über der Schranke.
 
