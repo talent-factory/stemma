@@ -16,12 +16,13 @@ use super::conflicted;
 use super::snapshot::{read_any_commit, SnapshotError};
 use super::{now, Repository, UpdateError};
 use crate::object::{CommitId, TreeId};
+use crate::oplog::RemoteConfigKind;
 use crate::oplog::{
     outcomes, pending_stubs, Change, Current, Entry, Moved, OpLogError, OperationName, Outcome,
     Pointer, Pointers, Record,
 };
 use crate::refs::{BranchName, Head, Logged, RefError, RefStore, RestoreMoves, RestoreTargets};
-use crate::remote::{RemoteRef, RemoteRefName};
+use crate::remote::{RemoteError, RemoteName, RemoteRef, RemoteRefName};
 use crate::{Actor, Allowed, Authorizer};
 
 /// The operation that the log records for a restore.
@@ -195,6 +196,7 @@ impl Repository {
     /// [`RestoreError::IsLease`] for the entry of a lease, [`RestoreError::IsPull`] for the entry
     /// of a pull request, [`RestoreError::IsCheck`] for the entry of a check,
     /// [`RestoreError::IsRemotePin`] for the entry that pins the key of a hub,
+    /// [`RestoreError::IsRemoteConfig`] for the entry that adds or removes a remote,
     /// [`RestoreError::PurgePending`] for an entry that an unfinished purge lists,
     /// [`RestoreError::OutcomeUnknown`], [`RestoreError::NoOldValue`] for HEAD or the working-copy
     /// commit that the entry created (they cannot be absent), [`RestoreError::Refs`] for a commit
@@ -366,6 +368,7 @@ impl Repository {
             Record::Pull(_) => return Err(RestoreError::IsPull { number }),
             Record::Check(_) => return Err(RestoreError::IsCheck { number }),
             Record::RemotePin(_) => return Err(RestoreError::IsRemotePin { number }),
+            Record::RemoteConfig(_) => return Err(RestoreError::IsRemoteConfig { number }),
         };
         // A restore puts back head, working copy, and branches (ADR-013). An entry that only made
         // or deleted tags has nothing of that, and its tags stay as they are, so the restore says
@@ -416,6 +419,35 @@ impl Repository {
                 return Err(RestoreError::GoneWorktree {
                     number,
                     worktree: name.to_owned(),
+                });
+            }
+        }
+        // A remote of the entry was removed or added again since (ADR-008): its references went
+        // with it, or stand for the repository it names now. As for a worktree, only a later
+        // removal that took effect counts: one that failed after its entry left the remote.
+        for (name, _) in change.remotes() {
+            let mut added_again = false;
+            let mut removed = false;
+            for later in entries[position + 1..]
+                .iter()
+                .filter_map(Entry::remote_config)
+                .filter(|later| later.remote() == &name.remote)
+            {
+                match later.kind() {
+                    RemoteConfigKind::Add => added_again = true,
+                    RemoteConfigKind::Remove => removed = true,
+                }
+            }
+            if added_again
+                || (removed
+                    && self
+                        .remote(&name.remote)
+                        .map_err(RestoreError::Remote)?
+                        .is_none())
+            {
+                return Err(RestoreError::GoneRemote {
+                    number,
+                    remote: name.remote.clone(),
                 });
             }
         }
@@ -567,8 +599,9 @@ impl Repository {
 }
 
 /// Why [`Repository::restore`] fails. Every variant says whether the restore wrote something: the
-/// ones before the entry (`Update`, `Log`, `NoSuchEntry`, `Purged`, `IsPurge`, `IsLease`, `IsPull`,
-/// `IsCheck`, `IsRemotePin`, `TagsOnly`, `WorktreeEntry`, `GoneWorktree`, `OtherWorktree`, `PurgePending`,
+/// ones before the entry (`Update`, `Log`, `Remote`, `NoSuchEntry`, `Purged`, `IsPurge`, `IsLease`, `IsPull`,
+/// `IsCheck`, `IsRemotePin`, `IsRemoteConfig`, `TagsOnly`, `WorktreeEntry`, `GoneWorktree`,
+/// `GoneRemote`, `OtherWorktree`, `PurgePending`,
 /// `OutcomeUnknown`, `NoOldValue`, `Refs`, `Snapshot`, `Checkout`) wrote nothing of the restore;
 /// those with an `entry` wrote it.
 #[derive(Debug)]
@@ -580,6 +613,8 @@ pub enum RestoreError {
     Update(UpdateError),
     /// The log cannot be read.
     Log(OpLogError),
+    /// The configuration of a remote that the entry moved references of cannot be read.
+    Remote(RemoteError),
     /// The log has no entry with the number.
     NoSuchEntry {
         /// The number.
@@ -620,6 +655,12 @@ pub enum RestoreError {
         /// The number.
         number: u64,
     },
+    /// The entry adds or removes a remote (STEMMA-305). A restore of it is not built: `remote
+    /// add` and `remote remove` undo each other.
+    IsRemoteConfig {
+        /// The number.
+        number: u64,
+    },
     /// The entry only made or deleted tags. A restore puts back HEAD, the working-copy commit, and
     /// the branches; tags are not part of that state and a tag never moves (ADR-008, ADR-013), so
     /// the restore is refused and no file is written.
@@ -642,6 +683,16 @@ pub enum RestoreError {
         number: u64,
         /// The name of the worktree.
         worktree: String,
+    },
+    /// The entry moved remote references of a remote that was removed, or added again under the
+    /// same name, after the entry (ADR-008). Its references were deleted with the remote, or
+    /// belong to the repository the remote names now, so a restore does not put them back; a
+    /// `fetch` brings what the hub has.
+    GoneRemote {
+        /// The number.
+        number: u64,
+        /// The name of the remote.
+        remote: RemoteName,
     },
     /// The entry added or removed a worktree (`worktree-add`, `worktree-remove`). A restore does
     /// not make or remove a worktree: remove it with `worktree remove`, add it again with
@@ -742,6 +793,7 @@ impl RestoreError {
         match self {
             Self::Update(error) => error.io_error(),
             Self::Log(error) => error.io_error(),
+            Self::Remote(error) => error.io_error(),
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
             | Self::PartlyMoved { source: error, .. }
@@ -757,10 +809,12 @@ impl RestoreError {
             | Self::IsPull { .. }
             | Self::IsCheck { .. }
             | Self::IsRemotePin { .. }
+            | Self::IsRemoteConfig { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
             | Self::GoneWorktree { .. }
+            | Self::GoneRemote { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,
@@ -822,6 +876,7 @@ impl fmt::Display for RestoreError {
         match self {
             Self::Update(error) => write!(f, "could not restore: {error}"),
             Self::Log(error) => write!(f, "could not read the operation log: {error}"),
+            Self::Remote(error) => write!(f, "could not read the remote: {error}"),
             Self::NoSuchEntry { number } => {
                 write!(f, "the operation log has no entry {number}")
             }
@@ -852,6 +907,11 @@ impl fmt::Display for RestoreError {
                 "entry {number} pins the key of a hub, which is no pointer, so there is nothing \
                  to restore"
             ),
+            Self::IsRemoteConfig { number } => write!(
+                f,
+                "entry {number} adds or removes a remote, which `op restore` does not undo; use \
+                 `remote add` or `remote remove`"
+            ),
             Self::TagsOnly { number } => write!(
                 f,
                 "entry {number} only made or deleted tags, which a restore does not touch (a tag \
@@ -867,6 +927,11 @@ impl fmt::Display for RestoreError {
                 f,
                 "entry {number} belongs to the worktree `{worktree}`, which was removed or added \
                  again since, so its pointers cannot be put back"
+            ),
+            Self::GoneRemote { number, remote } => write!(
+                f,
+                "entry {number} moved remote references of the remote `{remote}`, which was \
+                 removed or added again since, so they cannot be put back; run `fetch` instead"
             ),
             Self::WorktreeEntry { number } => write!(
                 f,
@@ -974,6 +1039,7 @@ impl Error for RestoreError {
         match self {
             Self::Update(error) => error.source(),
             Self::Log(error) => error.source(),
+            Self::Remote(error) => Some(error),
             Self::Refs(error)
             | Self::MoveFailed { source: error, .. }
             | Self::PartlyMoved { source: error, .. }
@@ -989,10 +1055,12 @@ impl Error for RestoreError {
             | Self::IsPull { .. }
             | Self::IsCheck { .. }
             | Self::IsRemotePin { .. }
+            | Self::IsRemoteConfig { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
             | Self::GoneWorktree { .. }
+            | Self::GoneRemote { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => None,

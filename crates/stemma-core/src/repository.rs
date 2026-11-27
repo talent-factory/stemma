@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 19" and a newline; 2 to 18 before the file `log-id`
+//! ├── format          "stemma-repository 20" and a newline; 2 to 19 before `remote-add`
 //! ├── log-id          "stemma-log-id 1" and the ID of the log, made by `init` (ADR-026)
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
@@ -36,7 +36,7 @@
 //!
 //! ```text
 //! <directory>/
-//! ├── format          "stemma-repository 19" and a newline
+//! ├── format          "stemma-repository 20" and a newline
 //! ├── bare            "stemma-bare" and a newline: the marker of a bare repository
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
@@ -79,6 +79,8 @@ mod purge;
 #[cfg(any(fuzzing, test))]
 pub(crate) use purge::fuzz_journal;
 mod rebase;
+// Adding and removing a remote (STEMMA-305).
+mod remote_config;
 mod restore;
 mod revision;
 mod rewrite;
@@ -88,6 +90,7 @@ mod statements;
 mod status;
 mod switch;
 mod track;
+mod verdict;
 mod worktree;
 
 pub use accept::{AcceptContext, AcceptError, RecordDestination, RecordStep};
@@ -106,9 +109,9 @@ pub use checkout::{remove_temp_files_for_exit, CheckoutError, CheckoutPlan, Plan
 pub use commit::{CommitError, Committed};
 pub use conflicted::ConflictedFile;
 pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextDiff};
-pub use fetch::{CloneError, FetchError, Fetched, FETCH, MAX_REF_LIST};
+pub use fetch::{read_ref_list, CloneError, FetchError, Fetched, FETCH, MAX_REF_LIST};
 pub use follow::{Behind, Followed};
-pub use gate::{GateError, GateMerge, Retry, MAX_ATTEMPTS};
+pub use gate::{Dropped, DroppedReason, GateError, GateMerge, Retry, MAX_ATTEMPTS};
 pub use lease::{Claimed, LeaseError};
 pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
 pub use pin::PinError;
@@ -118,6 +121,7 @@ pub use purge::{
     TagPolicy,
 };
 pub use rebase::{RebaseError, Rebased, Replayed};
+pub use remote_config::{AddedRemote, RemoteConfigError, RemoteSetup, RemovedRemote};
 pub use restore::{RestoreError, RestorePlan, Restored};
 pub use revision::{
     require_unreserved, NameError, ReservedPrefix, Revision, RevisionParseError, BRANCH_PREFIX,
@@ -140,7 +144,7 @@ use crate::fault;
 use crate::object::{Commit, CommitId, ObjectId, Tree, METADATA_DIR};
 use crate::oplog::{
     Change, CheckEntry, Entry, FsOpLog, LeaseEntry, Moved, OpLogError, OperationName, PullEntry,
-    Purge, RemotePinEntry, TAKE_OVER,
+    Purge, RemoteConfigEntry, RemotePinEntry, TAKE_OVER,
 };
 use crate::refs::{
     encode_working_copy, BareLacks, BranchName, FsRefStore, Head, Logged, PurgeLock, RefError,
@@ -158,10 +162,12 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` and `init_bare` write, and that a purge and
-/// every new entry of the log move a repository to: version 19, the file `log-id` with the ID of
-/// the log and the directory `anchors/` with the last confirmation of an anchor per remote
-/// (STEMMA-300, ADR-026, ADR-009). Version 18 was the entry `remote-pin`, which
-/// pins the key of the hub of a remote again (STEMMA-297, ADR-026, ADR-011). Version 17 was the
+/// every new entry of the log move a repository to: version 20, the entries `remote-add` and
+/// `remote-remove`, which add and remove a remote (STEMMA-305, ADR-009, ADR-011). Version 19
+/// was the file `log-id` with the ID of the log and the directory `anchors/` with the last
+/// confirmation of an anchor per remote (STEMMA-300, ADR-026, ADR-009). Version 18 was the
+/// entry `remote-pin`, which pins the key of the hub of a remote again (STEMMA-297, ADR-026,
+/// ADR-011). Version 17 was the
 /// line `remote` of an entry, which the entry `fetch` writes (STEMMA-295, ADR-008, ADR-011),
 /// version 16 the signed
 /// statements in `statements/` and the entries that name them (STEMMA-290, ADR-025, ADR-009,
@@ -172,7 +178,7 @@ use worktree::POINTER_PREFIX;
 /// ADR-014), version 11 was the entry `check` (ADR-019, ADR-011),
 /// version 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
 /// `pr-open`, `pr-close`, and `pr-merge`, version 8 the lease of a branch (ADR-009).
-const FORMAT_VERSION: u32 = 19;
+const FORMAT_VERSION: u32 = 20;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -224,8 +230,12 @@ const FORMAT_VERSION: u32 = 19;
 /// repository of 19 with a log has it. A program that knows only version 18 keeps no
 /// ID, so a second program of the same `.stemma` could give the log another one and the hub
 /// would see two logs; it refuses the repository instead. A bare repository has no log.
-const READ_VERSIONS: [u32; 18] = [
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+/// Version 20 adds the entries `remote-add` and `remote-remove` (STEMMA-305, ADR-011), which add
+/// and remove a remote with its configuration. A program that knows only version 19 reads such an
+/// entry as a change without a pointer, which is damage, so the repository rises with its next
+/// entry or purge.
+const READ_VERSIONS: [u32; 19] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
 ];
 
 /// The name that the temporary directory of `init_bare` starts with. It differs from
@@ -1211,6 +1221,23 @@ impl Repository {
         self.refuse_append()?;
         raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
         self.oplog.append_remote_pin(pin)
+    }
+
+    /// Writes the entry that adds or removes a remote, after the format is raised as for any
+    /// entry (STEMMA-305). The caller holds the lock of the references.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpLogError::Io`] if the format file cannot be raised and flushed, and what
+    /// [`FsOpLog::append_remote_config`] returns.
+    pub(crate) fn append_remote_config(
+        &self,
+        _lock: &WriteLock,
+        entry: &RemoteConfigEntry,
+    ) -> Result<Entry, OpLogError> {
+        self.refuse_append()?;
+        raise_format(&self.metadata_dir(), FORMAT_VERSION).map_err(OpLogError::from_store)?;
+        self.oplog.append_remote_config(entry)
     }
 
     /// Writes the entries of a purge, as [`FsOpLog::append_purge`] does. The purge holds the lock
@@ -3513,7 +3540,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 19\n"
+            b"stemma-repository 20\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4846,7 +4873,7 @@ mod tests {
         for version in [
             "0",
             "1",
-            "20",
+            "21",
             "99",
             "4294967295",
             "4294967296",
@@ -4896,7 +4923,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 19\n"
+            "stemma-repository 20\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4922,7 +4949,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 19\n"
+            "stemma-repository 20\n"
         );
     }
 
@@ -4953,7 +4980,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 19\n"
+            "stemma-repository 20\n"
         );
     }
 
@@ -4986,7 +5013,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 19\n"
+            "stemma-repository 20\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -5230,7 +5257,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 19\n"
+            "stemma-repository 20\n"
         );
     }
 
@@ -5307,7 +5334,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 19\n");
+        assert_eq!(read(), "stemma-repository 20\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -5343,6 +5370,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 18\n");
         raise_format(&meta, 19).unwrap();
         assert_eq!(read(), "stemma-repository 19\n");
+        raise_format(&meta, 20).unwrap();
+        assert_eq!(read(), "stemma-repository 20\n");
     }
 
     #[test]
@@ -5387,7 +5416,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 19\n");
+        assert_eq!(format, "stemma-repository 20\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -5559,14 +5588,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 19",
+                "stemma-repository 20",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "20".to_string(),
+                    found: "21".to_string(),
                 },
-                "version 20, but this code supports versions 2 to 19",
+                "version 21, but this code supports versions 2 to 20",
             ),
         ];
         for (error, text) in cases {

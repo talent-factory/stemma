@@ -7,7 +7,8 @@
 //! The rules are the ones of the local writer of phase 4, asked against the register at the tip
 //! of `main` on the hub; they stand in the documentation of the method, which is the public one.
 
-use std::collections::HashSet;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::io;
@@ -345,11 +346,14 @@ fn branch_reference(branch: &BranchName) -> QualifiedName {
 /// its commit is the head that the opening names. The actor of a statement or of an entry is
 /// built from its identity ([`Actors::of`]), so no step is left out: a closing or a merge of an
 /// actor that a later register no longer holds still ends its pull request.
-fn placed_in_order(
+///
+/// The third part maps the number of every placed statement to the `record` line of its held
+/// statement, which the gate on a hub needs to judge a key that was retired or revoked.
+pub(super) fn placed_in_order(
     held: &[HeldStatement],
     entries: &[RecordEntry],
     actors: &Actors<'_>,
-) -> (Vec<Placed>, Vec<Merge>) {
+) -> (Vec<Placed>, Vec<Merge>, BTreeMap<u64, u64>) {
     enum Step<'a> {
         Entry(&'a RecordEntry),
         Held(&'a HeldStatement),
@@ -374,12 +378,14 @@ fn placed_in_order(
     };
     let mut placed = Vec::new();
     let mut merges = Vec::new();
+    let mut order = BTreeMap::new();
     for (number, (_, step)) in (1..).zip(steps) {
         match step {
             Step::Held(held) => {
                 let actor = actors.of(held.actor(), held.register());
                 let statement = held.statement().clone();
                 placed.push(Placed::new(number, held.time(), actor, statement));
+                order.insert(number, held.record());
             }
             Step::Entry(entry) => {
                 let merged = entry
@@ -406,19 +412,33 @@ fn placed_in_order(
             }
         }
     }
-    (placed, merges)
+    (placed, merges, order)
 }
 
 /// Where the fold takes the actors of the identities in the lines of the hub from.
-struct Actors<'a> {
+pub(super) struct Actors<'a> {
     /// The register at the tip of `main`.
-    register: &'a Register,
+    pub(super) register: &'a Register,
     /// The store, which holds the register commits that the lines name, as far as they are
     /// not gone.
-    store: &'a dyn ObjectStore,
+    pub(super) store: &'a dyn ObjectStore,
+    /// The first register commit that a line names and that could not be read, or that holds
+    /// no register, while an identity was asked for that the register at the tip does not hold.
+    /// The actor of such an identity has no sponsor of its time, so the gate on a hub fails
+    /// instead of judging with it.
+    pub(super) unreadable: RefCell<Option<ModeError>>,
 }
 
-impl Actors<'_> {
+impl<'a> Actors<'a> {
+    /// The actors of the lines of a hub whose register at the tip of `main` is `register`.
+    pub(super) fn new(register: &'a Register, store: &'a dyn ObjectStore) -> Self {
+        Self {
+            register,
+            store,
+            unreadable: RefCell::default(),
+        }
+    }
+
     /// The actor of `identity`, from the lines of a held statement or an entry that name the
     /// register commit `at`. The lines name an identity of the register of their time, so the
     /// step is never dropped: that would change the state of a pull request. The actor is the
@@ -426,16 +446,15 @@ impl Actors<'_> {
     /// whose sponsor of an agent is the one of its time. Where neither holds the identity, it is
     /// the identity alone, an agent with its own ID in the place of the sponsor: the rules of
     /// the fold and of the writers compare identities, but the independence of a check
-    /// ([`crate::check::is_independent`]) reads the sponsor, and the gate on a hub must ask the
-    /// register for such an agent itself.
-    fn of(&self, identity: &Identity, at: CommitId) -> Actor {
+    /// ([`crate::check::is_independent`]) reads the sponsor. A register at `at` that cannot be
+    /// read is kept in [`Actors::unreadable`], which the gate on a hub asks.
+    pub(super) fn of(&self, identity: &Identity, at: CommitId) -> Actor {
         self.register
             .actor_of(identity)
-            .or_else(|| {
-                Register::at_commit(self.store, &at)
-                    .ok()
-                    .flatten()
-                    .and_then(|register| register.actor_of(identity))
+            .or_else(|| match Register::at_commit(self.store, &at) {
+                Ok(Some(register)) => register.actor_of(identity),
+                Ok(None) => self.unread(ModeError::RegisterMissing),
+                Err(error) => self.unread(error),
             })
             .unwrap_or_else(|| {
                 let id = identity.id();
@@ -446,11 +465,17 @@ impl Actors<'_> {
                 .expect("an identity of the lines of the hub is a valid actor")
             })
     }
+
+    /// Keeps the first register that could not be read; the actor is then not found there.
+    fn unread(&self, error: ModeError) -> Option<Actor> {
+        self.unreadable.borrow_mut().get_or_insert(error);
+        None
+    }
 }
 
 /// What the held statements of a hub and its record add up to (see [`placed_in_order`]).
 fn evidence_of(held: &[HeldStatement], entries: &[RecordEntry], actors: &Actors<'_>) -> Evidence {
-    let (placed, merges) = placed_in_order(held, entries, actors);
+    let (placed, merges, _) = placed_in_order(held, entries, actors);
     evidence::fold(&placed, &merges)
 }
 
@@ -470,7 +495,7 @@ pub fn statements_of_open_pulls(
     register: &Register,
     store: &dyn ObjectStore,
 ) -> Vec<HeldStatement> {
-    let evidence = evidence_of(held, record, &Actors { register, store });
+    let evidence = evidence_of(held, record, &Actors::new(register, store));
     let open: Vec<_> = evidence
         .pulls
         .iter()
@@ -616,10 +641,7 @@ impl Repository {
         let register = Register::at_commit(self.objects(), &tip)
             .map_err(unreadable)?
             .ok_or_else(|| unreadable(ModeError::RegisterMissing))?;
-        let actors = Actors {
-            register: &register,
-            store: self.objects(),
-        };
+        let actors = Actors::new(&register, self.objects());
         let evidence = evidence_of(&held, &record.entries, &actors);
         let hash = statement.hash();
         if let Some(same) = held.iter().find(|held| held.hash() == hash) {
@@ -741,7 +763,7 @@ impl Repository {
                 let opener = Identity::of(pull.opener());
                 if opener == state.identity
                     || self
-                        .writers(approval.head(), state)?
+                        .writers(approval.head(), state.tip, state.record)?
                         .contains(&state.identity)
                 {
                     return Err(StatementRefusal::SelfApproval.into());
@@ -826,10 +848,15 @@ impl Repository {
     /// record entry that first brought such a commit under a branch or a tag, directly or
     /// through a descendant. It is the rule of the local writer (ADR-004 rule 4), with the
     /// record of the hub in the place of the operation log of a clone.
-    fn writers(&self, head: CommitId, state: &State<'_>) -> Result<Vec<Identity>, StatementError> {
+    pub(super) fn writers(
+        &self,
+        head: CommitId,
+        tip: CommitId,
+        record: &Record,
+    ) -> Result<Vec<Identity>, StatementError> {
         let store = self.objects();
         let own = history::ancestors(store, head, Parents::All, None)?;
-        let known: HashSet<CommitId> = history::ancestors(store, state.tip, Parents::All, None)?
+        let known: HashSet<CommitId> = history::ancestors(store, tip, Parents::All, None)?
             .into_iter()
             .map(|(id, _)| id)
             .collect();
@@ -846,7 +873,7 @@ impl Repository {
             }
         }
         let mut reached: HashSet<CommitId> = HashSet::new();
-        for entry in &state.record.entries {
+        for entry in &record.entries {
             for new in entry
                 .update()
                 .payload()
@@ -930,7 +957,7 @@ pub(crate) enum ReceivedError {
 }
 
 /// The held statements of the destination, checked for their numbers.
-fn read_destination(
+pub(super) fn read_destination(
     statements: &mut dyn StatementDestination,
     last_entry: u64,
 ) -> Result<Vec<HeldStatement>, StatementError> {

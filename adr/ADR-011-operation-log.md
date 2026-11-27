@@ -239,7 +239,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   entries, version 10 with the approval entry, version 11 with the check entry, version 12
   with the kind in the stub (below), version 13 with the line `former-owner` (below), and
   version 16 with the entries that name a signed statement (below; the versions 14 and 15
-  changed no entry, ADR-009), and version 17 with the line `remote` (below).
+  changed no entry, ADR-009), version 17 with the line `remote` (below), version 18 with the
+  entry `remote-pin` (below), and version 20 with the entries of a remote (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change and a `purge` entry; a new stub has version 4
@@ -647,6 +648,21 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
   a change without a pointer, which is damage, so the repository format rises to 18 with it
   (ADR-009). The same key as the pinned one writes no entry. Only a human pins, so the reader
   refuses an entry whose actor is an agent, as the writer does.
+
+- **The entries of a remote** *(proposed by STEMMA-305, confirmed in its review)*. `remote add`
+  writes an entry `remote-add`, and `remote remove` an entry `remote-remove`, each under the
+  lock of the references before the configuration changes. The body is `operation <op>`,
+  `remote <name>`, the five lines of the configuration as its file has them (`address`,
+  `repository`, `hub-key`, `ca-file`, `sign-in`, ADR-009), and for a removal one line
+  `ref <remote reference> <commit> <record entry>` for each remote reference that it deletes,
+  in the order of the names; an addition names none. The configuration is checked by its own
+  reader, so one configuration has one text. The entries are always in the chain and keep the
+  encoding `stemma-oplog 3`; a change cannot take either operation. A restore refuses both:
+  the two commands undo each other. For the outcome of an earlier entry, a removal is the next
+  move of each remote reference it names, from its value to none, so a `fetch` before it is
+  judged by it. A removal names commits, so a purge that rewrites one replaces it with a stub
+  (ADR-014); an addition names none. An older program would read either as a change without a
+  pointer, which is damage, so the repository format rises to 20 with them (ADR-009).
 
 - **The entries that name a signed statement** *(decided in STEMMA-273; implemented in
   STEMMA-290)*. The evidence about a pull request is signed statements (ADR-025): its opening,

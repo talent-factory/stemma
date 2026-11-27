@@ -183,7 +183,7 @@ use crate::protocol::statement::StatementHash;
 use crate::protocol::RecordHash;
 use crate::refs::{BranchName, BranchNameError, Head, MAIN_WORKTREE};
 use crate::register::Identity;
-use crate::remote::{RemoteName, RemoteRef, RemoteRefName, RemoteRefNameError};
+use crate::remote::{RemoteConfig, RemoteName, RemoteRef, RemoteRefName, RemoteRefNameError};
 use crate::signature::PublicKey;
 use crate::store::{create_temp, sync_directory, unique_temp_name, StoreError};
 use crate::{Actor, ActorParseError, ActorRef};
@@ -273,6 +273,18 @@ pub const PR_APPROVE: &str = "pr-approve";
 /// STEMMA-297): a human replaces the pinned key by a new one, with a fingerprint from a second
 /// channel. It belongs to the entry of a pinning and to no change (repository format 18).
 pub const REMOTE_PIN: &str = "remote-pin";
+
+// The entries that add and remove a remote (STEMMA-305).
+
+/// The operation of the entry that adds a remote (ADR-009, ADR-026, STEMMA-305): the
+/// configuration that `remote add` writes after the first contact with the hub. It belongs to the
+/// entry of a remote and to no change (repository format 20).
+pub const REMOTE_ADD: &str = "remote-add";
+
+/// The operation of the entry that removes a remote (STEMMA-305): the configuration that
+/// `remote remove` deletes, and the remote references that go with it. It belongs to the entry of
+/// a remote and to no change (repository format 20).
+pub const REMOTE_REMOVE: &str = "remote-remove";
 
 /// The most reviewers that the entry of an opening names.
 pub const MAX_REVIEWERS: usize = 32;
@@ -546,6 +558,13 @@ pub enum EntryError {
     /// The entry of a pinning names no commit, so a purge never replaces it with a stub.
     /// Carries its number.
     RemotePinNotReplaceable(u64),
+    // The entries that add and remove a remote (STEMMA-305).
+    /// The entry of a remote was written before the hash chain. Carries its number. The entry
+    /// came with the chain, so it has no older encoding.
+    RemoteConfigOutsideChain(u64),
+    /// The entry that adds a remote names remote references, which only a removal names; or a
+    /// removal names a remote reference of another remote.
+    RemoteConfigForeignRef,
 }
 
 impl fmt::Display for EntryError {
@@ -571,7 +590,8 @@ impl fmt::Display for EntryError {
                  or an operation `{LEASE_ACQUIRE}`, `{LEASE_RELEASE}`, `{LEASE_TAKEOVER}`, or \
                  `{LEASE_OVERRIDE}`, which only the entry of a lease has, or `{PR_OPEN}`, `{PR_CLOSE}`, \
                  `{PR_MERGE}`, or `{PR_APPROVE}`, which only the entry of a pull request has, or \
-                 `{CHECK}`, which only the entry of a check has"
+                 `{CHECK}`, which only the entry of a check has, or `{REMOTE_PIN}`, `{REMOTE_ADD}`, \
+                 or `{REMOTE_REMOVE}`, which only the entry of a remote has"
             ),
             Self::StubNotBefore { stub, purge } => write!(
                 f,
@@ -672,6 +692,15 @@ impl fmt::Display for EntryError {
             Self::RemotePinUnchanged => {
                 f.write_str("the entry of a pinning names the same key as its old and its new key")
             }
+            Self::RemoteConfigOutsideChain(number) => write!(
+                f,
+                "the entry {number} that adds or removes a remote cannot be older than the hash \
+                 chain"
+            ),
+            Self::RemoteConfigForeignRef => f.write_str(
+                "the entry of a remote names a remote reference that it does not remove: an \
+                 addition names none, and a removal names those of its own remote",
+            ),
             Self::BadReason => write!(
                 f,
                 "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
@@ -830,6 +859,8 @@ impl Change {
             || PullKind::from_operation(operation.as_str()).is_some()
             || operation.as_str() == CHECK
             || operation.as_str() == REMOTE_PIN
+            || operation.as_str() == REMOTE_ADD
+            || operation.as_str() == REMOTE_REMOVE
         {
             return Err(EntryError::ReservedOperation);
         }
@@ -2115,6 +2146,152 @@ impl RemotePinEntry {
     }
 }
 
+// The entries that add and remove a remote (STEMMA-305).
+
+/// Whether the entry of a remote adds it or removes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RemoteConfigKind {
+    /// `remote add`: the configuration was written.
+    Add,
+    /// `remote remove`: the configuration and the remote references were deleted.
+    Remove,
+}
+
+impl RemoteConfigKind {
+    /// The operation of the entry.
+    pub fn operation(self) -> &'static str {
+        match self {
+            Self::Add => REMOTE_ADD,
+            Self::Remove => REMOTE_REMOVE,
+        }
+    }
+
+    fn from_operation(operation: &str) -> Option<Self> {
+        match operation {
+            REMOTE_ADD => Some(Self::Add),
+            REMOTE_REMOVE => Some(Self::Remove),
+            _ => None,
+        }
+    }
+}
+
+/// The entry of a remote: the configuration that `remote add` wrote, or the one that
+/// `remote remove` deleted together with the remote references of the remote (ADR-009, ADR-011).
+/// The configuration stands in the five lines of its file, after the name, so the entry holds
+/// all that `op restore` would need; a removal names each remote reference that it deleted with
+/// its commit and its record entry, in the order of the names.
+///
+/// ```text
+/// operation remote-add                         or   operation remote-remove
+/// remote origin
+/// address https://hub.example/talent-factory/stemma
+/// repository 0123456789abcdef0123456789abcdef
+/// hub-key ssh-ed25519 <base64>                 or   hub-key -
+/// ca-file /etc/stemma/own-ca.pem               or   ca-file -
+/// sign-in yes                                  or   sign-in no
+/// ref remotes/origin/heads/main b3:<hex> b3:<hex>   zero or more, removal only
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteConfigEntry {
+    time: i64,
+    actor: Actor,
+    kind: RemoteConfigKind,
+    remote: RemoteName,
+    config: RemoteConfig,
+    refs: Vec<(RemoteRefName, RemoteRef)>,
+}
+
+impl RemoteConfigEntry {
+    /// The entry of `actor`, who adds or removes `remote` with the configuration `config`. A
+    /// removal names the remote references `refs` that it deletes; they are kept sorted by name.
+    ///
+    /// # Errors
+    ///
+    /// [`EntryError::RemoteConfigForeignRef`] if an addition names a remote reference or a
+    /// removal names one of another remote, and [`EntryError::DuplicateRemote`] for a name that
+    /// is listed twice.
+    pub fn try_new(
+        time: i64,
+        actor: Actor,
+        kind: RemoteConfigKind,
+        remote: RemoteName,
+        config: RemoteConfig,
+        mut refs: Vec<(RemoteRefName, RemoteRef)>,
+    ) -> Result<Self, EntryError> {
+        if (kind == RemoteConfigKind::Add && !refs.is_empty())
+            || refs.iter().any(|(name, _)| name.remote != remote)
+        {
+            return Err(EntryError::RemoteConfigForeignRef);
+        }
+        refs.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(pair) = refs.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            return Err(EntryError::DuplicateRemote(pair[0].0.clone()));
+        }
+        Ok(Self {
+            time,
+            actor,
+            kind,
+            remote,
+            config,
+            refs,
+        })
+    }
+
+    /// The time that the writer claims, in seconds since the Unix epoch (UTC).
+    pub fn time(&self) -> i64 {
+        self.time
+    }
+
+    /// Who added or removed the remote.
+    pub fn actor(&self) -> &Actor {
+        &self.actor
+    }
+
+    /// Whether the remote was added or removed.
+    pub fn kind(&self) -> RemoteConfigKind {
+        self.kind
+    }
+
+    /// The name of the remote.
+    pub fn remote(&self) -> &RemoteName {
+        &self.remote
+    }
+
+    /// The configuration that was written or deleted.
+    pub fn config(&self) -> &RemoteConfig {
+        &self.config
+    }
+
+    /// The remote references that a removal deleted, sorted by name; none for an addition.
+    pub fn refs(&self) -> &[(RemoteRefName, RemoteRef)] {
+        &self.refs
+    }
+
+    /// The commits of the remote references that a removal deleted.
+    fn commits(&self) -> Vec<CommitId> {
+        self.refs.iter().map(|(_, value)| value.commit).collect()
+    }
+
+    /// The lines of the body, which the hash of the body covers.
+    fn body_text(&self) -> String {
+        let config =
+            String::from_utf8(self.config.encode()).expect("the configuration of a remote is text");
+        let lines = config
+            .split_once('\n')
+            .map(|(_, rest)| rest)
+            .expect("the configuration starts with its header line");
+        let mut out = format!(
+            "operation {}\nremote {}\n{lines}",
+            self.kind.operation(),
+            self.remote
+        );
+        for (name, value) in &self.refs {
+            out.push_str(&format!("ref {name} {}\n", remote_value(Some(value))));
+        }
+        out
+    }
+}
+
 /// What an entry holds. The enum is exhaustive on purpose: a new kind of entry has to be handled
 /// by every reader, which the compiler then shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2133,6 +2310,8 @@ pub enum Record {
     Check(CheckEntry),
     /// A key of a hub pinned again (ADR-026).
     RemotePin(RemotePinEntry),
+    /// A remote added or removed (STEMMA-305).
+    RemoteConfig(RemoteConfigEntry),
 }
 
 /// An entry of the log: a number, its place in the hash chain, and a record, which is a change,
@@ -2212,6 +2391,9 @@ impl Entry {
             }
             (Record::RemotePin(_), Chain::Unchained) => {
                 return Err(EntryError::RemotePinOutsideChain(number));
+            }
+            (Record::RemoteConfig(_), Chain::Unchained) => {
+                return Err(EntryError::RemoteConfigOutsideChain(number));
             }
             _ => {}
         }
@@ -2300,6 +2482,7 @@ impl Entry {
             Record::Pull(pull) => Some(pull.body_text()),
             Record::Check(check) => Some(check.body_text()),
             Record::RemotePin(pin) => Some(pin.body_text()),
+            Record::RemoteConfig(remote) => Some(remote.body_text()),
             Record::Change(change) => {
                 let mut out = format!("operation {}\n", change.operation);
                 if let Some(tag) = change.worktree.as_deref() {
@@ -2360,7 +2543,8 @@ impl Entry {
             | Record::Lease(_)
             | Record::Pull(_)
             | Record::Check(_)
-            | Record::RemotePin(_) => None,
+            | Record::RemotePin(_)
+            | Record::RemoteConfig(_) => None,
         }
     }
 
@@ -2373,7 +2557,8 @@ impl Entry {
             | Record::Purge(_)
             | Record::Pull(_)
             | Record::Check(_)
-            | Record::RemotePin(_) => None,
+            | Record::RemotePin(_)
+            | Record::RemoteConfig(_) => None,
         }
     }
 
@@ -2386,7 +2571,8 @@ impl Entry {
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Check(_)
-            | Record::RemotePin(_) => None,
+            | Record::RemotePin(_)
+            | Record::RemoteConfig(_) => None,
         }
     }
 
@@ -2399,7 +2585,8 @@ impl Entry {
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Pull(_)
-            | Record::RemotePin(_) => None,
+            | Record::RemotePin(_)
+            | Record::RemoteConfig(_) => None,
         }
     }
 
@@ -2412,7 +2599,23 @@ impl Entry {
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Pull(_)
-            | Record::Check(_) => None,
+            | Record::Check(_)
+            | Record::RemoteConfig(_) => None,
+        }
+    }
+
+    /// The addition or removal of a remote that the entry records, or `None` for any other
+    /// entry.
+    pub fn remote_config(&self) -> Option<&RemoteConfigEntry> {
+        match &self.record {
+            Record::RemoteConfig(remote) => Some(remote),
+            Record::Change(_)
+            | Record::Stub(_)
+            | Record::Purge(_)
+            | Record::Lease(_)
+            | Record::Pull(_)
+            | Record::Check(_)
+            | Record::RemotePin(_) => None,
         }
     }
 
@@ -2427,7 +2630,8 @@ impl Entry {
             | Record::Stub(_)
             | Record::Purge(_)
             | Record::Lease(_)
-            | Record::RemotePin(_) => None,
+            | Record::RemotePin(_)
+            | Record::RemoteConfig(_) => None,
         }
     }
 
@@ -2442,6 +2646,7 @@ impl Entry {
             Record::Pull(pull) => pull.time,
             Record::Check(check) => check.time,
             Record::RemotePin(pin) => pin.time,
+            Record::RemoteConfig(remote) => remote.time,
         }
     }
 
@@ -2456,6 +2661,7 @@ impl Entry {
             Record::Pull(pull) => &pull.actor,
             Record::Check(check) => &check.actor,
             Record::RemotePin(pin) => &pin.actor,
+            Record::RemoteConfig(remote) => &remote.actor,
         }
     }
 
@@ -2465,6 +2671,7 @@ impl Entry {
             Record::Change(change) => change.commits(),
             Record::Pull(pull) => pull.commits(),
             Record::Check(check) => check.commits(),
+            Record::RemoteConfig(remote) => remote.commits(),
             Record::Stub(_) | Record::Purge(_) | Record::Lease(_) | Record::RemotePin(_) => {
                 Vec::new()
             }
@@ -2643,6 +2850,13 @@ impl Entry {
         }
         if version == 3 && lines.get(body).copied() == Some(&format!("operation {REMOTE_PIN}")) {
             return parse_remote_pin(&lines, body, number, chain, time, actor);
+        }
+        let remote_kind = lines
+            .get(body)
+            .and_then(|line| line.strip_prefix("operation "))
+            .and_then(RemoteConfigKind::from_operation);
+        if let (3, Some(kind)) = (version, remote_kind) {
+            return parse_remote_config(&lines, body, number, chain, time, actor, kind);
         }
         if let (3, Some(kind)) = (version, pull_kind) {
             return parse_pull(&lines, body, number, chain, time, actor, kind);
@@ -3014,6 +3228,63 @@ fn parse_remote_pin(
     }
     RemotePinEntry::try_new(time, actor, remote, old, new)
         .and_then(|pin| Entry::linked(number, chain, Record::RemotePin(pin)))
+        .map_err(EntryParseError::Entry)
+}
+
+/// Reads the body of the entry of a remote, which starts with the line `operation remote-add` or
+/// `operation remote-remove` at the index `body`: `remote <name>`, the five lines of the
+/// configuration, which its own reader checks, and for a removal the lines `ref <name> <commit>
+/// <entry>` in the order of the names.
+fn parse_remote_config(
+    lines: &[&str],
+    body: usize,
+    number: u64,
+    chain: Chain,
+    time: i64,
+    actor: Actor,
+    kind: RemoteConfigKind,
+) -> Result<Entry, EntryParseError> {
+    let malformed = |line, reason| EntryParseError::Malformed { line, reason };
+    let remote = lines
+        .get(body + 1)
+        .and_then(|line| line.strip_prefix("remote "))
+        .and_then(|name| RemoteName::try_new(name).ok())
+        .ok_or_else(|| malformed(body + 2, EntryMalformed::ExpectedRemote))?;
+    let first = body + 2;
+    let config_lines = lines
+        .get(first..first + 5)
+        .ok_or_else(|| malformed(lines.len() + 1, EntryMalformed::ExpectedRemoteConfig))?;
+    let text = format!(
+        "{}\n{}\n",
+        crate::remote::CONFIG_HEADER,
+        config_lines.join("\n")
+    );
+    let config = RemoteConfig::parse(text.as_bytes())
+        .map_err(|_| malformed(first + 1, EntryMalformed::ExpectedRemoteConfig))?;
+    let mut refs: Vec<(RemoteRefName, RemoteRef)> = Vec::new();
+    for (index, line) in lines.iter().enumerate().skip(first + 5) {
+        let line_number = index + 1;
+        let tokens: Vec<&str> = line
+            .strip_prefix("ref ")
+            .map(|rest| rest.split(' ').collect())
+            .unwrap_or_default();
+        let [name, commit, entry] = tokens[..] else {
+            return Err(malformed(line_number, EntryMalformed::ExpectedRemoteRef));
+        };
+        let name =
+            RemoteRefName::from_str(name).map_err(|source| EntryParseError::InvalidRemoteName {
+                line: line_number,
+                source,
+            })?;
+        let value = parse_remote_value(commit, entry, line_number)?
+            .ok_or_else(|| malformed(line_number, EntryMalformed::ExpectedRemoteRef))?;
+        if refs.last().is_some_and(|(last, _)| *last >= name) {
+            return Err(malformed(line_number, EntryMalformed::ExpectedRemoteRef));
+        }
+        refs.push((name, value));
+    }
+    RemoteConfigEntry::try_new(time, actor, kind, remote, config, refs)
+        .and_then(|entry| Entry::linked(number, chain, Record::RemoteConfig(entry)))
         .map_err(EntryParseError::Entry)
 }
 
@@ -3473,6 +3744,12 @@ pub enum EntryMalformed {
     /// A value of a line `remote` has a commit without the hash of its record entry, or the
     /// other way round: both are `-`, or neither is.
     HalfRemoteValue,
+    /// The entry of a remote lacks one of the five lines of the configuration, or one of them
+    /// holds a value that the reader of the configuration rejects.
+    ExpectedRemoteConfig,
+    /// A line after the configuration of the entry of a remote is not `ref <name> <commit>
+    /// <entry>`, or the names are not in their order.
+    ExpectedRemoteRef,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -3540,6 +3817,14 @@ impl fmt::Display for EntryMalformed {
             }
             Self::HalfRemoteValue => {
                 "expected the commit and the record entry of the remote reference, or `- -`"
+            }
+            Self::ExpectedRemoteConfig => {
+                "expected the five lines of the configuration of the remote, from `address` to \
+                 `sign-in`"
+            }
+            Self::ExpectedRemoteRef => {
+                "expected the line `ref <remote reference> <commit> <record entry>`, in the order \
+                 of the names"
             }
         })
     }
@@ -4640,6 +4925,20 @@ impl FsOpLog {
         self.append_record(&Record::RemotePin(pin.clone()))
     }
 
+    /// Writes the entry that adds or removes a remote, as [`append`](Self::append) writes the
+    /// entry of a change. The caller holds the lock of the references while it writes or
+    /// deletes the configuration and the remote references (STEMMA-305).
+    ///
+    /// # Errors
+    ///
+    /// See [`append`](Self::append).
+    pub(crate) fn append_remote_config(
+        &self,
+        entry: &RemoteConfigEntry,
+    ) -> Result<Entry, OpLogError> {
+        self.append_record(&Record::RemoteConfig(entry.clone()))
+    }
+
     /// Writes the entries of a purge, as [`append`](Self::append) writes an entry, and returns
     /// them. A list of stubs that does not fit into one entry is split over several, and the first
     /// has the count of commits (ADR-014). The entries go after the ones that they list. Before
@@ -5285,15 +5584,35 @@ pub fn outcomes(entries: &[Entry], current: Option<&Current>) -> Vec<Outcome> {
     // A take-over after this entry in the same worktree: the owner now is the work of that one.
     let mut newer_take_over: HashSet<&str> = HashSet::new();
     let here = current.map_or(MAIN_WORKTREE, |current| current.worktree.as_str());
+    // The removal of a remote deletes its remote references (STEMMA-305): for an entry before
+    // it, it is the next move of each, from its value to none.
+    let removed: Vec<Vec<(RemoteRefName, Moved<RemoteRef>)>> = entries
+        .iter()
+        .map(|entry| match entry.record() {
+            Record::RemoteConfig(remote) => remote
+                .refs()
+                .iter()
+                .map(|(name, value)| (name.clone(), Moved::from_to(Some(*value), None)))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
     for (index, entry) in entries.iter().enumerate().rev() {
         let change = match entry.record() {
             Record::Change(change) if !behind_stub => change,
+            Record::RemoteConfig(_) if !behind_stub => {
+                for (name, moved) in &removed[index] {
+                    next_remote.insert(name, moved);
+                }
+                continue;
+            }
             Record::Change(_)
             | Record::Purge(_)
             | Record::Lease(_)
             | Record::Pull(_)
             | Record::Check(_)
-            | Record::RemotePin(_) => continue,
+            | Record::RemotePin(_)
+            | Record::RemoteConfig(_) => continue,
             Record::Stub(_) => {
                 behind_stub = true;
                 continue;
@@ -10141,6 +10460,209 @@ mod tests {
         let log = log_in(&dir);
         let written = log.append_remote_pin(&remote_pin(Some(0x70))).unwrap();
         assert_eq!(log.read(1).unwrap().remote_pin(), written.remote_pin());
+        log.verify().expect("the whole log is in the chain");
+    }
+
+    // The entries that add and remove a remote (STEMMA-305).
+
+    fn remote_config_of(key: Option<u8>) -> RemoteConfig {
+        let mut config = RemoteConfig::new(
+            crate::remote::RemoteAddress::try_new("https://hub.example/talent-factory/stemma")
+                .unwrap(),
+            "0123456789abcdef0123456789abcdef".parse().unwrap(),
+        );
+        config.hub_key = key.map(hub_key);
+        config
+    }
+
+    fn origin_ref(name: &str) -> RemoteRefName {
+        format!("remotes/origin/heads/{name}").parse().unwrap()
+    }
+
+    fn origin_value(text: &str) -> RemoteRef {
+        RemoteRef {
+            commit: commit(text),
+            entry: format!("b3:{}", "a1".repeat(32)).parse().unwrap(),
+        }
+    }
+
+    fn remote_entry(kind: RemoteConfigKind, refs: Vec<(RemoteRefName, RemoteRef)>) -> Entry {
+        let record = RemoteConfigEntry::try_new(
+            TIME,
+            human(),
+            kind,
+            RemoteName::try_new("origin").unwrap(),
+            remote_config_of(Some(0x71)),
+            refs,
+        )
+        .unwrap();
+        Entry::linked(7, Chain::Start, Record::RemoteConfig(record)).unwrap()
+    }
+
+    #[test]
+    fn an_entry_of_a_remote_is_written_as_it_is_read() {
+        let refs = vec![
+            (origin_ref("main"), origin_value(B)),
+            (origin_ref("feat"), origin_value(A)),
+        ];
+        for (kind, refs) in [
+            (RemoteConfigKind::Add, Vec::new()),
+            (RemoteConfigKind::Remove, Vec::new()),
+            (RemoteConfigKind::Remove, refs),
+        ] {
+            let entry = remote_entry(kind, refs.clone());
+            let text = String::from_utf8(entry.encode()).unwrap();
+            let lines = format!(
+                "previous -\noperation {}\nremote origin\naddress \
+                 https://hub.example/talent-factory/stemma\nrepository \
+                 0123456789abcdef0123456789abcdef\nhub-key {}\nca-file -\nsign-in no\n",
+                kind.operation(),
+                hub_key(0x71)
+            );
+            assert!(text.contains(&lines), "{text}");
+            let read = Entry::parse(text.as_bytes()).unwrap();
+            assert_eq!(read, entry);
+            let remote = read.remote_config().unwrap();
+            assert_eq!(remote.kind(), kind);
+            assert_eq!(remote.config(), &remote_config_of(Some(0x71)));
+            // The references stand in the order of their names, and their commits are named.
+            assert_eq!(remote.refs().len(), refs.len());
+            assert!(remote.refs().windows(2).all(|pair| pair[0].0 < pair[1].0));
+            assert_eq!(read.commits().len(), refs.len());
+            assert_eq!(read.change(), None);
+            assert_eq!(read.remote_pin(), None);
+        }
+    }
+
+    #[test]
+    fn the_reader_refuses_what_the_writer_of_a_remote_entry_does_not_write() {
+        let refs = vec![
+            (origin_ref("feat"), origin_value(A)),
+            (origin_ref("main"), origin_value(B)),
+        ];
+        let good =
+            String::from_utf8(remote_entry(RemoteConfigKind::Remove, refs).encode()).unwrap();
+        let entry = format!("b3:{}", "a1".repeat(32));
+        let feat = format!("ref remotes/origin/heads/feat {A} {entry}\n");
+        let main = format!("ref remotes/origin/heads/main {B} {entry}\n");
+        let cases = [
+            good.replace("stemma-oplog 3", "stemma-oplog 2"),
+            good.replace("remote origin\n", ""),
+            good.replace("sign-in no\n", ""),
+            good.replace("ca-file -\n", ""),
+            good.replace("sign-in no", "sign-in maybe"),
+            good.replace("remote origin", "remote a/b"),
+            // The references out of their order, twice, of another remote, or without a value.
+            good.replace(&format!("{feat}{main}"), &format!("{main}{feat}")),
+            good.replace(&main, &feat),
+            good.replace(&main, &main.replace("remotes/origin", "remotes/other")),
+            good.replace(&main, "ref remotes/origin/heads/main - -\n"),
+            good.replace(&main, &main.replace("ref ", "reference ")),
+            // An addition names no remote reference.
+            good.replace("operation remote-remove", "operation remote-add"),
+        ];
+        for bad in cases {
+            assert!(Entry::parse(bad.as_bytes()).is_err(), "{bad}");
+        }
+        // A program that does not know the entry reads it as a change without a pointer, which
+        // is damage: the reason for the repository format 20.
+        let change = good.replace("operation remote-remove", "operation remote-removed");
+        assert!(Entry::parse(change.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn an_entry_of_a_remote_is_refused_outside_the_chain_and_as_the_operation_of_a_change() {
+        let record = remote_entry(RemoteConfigKind::Add, Vec::new())
+            .remote_config()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            Entry::linked(3, Chain::Unchained, Record::RemoteConfig(record)),
+            Err(EntryError::RemoteConfigOutsideChain(3))
+        );
+        assert_eq!(
+            RemoteConfigEntry::try_new(
+                TIME,
+                human(),
+                RemoteConfigKind::Add,
+                RemoteName::try_new("origin").unwrap(),
+                remote_config_of(None),
+                vec![(origin_ref("main"), origin_value(A))],
+            ),
+            Err(EntryError::RemoteConfigForeignRef)
+        );
+        for error in [
+            EntryError::RemoteConfigOutsideChain(3),
+            EntryError::RemoteConfigForeignRef,
+        ] {
+            assert!(!error.to_string().is_empty());
+        }
+        for operation in [REMOTE_ADD, REMOTE_REMOVE] {
+            assert_eq!(
+                Change::try_new(
+                    TIME,
+                    human(),
+                    OperationName::try_new(operation).unwrap(),
+                    None,
+                    None,
+                    vec![(
+                        BranchName::try_new("main").unwrap(),
+                        Moved::from_to(None, Some(commit(A)))
+                    )],
+                ),
+                Err(EntryError::ReservedOperation)
+            );
+        }
+    }
+
+    #[test]
+    fn a_removal_of_a_remote_is_the_next_move_of_its_remote_references() {
+        // A fetch that created `remotes/origin/heads/main`, a removal that deleted it, and a
+        // fetch that created it again: the first fetch took effect, as the removal names the
+        // value that it wrote.
+        let fetch = |old: Option<RemoteRef>, new: Option<RemoteRef>| {
+            Record::Change(
+                Change::try_new_with_remotes(
+                    TIME,
+                    human(),
+                    OperationName::try_new("fetch").unwrap(),
+                    vec![(origin_ref("main"), Moved::from_to(old, new))],
+                )
+                .unwrap(),
+            )
+        };
+        let removal = remote_entry(
+            RemoteConfigKind::Remove,
+            vec![(origin_ref("main"), origin_value(A))],
+        )
+        .record()
+        .clone();
+        let entries: Vec<Entry> = [
+            fetch(None, Some(origin_value(A))),
+            removal,
+            fetch(None, Some(origin_value(B))),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, record)| Entry::linked(index as u64 + 1, Chain::Start, record).unwrap())
+        .collect();
+        let outcomes = outcomes(&entries, None);
+        assert_eq!(outcomes[0], Outcome::Took, "{outcomes:?}");
+    }
+
+    #[test]
+    fn the_log_appends_and_reads_an_entry_of_a_remote() {
+        let dir = TempDir::new();
+        let log = log_in(&dir);
+        let record = remote_entry(RemoteConfigKind::Add, Vec::new())
+            .remote_config()
+            .unwrap()
+            .clone();
+        let written = log.append_remote_config(&record).unwrap();
+        assert_eq!(
+            log.read(1).unwrap().remote_config(),
+            written.remote_config()
+        );
         log.verify().expect("the whole log is in the chain");
     }
 }

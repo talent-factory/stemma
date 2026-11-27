@@ -4,15 +4,16 @@
 core of the gate (STEMMA-241: the rule table, the optimistic swap, the objects before the lock),
 and the bounds (STEMMA-242: the pause at a red tip with the exemption of a declared repair, the
 reservation, `max_unverified`, and the window and helper for the bisection; the gate itself does
-not bisect) are implemented. Not implemented, and left to
-the caller of the gate until their slices land: the approvals (ADR-004), the rule that the
-authors of a change are registered actors, and the command. Their slices are on the map of
-phase 4.
+not bisect) are implemented, and the approvals (ADR-004) in the gate by the policy of an
+enforcing repository (STEMMA-303). Not implemented, and left to the caller of the gate until
+their slices land: the rule that the authors of a change are registered actors, and the level
+by the policy in the command. Their slices are on the map of phase 4.
 The pull request as an object, the checks, and the merge gate belong to phase 4. The ADR defines
 what "`main` is always green" means for the gate (ADR-006 decides the GitHub side, which stays
 open) and gives ADR-004 the meaning of its "merge gate".
 The gate on a hub was decided for phase 5 on 2026-11-23 and 2026-11-24 (STEMMA-273, see "The gate
-and a hub"); it is not implemented yet.
+and a hub"); the verdict about `main` that a clone and a hub share, with the approvals and the
+escalation for weakened tests, is implemented (STEMMA-303).
 
 ## Context
 
@@ -281,13 +282,24 @@ meaning: different actor IDs.
 
 ### The gate and a hub
 
-Decided for phase 5 (STEMMA-273, ADR-025). The second item is implemented (STEMMA-290); the
-others are not yet.
+Decided for phase 5 (STEMMA-273, ADR-025). The second item is implemented (STEMMA-290), and the
+first, the third and the last are (STEMMA-303); the swap across the network is not yet.
 
 - The verdict about `main` is a pure function over the commits, the register and the policy of
   the tip `T`, the namespace policy (ADR-027), and the signed statements. `merge_gate` calls it
   locally, and the accepting
   operation calls it on a hub, so the rule stands in one place.
+  *(STEMMA-303)* The function is `Repository::judge_main`. It takes the fold of the statements,
+  the order of their holder, the heads of the branches, the register and the policy of `T`,
+  further policies combined by the maximum, and the time of the holder, and reads nothing but
+  the store besides. It adds two rules to the gate by the policy (`merge_gate_by_policy`): the
+  level is raised by the escalation for weakened tests (ADR-004, rule 10), and where a register
+  exists the approvals of ADR-004 must count, by the recount of phase 4: the agent approvals
+  that the policy names for the level, and a registered human at the levels 2 and 3, an owner at
+  level 3 (`GateError::NotApproved`). `merge_gate` with the level of the caller asks neither, as
+  before. The rule table, the bounds, and the rule of independence are unchanged; the bounds
+  read the runs and the pull requests from the fold that the caller passes and the heads of the
+  branches from the caller as well.
 - The evidence is signed statements. An approval and a check result are statements of registered
   actors, and the gate folds the set of statements instead of the entries of the log; the entries
   `pr-open`, `pr-close`, `pr-approve` and `check` name the hash of the statement they made
@@ -301,7 +313,9 @@ others are not yet.
   accepted twice, and the next pull request of a branch needs a new head.
 - A hub enforces all bounds: the pause at a red tip with the exemption of a repair, the
   reservation and `max_unverified`. They are computed over the order and the time in the lines
-  that the hub adds to every accepted statement. A fetch brings the statements with these lines,
+  that the hub adds to every accepted statement. *(STEMMA-303)* The accepting operation calls
+  the verdict with the held statements in the order of the hub and the time of the hub (ADR-025,
+  "The gate on a hub as built"). A fetch brings the statements with these lines,
   so a clone comes to the same verdict except for what arrived since its fetch; statements not
   yet submitted are ordered by the local log.
 - In a repository whose `main` follows a remote, the optimistic swap runs across the network:
@@ -312,7 +326,9 @@ others are not yet.
   record of the hub says so, which is the way of this ADR for a rebase.
 - The accepting operation takes `refs.lock` itself in the middle, as the gate does. Pure
   computations over immutable objects may run before the lock; the fold of the statements, the
-  bounds, the record entry and the move stand under it.
+  bounds, the record entry and the move stand under it. *(STEMMA-303)* The first version
+  computes the verdict under the lock; the trigger for moving the tree merge before it is the
+  measured holding time.
 
 ## Consequences
 

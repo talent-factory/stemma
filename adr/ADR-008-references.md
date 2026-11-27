@@ -8,7 +8,9 @@ The rule for a name that is both a branch and a tag was decided on 2026-11-04 (S
 The command `branch` (create, list, rename, delete) was added in Phase 3 (STEMMA-166).
 Remote references were decided for Phase 5 on 2026-11-23 (STEMMA-56, see "Remote references"
 below). Their files, their names, and what reads them were built on 2026-11-24 (STEMMA-285),
-`fetch` and `clone` with the entry `fetch` on 2026-11-25 (STEMMA-295); `push` is not built yet.
+`fetch` and `clone` with the entry `fetch` on 2026-11-25 (STEMMA-295), and the commands
+`remote`, `clone`, and `fetch` with the local branch of a clone on 2026-11-27 (STEMMA-305, see
+"Which local branch follows"); `push` is not built yet.
 Packed references have no phase yet, and
 the rename on Windows waits for the CI run (STEMMA-33).
 
@@ -271,6 +273,24 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     remote references it moved and the number and hash of the receipt. A stale push (`Stale`)
     moves no remote reference: the clone may not have the new commit (`MissingCommit`), and only
     a fetch moves remote references, after the connectivity check (ADR-023).
+  - **`remote remove` deletes them** *(STEMMA-305)*. The removal of a remote writes the entry
+    `remote-remove` (ADR-011) with the configuration and with every remote reference of the
+    remote, its commit and its record entry, and deletes them after it. It moves none: the
+    references go with the remote, and a later `remote add` and `fetch` bring them back. A
+    fetch reads the configuration once more under the lock and refuses to move anything if it
+    was removed or changed during the transfer (`FetchError::RemoteChanged`, code 6), so a
+    removal is not undone by a fetch that ran beside it. Nor by a restore: `op restore` refuses
+    an entry that moved remote references of a remote removed or added again after it
+    (`RestoreError::GoneRemote`), as it refuses one of a worktree removed since.
+  - **Which local branch follows** *(proposed by STEMMA-305, confirmed in its review)*. `clone`
+    makes the branch `main` at `remotes/<remote>/heads/main` after its fetch, with the files of
+    its tree, by the mechanism of `switch -c`; a hub without `main` leaves the branch without a
+    commit. No other local branch is made, and no tag. A later `fetch` moves remote references
+    only, never a local branch: the actor brings a branch along with `rebase
+    remotes/<remote>/heads/main` or a merge, each with its own entry. No mapping of a branch to
+    a remote reference is stored. Rejected: an upstream per branch that `fetch` follows (a fetch
+    would move the working copy of an actor who did not ask, and it would need a merge on the
+    way), and a clone without a local branch (a clone that shows no files).
   - **The fetch as built** *(STEMMA-295)*. `Repository::fetch` and `Repository::clone_remote`
     speak through `Transport` (ADR-022). The fetch reads the list, compares its repository ID
     with the one of the configuration of the remote and refuses another
@@ -422,5 +442,6 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
       above, the signed ref update and the record of a hub in ADR-025. The files, the names,
       and the readers are built (STEMMA-285), and so are the moves by `fetch` (STEMMA-295);
       those by `push` are not. Open stay
-      how a purge treats remote references in a clone (ADR-014; until then it is refused), and
-      which local branch follows which remote reference, which belongs to the command surface.
+      how a purge treats remote references in a clone (ADR-014; until then it is refused).
+      Which local branch follows which remote reference is decided by the command surface
+      (STEMMA-305, "Which local branch follows").
