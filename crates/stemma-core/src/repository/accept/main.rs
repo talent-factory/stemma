@@ -45,6 +45,10 @@ struct HubProofs<'a> {
     /// The registers of the commits that the record moved `main` to, as far as they are read.
     /// `None` for a register that could not be read.
     registers: RefCell<HashMap<CommitId, Option<Option<Register>>>>,
+    /// The first register of the record that could not be read. The verdict counts the key as
+    /// ended there, and the hub then fails instead of answering with the verdict: the refusal
+    /// would read as final, though a repeat may find the store whole.
+    unreadable: RefCell<Option<ModeError>>,
 }
 
 impl HubProofs<'_> {
@@ -67,9 +71,13 @@ impl HubProofs<'_> {
                 .iter()
                 .find(|moved| moved.name() == &main)
                 .and_then(Move::new_commit)?;
-            let register = registers
-                .entry(commit)
-                .or_insert_with(|| Register::at_commit(self.store, &commit).ok());
+            let register = registers.entry(commit).or_insert_with(|| {
+                Register::at_commit(self.store, &commit)
+                    .map_err(|error| {
+                        self.unreadable.borrow_mut().get_or_insert(error);
+                    })
+                    .ok()
+            });
             let state = register
                 .as_ref()
                 .and_then(Option::as_ref)
@@ -88,27 +96,30 @@ impl HubProofs<'_> {
 }
 
 impl Proofs for HubProofs<'_> {
-    fn holds(&self, actor: &Actor, number: u64, statement: &Statement) -> bool {
-        let Some(record) = self.order.get(&number) else {
-            return false;
-        };
-        let Some(key) = statement.key() else {
-            return false;
-        };
+    fn holds(&self, actor: &Actor, number: u64, statement: &Statement) -> Result<(), String> {
+        let record = self
+            .order
+            .get(&number)
+            .ok_or("the hub holds it in no line of its order")?;
+        let key = statement.key().ok_or("the statement is not signed")?;
         let identity = Identity::of(actor);
-        let lies_before = |ended: Option<u64>| ended.is_some_and(|ended| *record < ended);
+        let before = |ended: Option<u64>| match ended {
+            Some(ended) if *record < ended => Ok(()),
+            Some(ended) => Err(format!(
+                "its key no longer counted from record entry {ended} on"
+            )),
+            None => Err("its key is no longer active".to_owned()),
+        };
         match self.register.verify_statement(actor, statement, None) {
-            Ok(_) => {
-                let active = self.register.is_active_key(&identity, key);
-                active || lies_before(self.ended_at(&identity, key))
-            }
+            Ok(_) if self.register.is_active_key(&identity, key) => Ok(()),
+            Ok(_) => before(self.ended_at(&identity, key)),
             Err(ProofError::KeyNoLongerCounts {
                 state: KeyState::Revoked { .. },
                 ..
             }) if statement.kind() != StatementKind::Approval => {
-                lies_before(self.ended_at(&identity, key))
+                before(self.ended_at(&identity, key))
             }
-            Err(_) => false,
+            Err(error) => Err(error.to_string()),
         }
     }
 }
@@ -190,6 +201,7 @@ impl Repository {
             record: state.record,
             order: &order,
             registers: RefCell::default(),
+            unreadable: RefCell::default(),
         };
         let case = Case {
             tip,
@@ -202,7 +214,11 @@ impl Repository {
             rules: Rules::Policies(state.policies),
             now: state.now,
         };
-        let refusal = match self.judge_main(&case).map_err(failed)? {
+        let judged = self.judge_main(&case).map_err(failed)?;
+        if let Some(error) = proofs.unreadable.take() {
+            return Err(AcceptError::Register(Box::new(error)));
+        }
+        let refusal = match judged {
             Ok(Verdict::Merge(merge)) if merge.tree == merge_tree => {
                 return self.usable(&merged);
             }
@@ -248,6 +264,7 @@ impl Repository {
                 agents_needed,
                 humans,
                 humans_needed,
+                dropped: _,
             } => GateRefusal::NotApproved {
                 level,
                 source,

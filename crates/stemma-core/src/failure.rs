@@ -1156,6 +1156,91 @@ mod tests {
     }
 
     #[test]
+    fn the_failures_of_the_gate_on_a_hub_are_classified_by_their_cause() {
+        use crate::merge::MergeError;
+        use crate::object::CommitParseError;
+        use crate::repository::{
+            AcceptError, CheckError, DiffError, GateError, LevelError, RecordStep, StatementError,
+        };
+        use crate::store::ReadError;
+
+        let io = || StoreError::Io {
+            operation: "read the object file",
+            path: path(),
+            source: std::io::Error::other("the disk failed"),
+        };
+        let mismatch = || StoreError::KindMismatch {
+            id: id(),
+            expected: Kind::Tree,
+            found: Kind::Blob,
+        };
+        let commit = crate::object::CommitId::new(id());
+        let missing = || HistoryError::Missing {
+            id: commit,
+            child: Some(commit),
+        };
+        let statements = |error: StatementError| AcceptError::Statements(Box::new(error)).kind();
+        let verdict = |error: GateError| AcceptError::Verdict(Box::new(error)).kind();
+
+        assert_eq!(
+            statements(StatementError::Order {
+                position: 2,
+                number: 3
+            }),
+            FailureKind::Damaged
+        );
+        assert_eq!(
+            statements(StatementError::StatementsIo {
+                step: RecordStep::Read,
+                source: std::io::Error::other("the disk failed"),
+            }),
+            FailureKind::Other
+        );
+        for (error, kind) in [
+            (GateError::Store(io()), FailureKind::Other),
+            // The store classifies its own error: a wrong kind may be a wrong argument.
+            (GateError::Store(mismatch()), FailureKind::Other),
+            (
+                GateError::Read(ReadError::Store(Box::new(io()))),
+                FailureKind::Other,
+            ),
+            // A body that is not canonical has no error of the store, and is damage.
+            (
+                GateError::Read(ReadError::Commit {
+                    id: commit,
+                    source: CommitParseError::NotUtf8 { valid_up_to: 0 },
+                }),
+                FailureKind::Damaged,
+            ),
+            (
+                GateError::Merge(MergeError::Store(io())),
+                FailureKind::Other,
+            ),
+            (
+                GateError::Merge(MergeError::Store(mismatch())),
+                FailureKind::Damaged,
+            ),
+            (GateError::History(missing()), FailureKind::Damaged),
+            (
+                GateError::Check(CheckError::History(missing())),
+                FailureKind::Damaged,
+            ),
+            (
+                GateError::Level(LevelError::Diff(DiffError::Store(io()))),
+                FailureKind::Other,
+            ),
+            (
+                GateError::Level(LevelError::Diff(DiffError::Missing { id: id() })),
+                FailureKind::Damaged,
+            ),
+            (GateError::NoMain, FailureKind::Other),
+        ] {
+            let shown = format!("{error:?}");
+            assert_eq!(verdict(error), kind, "{shown}");
+        }
+    }
+
+    #[test]
     fn the_wrappers_of_an_update_pass_the_cause_on() {
         assert_eq!(UpdateError::Refs(locked()).kind(), FailureKind::Locked);
         assert_eq!(UpdateError::Log(gap()).kind(), FailureKind::Damaged);

@@ -24,6 +24,8 @@
 //! The fold is tolerant (see [`crate::evidence`]). The rules that keep what it skips from being
 //! written are those of [`Repository`](crate::repository::Repository).
 
+use std::fmt;
+
 use crate::allowed::{self_approval, SelfApproval};
 use crate::evidence::Placed;
 use crate::object::CommitId;
@@ -247,6 +249,18 @@ pub enum NotCounted {
     Proof(String),
     /// The same identity approved this head before.
     Repeat,
+}
+
+impl fmt::Display for NotCounted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BeforeOpening => f.write_str("it stands before the opening"),
+            Self::OtherHead => f.write_str("it names another head"),
+            Self::SelfApproval(reason) => reason.fmt(f),
+            Self::Proof(reason) => write!(f, "its signature does not count: {reason}"),
+            Self::Repeat => f.write_str("the reviewer approved the head before"),
+        }
+    }
 }
 
 /// The approvals of one pull request as they count for its current head.

@@ -755,8 +755,12 @@ policy of `T` in its `policy` line, as the verdict rests on it. The first versio
 it under the lock; moving the tree merge and the verdict before the lock waits for the measured
 holding time. A hub without a destination of statements holds none, so every move of `main` is
 refused for want of a pull request. Held statements that cannot be read are
-`AcceptError::Statements`, and a store that fails under the verdict `AcceptError::Verdict`; both
-are failures of the hub.
+`AcceptError::Statements`, and a store that fails under the verdict `AcceptError::Verdict`. A
+register that a held line or an entry of the record names and that cannot be read is
+`AcceptError::Register`: the verdict would count a key as ended there and refuse, which reads as
+final, though a repeat may find the store whole. All three are failures of the hub. The local
+refusal for want of approvals (`GateError::NotApproved`) names each approval that does not count,
+with the reason of the recount or that level 3 asks for an owner; the wire form keeps the counts.
 
 **The refusal.** `ref heads/main gate -` stays the refusal of a move that is no merge, the
 deletion of `main`. Every verdict of the gate is `ref heads/main gate <verdict> <facts>`:

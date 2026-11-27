@@ -489,24 +489,35 @@ impl Gated {
     /// new tip.
     fn land_register(&mut self, register: &Register, repairs: Option<CommitId>) -> CommitId {
         let text = register.encode();
+        self.land_files("keys", &base_files(&text, POLICY), &[daniel()], repairs)
+    }
+
+    /// Lands a change of Mia on `branch` with `files` through the gate: approved by
+    /// `reviewers`, checked by Ana, declared as a repair of `repairs`. Returns the new tip.
+    fn land_files(
+        &mut self,
+        branch: &str,
+        files: &[(&str, &str)],
+        reviewers: &[Seeded],
+        repairs: Option<CommitId>,
+    ) -> CommitId {
         let tip = self.tip();
-        let keys = self
-            .wire
-            .side()
-            .commit("mia", &base_files(&text, POLICY), vec![tip]);
-        let moved = to(&self.wire, "heads/keys", Some(keys), None);
+        let keys = self.wire.side().commit("mia", files, vec![tip]);
+        let moved = to(&self.wire, &format!("heads/{branch}"), Some(keys), None);
         push(&mut self.wire, &mia(), vec![moved]).unwrap();
         let opening = Opening::try_new(
             Some(repository_id()),
-            crate::refs::BranchName::try_new("keys").unwrap(),
+            crate::refs::BranchName::try_new(branch).unwrap(),
             keys,
             Vec::new(),
             repairs,
         )
         .unwrap();
         let pull = submit(&mut self.wire, Body::Opening(opening), &mia());
-        let approval = Approval::new(Some(repository_id()), pull, keys);
-        submit(&mut self.wire, Body::Approval(approval), &daniel());
+        for reviewer in reviewers {
+            let approval = Approval::new(Some(repository_id()), pull, keys);
+            submit(&mut self.wire, Body::Approval(approval), reviewer);
+        }
         self.check(keys, Some(tip), CheckResult::Pass);
         let store = self.wire.side().repository.objects();
         let tree = store.get_commit(&keys).unwrap().unwrap().tree();
@@ -698,6 +709,72 @@ fn a_head_on_main_already_lands_no_change_and_no_other_tree() {
 }
 
 #[test]
+fn a_head_that_conflicts_with_the_tip_is_refused() {
+    let mut g = gated_with(POLICY, &[("src/lib.rs", "pub fn two() {}\n")]);
+    // Another change of `src/lib.rs` lands first.
+    let register = register_of().encode();
+    let mut files = base_files(&register, POLICY);
+    files.retain(|(path, _)| *path != "src/lib.rs");
+    files.push(("src/lib.rs", "pub fn three() {}\n"));
+    g.land_files("other", &files, &[bot(), cat(), daniel()], None);
+    g.approve_all();
+    g.check(g.head, Some(g.tip()), CheckResult::Pass);
+    let tip = g.tip();
+    let merged = g.merge();
+    assert_eq!(refused(g.land(merged)), GateRefusal::Conflict);
+    assert_eq!(g.tip(), tip);
+}
+
+#[test]
+fn a_pull_request_whose_branch_was_deleted_is_refused() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let merged = g.merge();
+    let moved = to(&g.wire, "heads/feature", None, None);
+    push(&mut g.wire, &mia(), vec![moved]).unwrap();
+    assert_eq!(
+        refused(g.land(merged)),
+        GateRefusal::BranchMoved { head: None }
+    );
+}
+
+#[test]
+fn a_merge_that_records_a_conflict_or_is_not_stored_is_refused() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let store = g.wire.side().repository.objects();
+    let tree = |commit: &CommitId| store.get_commit(commit).unwrap().unwrap().tree();
+    let conflict = crate::object::Commit2::try_new(
+        vec![tree(&g.head), tree(&g.root), tree(&g.head)],
+        vec![g.root],
+        ChangeId::generate().unwrap(),
+        Actor::human("daniel").unwrap(),
+        2,
+        "Merge",
+    )
+    .unwrap();
+    let conflict = CommitId::new(
+        store
+            .put_raw(crate::object::Kind::Commit2, &conflict.encode())
+            .unwrap(),
+    );
+    // `main` never holds a commit that records an open conflict.
+    assert_eq!(refused(g.land(conflict)), GateRefusal::NotTheMerge);
+    let absent = CommitId::new(
+        format!("b3:{}", "7".repeat(64))
+            .parse::<crate::object::ObjectId>()
+            .unwrap(),
+    );
+    assert!(matches!(
+        verdict(g.land(absent)),
+        Some(RefusalReason::Incomplete(_))
+    ));
+    assert_eq!(g.tip(), g.root);
+}
+
+#[test]
 fn a_merge_without_the_approvals_of_its_level_is_refused_with_the_count() {
     let mut g = gated();
     g.check(g.head, Some(g.root), CheckResult::Pass);
@@ -780,6 +857,36 @@ fn a_statement_before_the_retirement_of_its_key_counts() {
 
     let merged = g.docs_onto(landed, &retired);
     assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn a_register_of_the_record_that_cannot_be_read_fails_the_hub() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let mut retired = register_of();
+    retired
+        .add_key(&human("ana"), Seeded::new(8).public())
+        .unwrap();
+    retired.retire(&human("ana"), &ana().public(), 1).unwrap();
+    let landed = g.land_register(&retired, None);
+    let merged = g.docs_onto(landed, &retired);
+    // The register of the root, which tells how long the retired key of Ana counted, is lost.
+    let store = g.wire.side().repository.objects();
+    let blob = store
+        .put_blob(&Blob::new(register_of().encode().into_bytes()))
+        .unwrap();
+    std::fs::remove_file(store.object_path(&blob.object_id())).unwrap();
+
+    let moved = to(&g.wire, "heads/main", Some(merged), Some(g.pull));
+    let update =
+        RefUpdatePayload::try_new(address(), repository_id(), vec![moved], daniel().public())
+            .unwrap()
+            .sign(&daniel())
+            .unwrap();
+    // A failure of the hub, not a refusal that reads as final.
+    assert!(g.wire.ref_update(&mut update.encode().as_slice()).is_err());
+    assert_eq!(g.tip(), landed);
 }
 
 #[test]

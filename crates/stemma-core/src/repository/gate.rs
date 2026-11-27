@@ -39,7 +39,7 @@ use crate::object::{Commit, CommitId};
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, PR_MERGE};
 use crate::policy::RiskLevel;
 use crate::protocol::refusal::LevelSource;
-use crate::pull::{PullRequest, TARGET};
+use crate::pull::{NotCounted, PullRequest, TARGET};
 use crate::refs::{BranchName, Logged, RefError};
 use crate::register::Mode;
 use crate::register::Register;
@@ -162,6 +162,8 @@ pub enum GateError {
         humans: u32,
         /// The approvals of humans that the level asks for.
         humans_needed: u32,
+        /// The approvals that do not count, each with the reason.
+        dropped: Vec<Dropped>,
     },
     /// A bound of ADR-019 holds the change back: a red tip, the unverified window, or the
     /// reservation of another change. Nothing was written but objects; the call can be repeated
@@ -272,6 +274,7 @@ impl fmt::Display for GateError {
                 agents_needed,
                 humans,
                 humans_needed,
+                dropped,
             } => {
                 let by = match source {
                     LevelSource::Paths => "",
@@ -282,7 +285,12 @@ impl fmt::Display for GateError {
                     "pull request {number} has level {}{by} and needs {agents_needed} approvals \
                      of agents and {humans_needed} of humans; {agents} and {humans} count",
                     *level as u8
-                )
+                )?;
+                for (index, dropped) in dropped.iter().enumerate() {
+                    let lead = if index == 0 { "; not counted: " } else { ", " };
+                    write!(f, "{lead}{dropped}")?;
+                }
+                Ok(())
             }
             Self::Paused { number, pause } => {
                 write!(f, "pull request {number} waits: {pause}")
@@ -365,6 +373,7 @@ impl GateError {
                 agents_needed,
                 humans,
                 humans_needed,
+                dropped,
             } => Self::NotApproved {
                 number,
                 level,
@@ -373,8 +382,44 @@ impl GateError {
                 agents_needed,
                 humans,
                 humans_needed,
+                dropped,
             },
             Refusal::Paused(pause) => Self::Paused { number, pause },
+        }
+    }
+}
+
+/// An approval that does not count for the verdict of the gate (ADR-004), with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dropped {
+    /// Who approved.
+    pub reviewer: Actor,
+    /// Why the approval does not count.
+    pub reason: DroppedReason,
+}
+
+impl fmt::Display for Dropped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let identity = crate::register::Identity::of(&self.reviewer);
+        write!(f, "{identity} ({})", self.reason)
+    }
+}
+
+/// Why an approval does not count for the verdict of the gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DroppedReason {
+    /// The recount of the pull request voids it ([`crate::pull::recount`]).
+    Recount(NotCounted),
+    /// The reviewer is a human, but no owner, and level 3 asks for the approval of an owner.
+    NotOwner,
+}
+
+impl fmt::Display for DroppedReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Recount(why) => why.fmt(f),
+            Self::NotOwner => f.write_str("level 3 asks for the approval of an owner"),
         }
     }
 }
@@ -1843,6 +1888,46 @@ mod tests {
         let merged = gate_by_policy(&f, &Mode::Enforcing(register)).unwrap();
 
         assert_eq!(f.main(), merged.commit);
+    }
+
+    #[test]
+    fn a_refusal_for_want_of_approvals_names_each_approval_that_does_not_count() {
+        let f = fixture("zero\n");
+        let register = register();
+        land_policy(&f, "stemma-policy 1\nlevel 0 a.txt\n");
+        f.proven(f.head, Some(f.main()), CheckResult::Pass);
+        // `bot` signs with the key of `cat`, which the register does not hold for it.
+        by_hand::approve(
+            &f.repository,
+            &agent("bot"),
+            f.number,
+            f.head,
+            Some(&Seeded::new(5)),
+        );
+
+        let error = gate_by_policy(&f, &Mode::Enforcing(register)).unwrap_err();
+
+        let GateError::NotApproved {
+            agents: 0,
+            agents_needed: 1,
+            ref dropped,
+            ..
+        } = error
+        else {
+            panic!("{error}");
+        };
+        let [Dropped {
+            reviewer,
+            reason: DroppedReason::Recount(NotCounted::Proof(_)),
+        }] = dropped.as_slice()
+        else {
+            panic!("{dropped:?}");
+        };
+        assert_eq!(reviewer, &agent("bot"));
+        assert!(
+            error.to_string().contains("not counted: agent bot ("),
+            "{error}"
+        );
     }
 
     #[test]

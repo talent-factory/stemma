@@ -100,7 +100,7 @@ pub use conflicted::ConflictedFile;
 pub use difference::{Comparison, Content, Diff, DiffError, FileDiff, Side, TextDiff};
 pub use fetch::{CloneError, FetchError, Fetched, FETCH, MAX_REF_LIST};
 pub use follow::{Behind, Followed};
-pub use gate::{GateError, GateMerge, Retry, MAX_ATTEMPTS};
+pub use gate::{Dropped, DroppedReason, GateError, GateMerge, Retry, MAX_ATTEMPTS};
 pub use lease::{Claimed, LeaseError};
 pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
 pub use pin::PinError;

@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::gate::{Dropped, DroppedReason};
 use super::{GateError, LevelError, PolicyError, Repository};
 use crate::check::{self, Check};
 use crate::evidence::Evidence;
@@ -51,8 +52,8 @@ use super::statements::proof_of;
 /// ([`LogProofs`]); a hub asks it for the place of the statement in the order of the hub.
 pub(crate) trait Proofs {
     /// Whether the signature of `statement`, placed at `number` as a statement of `actor`,
-    /// counts.
-    fn holds(&self, actor: &Actor, number: u64, statement: &Statement) -> bool;
+    /// counts, or why not.
+    fn holds(&self, actor: &Actor, number: u64, statement: &Statement) -> Result<(), String>;
 }
 
 /// The proofs of a clone: every statement counts in the open mode (`None`), and in an enforcing
@@ -61,8 +62,8 @@ pub(crate) trait Proofs {
 pub(crate) struct LogProofs<'a>(pub(crate) Option<&'a Register>);
 
 impl Proofs for LogProofs<'_> {
-    fn holds(&self, actor: &Actor, number: u64, statement: &Statement) -> bool {
-        proof_of(self.0, actor, number, statement).is_ok()
+    fn holds(&self, actor: &Actor, number: u64, statement: &Statement) -> Result<(), String> {
+        proof_of(self.0, actor, number, statement).map_err(|error| error.to_string())
     }
 }
 
@@ -142,6 +143,7 @@ pub(crate) enum Refusal {
         agents_needed: u32,
         humans: u32,
         humans_needed: u32,
+        dropped: Vec<Dropped>,
     },
     /// A bound holds the change back.
     Paused(Pause),
@@ -322,6 +324,7 @@ pub(super) fn has_proof(case: &Case<'_>, found: &Check) -> bool {
         || case
             .proofs
             .holds(found.writer(), found.number(), found.statement())
+            .is_ok()
 }
 
 /// The refusal for approvals that do not suffice at `level` (ADR-004), or `None`. The approvals
@@ -336,15 +339,9 @@ fn approvals_missing(
     level: RiskLevel,
     source: LevelSource,
 ) -> Option<Refusal> {
-    let proof = |approval: &Approval| -> Result<(), String> {
-        if case
-            .proofs
+    let proof = |approval: &Approval| {
+        case.proofs
             .holds(approval.reviewer(), approval.entry(), approval.statement())
-        {
-            Ok(())
-        } else {
-            Err("the register does not accept its signature".to_owned())
-        }
     };
     let recount = pull::recount(
         case.pull,
@@ -376,12 +373,33 @@ fn approvals_missing(
         .max()
         .unwrap_or(0);
     let humans_needed = u32::from(level >= RiskLevel::Two);
-    (agents < agents_needed || humans < humans_needed).then_some(Refusal::NotApproved {
+    if agents >= agents_needed && humans >= humans_needed {
+        return None;
+    }
+    let void = recount.void().iter().map(|(approval, why)| Dropped {
+        reviewer: approval.reviewer().clone(),
+        reason: DroppedReason::Recount(why.clone()),
+    });
+    // At level 3 the approval of a human counts only for an owner.
+    let members = recount.counted().iter().filter_map(|approval| {
+        let identity = crate::register::Identity::of(approval.reviewer());
+        let member = level == RiskLevel::Three
+            && identity.kind() == IdentityKind::Human
+            && register
+                .entry(&identity)
+                .is_some_and(|entry| entry.role() != Role::Owner);
+        member.then(|| Dropped {
+            reviewer: approval.reviewer().clone(),
+            reason: DroppedReason::NotOwner,
+        })
+    });
+    Some(Refusal::NotApproved {
         level,
         source,
         agents,
         agents_needed,
         humans,
         humans_needed,
+        dropped: void.chain(members).collect(),
     })
 }
