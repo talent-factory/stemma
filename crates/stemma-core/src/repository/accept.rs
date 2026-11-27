@@ -878,6 +878,8 @@ impl Repository {
             let Some(merged) = moved.new_commit() else {
                 return Ok(Err(RefusalReason::Gate));
             };
+            // The gate refused an `M` without a usable register before (`unusable`), so a
+            // failure here is one of the store.
             read = Register::at_commit(self.objects(), &merged)
                 .map_err(|error| AcceptError::Register(Box::new(error)))?
                 .ok_or_else(|| AcceptError::Register(Box::new(ModeError::RegisterMissing)))?;

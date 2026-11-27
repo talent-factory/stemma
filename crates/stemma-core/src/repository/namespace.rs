@@ -41,12 +41,17 @@ impl Repository {
     /// namespace and passes it in the context of the accepting operation. It reads the store and
     /// the references only, takes no lock, and works on a bare repository.
     ///
+    /// Every error means that the rules of the namespace cannot be told. A hub then refuses the
+    /// ref update and the list of references of the repositories of the namespace; it never
+    /// treats them as outside a namespace, which would accept what the namespace policy forbids.
+    ///
     /// # Errors
     ///
     /// [`NamespaceError::NoMain`] without `main`, [`NamespaceError::NoPolicy`] if its tip has no
     /// file of the namespace policy, [`NamespaceError::Policy`] if the file cannot be used,
-    /// [`NamespaceError::NoRegister`] and [`NamespaceError::Register`] for the register, and
-    /// [`NamespaceError::Refs`] if `main` cannot be read.
+    /// [`NamespaceError::NoRegister`] and [`NamespaceError::Register`] for the register,
+    /// [`NamespaceError::NoOwner`] if the policy demands the owners and the register has none,
+    /// and [`NamespaceError::Refs`] if `main` cannot be read.
     pub fn namespace(&self) -> Result<Namespace, NamespaceError> {
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let tip = self
@@ -61,7 +66,7 @@ impl Repository {
         let register = Register::at_commit(self.objects(), &tip)
             .map_err(NamespaceError::Register)?
             .ok_or(NamespaceError::NoRegister)?;
-        Ok(Namespace::new(tip, policy, &register))
+        Namespace::new(tip, policy, &register).map_err(|_| NamespaceError::NoOwner)
     }
 
     /// The namespace policy that the last fetch from `remote` brought, or `None` if it named
@@ -142,6 +147,7 @@ impl Repository {
                 }),
             };
         };
+        // A file that cannot be read is no equal file: it is written again, which repairs it.
         if self.read_kept_namespace(remote).ok().flatten().as_ref() == Some(kept) {
             return Ok(());
         }
@@ -214,6 +220,9 @@ pub enum NamespaceError {
     NoRegister,
     /// The register of the tip of `main` cannot be read or is not valid.
     Register(ModeError),
+    /// The namespace policy demands the owners of the namespace, and the register holds no human
+    /// owner with an active key, so the demand would ask for nothing.
+    NoOwner,
     /// The reference `main` cannot be read.
     Refs(RefError),
 }
@@ -253,6 +262,7 @@ impl fmt::Display for NamespaceError {
                     "the register of the namespace repository cannot be used: {error}"
                 )
             }
+            Self::NoOwner => crate::namespace::NoDemandedOwner.fmt(f),
             Self::Refs(error) => write!(f, "cannot read `{TARGET}`: {error}"),
         }
     }
@@ -264,7 +274,7 @@ impl Error for NamespaceError {
             Self::Policy(error) => Some(error),
             Self::Register(error) => Some(error),
             Self::Refs(error) => Some(error),
-            Self::NoMain | Self::NoPolicy | Self::NoRegister => None,
+            Self::NoMain | Self::NoPolicy | Self::NoRegister | Self::NoOwner => None,
         }
     }
 }

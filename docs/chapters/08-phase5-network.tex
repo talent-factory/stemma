@@ -1776,8 +1776,11 @@ Ein Fetch hält sie unter der Sperre der Referenzen in \type{namespaces/<Remote>
 Remote-Referenzen sich bewegen, und entfernt die Datei, wenn die Liste keine nennt.
 Mit dem Verzeichnis \type{namespaces/} steigt das Repository-Format auf Version 22 (ADR-009),
 denn ein Programm, das es nicht kennt, würde ohne die Namespace-Policy mergen.
-Das lokale Gate wertet die festgehaltenen Namespace-Policies aller eingerichteten Remotes neben
-der Policy von $T$ aus und kommt damit zum selben Urteil wie der Hub.
+Das Gate nach der Policy wertet die festgehaltenen Namespace-Policies aller eingerichteten
+Remotes neben der Policy von $T$ aus, liest sie bei jedem Versuch neu und kommt damit zum selben
+Urteil wie der Hub.
+\type{pr merge} mit der Stufe aus \type{--level} liest wie bisher keine Policy, also auch keine
+Namespace-Policy (\in{Abschnitt}[sec:policy-file]).
 Durchgesetzt wird die Namespace-Policy aber vom Hub allein: Der Klon prüft die Policy, die er
 zuletzt geholt hat, und kann ihre Herkunft nicht nachrechnen.
 

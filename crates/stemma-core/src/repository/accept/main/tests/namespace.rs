@@ -19,7 +19,7 @@ fn course(policy: &str) -> Namespace {
         &[(policy::NAMESPACE_FILE_NAME, policy.encode().as_str())],
         vec![],
     );
-    Namespace::new(commit, policy, &register)
+    Namespace::new(commit, policy, &register).unwrap()
 }
 
 const DEMANDING: &str = "stemma-policy 2\ndemand-namespace-owners\nlevel 0 docs/\nlevel 0 tests/\n";

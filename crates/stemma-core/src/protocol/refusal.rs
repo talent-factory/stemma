@@ -285,8 +285,8 @@ impl RefusedReference {
     /// [`Gate`](RefusalReason::Gate), [`Verdict`](RefusalReason::Verdict),
     /// [`NoRegister`](RefusalReason::NoRegister),
     /// [`BadRegister`](RefusalReason::BadRegister), [`NotOwner`](RefusalReason::NotOwner), and
-    /// [`NamespaceOwner`](RefusalReason::NamespaceOwner) are reasons of `heads/main` only; [`Leased`](RefusalReason::Leased) and
-    /// [`Policy`](RefusalReason::Policy) are reasons of a branch other than `main`; and
+    /// [`NamespaceOwner`](RefusalReason::NamespaceOwner) are reasons of `heads/main` only;
+    /// [`Leased`](RefusalReason::Leased) and [`Policy`](RefusalReason::Policy) are reasons of a branch other than `main`; and
     /// [`Denied`](RefusalReason::Denied) names `push` for a branch and `tag` or `untag` for a
     /// tag. [`Reserved`](RefusalReason::Reserved), [`Conflict`](RefusalReason::Conflict), and
     /// [`Incomplete`](RefusalReason::Incomplete) fit every reference.

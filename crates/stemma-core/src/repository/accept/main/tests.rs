@@ -997,7 +997,7 @@ fn namespace_of(policy: &str) -> Namespace {
         &[(policy::NAMESPACE_FILE_NAME, policy.encode().as_str())],
         vec![],
     );
-    Namespace::new(commit, policy, &register)
+    Namespace::new(commit, policy, &register).unwrap()
 }
 
 #[test]

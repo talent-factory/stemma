@@ -4,7 +4,8 @@
 //! [`NAMESPACE_FILE_NAME`](crate::policy::NAMESPACE_FILE_NAME) in the root of the tip of its
 //! `main` is the namespace policy, in the format of the policy file, and the human owners of its
 //! register are the owners of the namespace. [`Namespace`] is what a hub reads there
-//! ([`Repository::namespace`](crate::repository::Repository::namespace)) and passes to the accepting
+//! ([`Repository::namespace`](crate::repository::Repository::namespace)) and passes to the
+//! accepting
 //! operation of every repository of the namespace
 //! ([`AcceptContext::with_namespace`](crate::repository::AcceptContext::with_namespace)):
 //!
@@ -76,7 +77,18 @@ impl Namespace {
     /// The namespace of a policy at `commit` and of the register of that commit. The demanded
     /// owners are the humans with the role owner and at least one active key, with those keys,
     /// if the policy has the line `demand-namespace-owners`, and none otherwise.
-    pub fn new(commit: CommitId, policy: Policy, register: &Register) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`NoDemandedOwner`] if the policy has the line and the register holds no such human: the
+    /// demand would ask for nothing, and a rule that silently does not apply is refused. The
+    /// reader of a register refuses one without an owner with an active key, so a valid
+    /// register never gets here; the check keeps the rule closed if that reader changes.
+    pub fn new(
+        commit: CommitId,
+        policy: Policy,
+        register: &Register,
+    ) -> Result<Self, NoDemandedOwner> {
         let owners = if policy.demands_namespace_owners() {
             register
                 .entries()
@@ -98,11 +110,14 @@ impl Namespace {
         } else {
             Vec::new()
         };
-        Self {
+        if policy.demands_namespace_owners() && owners.is_empty() {
+            return Err(NoDemandedOwner);
+        }
+        Ok(Self {
             commit,
             policy,
             owners,
-        }
+        })
     }
 
     /// The commit of the namespace repository whose namespace policy this is: the tip of its
@@ -128,6 +143,22 @@ impl Namespace {
     }
 }
 
+/// The namespace policy demands the owners of the namespace, and the register of the namespace
+/// repository holds no human owner with an active key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoDemandedOwner;
+
+impl fmt::Display for NoDemandedOwner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(
+            "the namespace policy demands the owners of the namespace, and the register of the \
+             namespace repository holds no human owner with an active key",
+        )
+    }
+}
+
+impl Error for NoDemandedOwner {}
+
 /// The namespace policy that a clone fetched last from a remote: its commit and the policy.
 /// The list of references carries it, and a fetch keeps it in `namespaces/<remote>` (ADR-009).
 ///
@@ -150,8 +181,9 @@ pub struct KeptNamespace {
 /// The first line of the file of a kept namespace policy.
 const KEPT_HEADER: &str = "stemma-namespace 1";
 
-/// The longest file of a kept namespace policy that is read: a policy has at most about 1,100
-/// lines of at most 4 KiB.
+/// The longest file of a kept namespace policy that is read: the two lines before the policy and
+/// a policy file of at most 64 KiB fit in it with room to spare. A longer file is read up to one
+/// byte past this bound and refused by the reader.
 pub(crate) const MAX_KEPT_LEN: u64 = 8 << 20;
 
 impl KeptNamespace {

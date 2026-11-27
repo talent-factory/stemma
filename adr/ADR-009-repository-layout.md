@@ -131,8 +131,8 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
   supports: `init` and `init_bare` write version 22, the version of the directory
-  `namespaces/` (STEMMA-311), and `open` reads the versions 2 to 22. Version 21 belongs to
-  STEMMA-309.
+  `namespaces/` (STEMMA-311), and `open` reads the versions 2 to 20 and 22. Version 21 belongs
+  to STEMMA-309, which adds it to the versions read; until then it is refused.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and

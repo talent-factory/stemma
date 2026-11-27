@@ -111,3 +111,53 @@ fn a_damaged_kept_namespace_policy_refuses_the_merge() {
     assert!(matches!(error, GateError::Namespace(_)), "{error}");
     assert_eq!(f.main(), tip);
 }
+
+#[test]
+fn the_kept_namespace_policy_is_read_again_when_main_moves_between_the_attempts() {
+    let f = fixture("zero\n");
+    let policy = "stemma-policy 1\nlevel 0 a.txt\nlevel 0 b.txt\n";
+    let tip = land_policy(&f, policy);
+    // A result for the tip: at level 0 it also counts after `main` moves on.
+    f.check(tip);
+    keep(
+        &f,
+        &origin(),
+        "stemma-policy 2\nlevel 0 a.txt\nlevel 0 b.txt\n",
+    );
+    let other = commit_of(
+        &f.repository,
+        tip,
+        &[
+            ("b.txt", "b\n"),
+            ("c.txt", "zero\n"),
+            (crate::policy::FILE_NAME, policy),
+        ],
+        "zoe",
+    );
+    let path = f.path();
+    // Between the first attempt and its lock, `main` moves and a fetch brings a namespace policy
+    // that raises `a.txt`: the second attempt must judge by it.
+    pause::queue(move |_| {
+        let repository = Repository::open(&path).unwrap();
+        set_branch(&repository, "main", Some(tip), other);
+        let kept = KeptNamespace::new(
+            other,
+            Policy::parse(b"stemma-policy 2\nlevel 2 a.txt\nlevel 0 b.txt\n").unwrap(),
+        );
+        repository.keep_namespace(&origin(), Some(&kept)).unwrap();
+    });
+
+    let error = gate_by_policy(&f, &Mode::Open).unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            GateError::NotChecked {
+                level: RiskLevel::Two,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(f.main(), other);
+}

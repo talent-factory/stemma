@@ -39,7 +39,7 @@ const DEMANDING: &str = "stemma-policy 2\ndemand-namespace-owners\n";
 
 #[test]
 fn the_demanded_owners_are_the_human_owners_with_their_active_keys() {
-    let namespace = Namespace::new(commit(1), policy(DEMANDING), &namespace_register());
+    let namespace = Namespace::new(commit(1), policy(DEMANDING), &namespace_register()).unwrap();
     let owners: Vec<(String, Vec<PublicKey>)> = namespace
         .owners()
         .iter()
@@ -61,7 +61,8 @@ fn a_namespace_policy_without_the_line_demands_no_owner() {
         commit(1),
         policy("stemma-policy 2\n"),
         &namespace_register(),
-    );
+    )
+    .unwrap();
     assert!(namespace.owners().is_empty());
     let empty = register(&format!(
         "stemma-register 1\nentry human pupil owner\nkey {} active\n",
@@ -72,7 +73,7 @@ fn a_namespace_policy_without_the_line_demands_no_owner() {
 
 #[test]
 fn a_register_without_a_demanded_owner_is_refused() {
-    let namespace = Namespace::new(commit(1), policy(DEMANDING), &namespace_register());
+    let namespace = Namespace::new(commit(1), policy(DEMANDING), &namespace_register()).unwrap();
     let holds_both = register(&format!(
         "stemma-register 1\n\
          entry human assistant owner\nkey {} active\n\
@@ -164,4 +165,16 @@ fn a_kept_namespace_policy_reads_back_and_refuses_every_other_form() {
         KeptNamespace::parse(text.replace("level 3", "level 9").as_bytes()),
         Err(KeptNamespaceError::Policy(_))
     ));
+}
+
+#[test]
+fn a_valid_register_always_gives_a_demand_an_owner() {
+    // The reader of a register refuses one without an owner with an active key, so the
+    // refusal of a demand for nothing is a check that no valid register reaches.
+    let only_retired = format!(
+        "stemma-register 1\nentry human assistant owner\nkey {} retired 3\n",
+        key(9)
+    );
+    assert!(Register::parse(only_retired.as_bytes()).is_err());
+    assert!(Namespace::new(commit(1), policy(DEMANDING), &namespace_register()).is_ok());
 }

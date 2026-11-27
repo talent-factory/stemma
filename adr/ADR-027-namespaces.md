@@ -200,7 +200,10 @@ what a hub keeps of a namespace stays with stemma-hub.
   every human with the role owner in the register of that tip, with each of its active keys
   (`Namespace`). The hub passes the value with every ref update of a repository of the
   namespace (`AcceptContext::with_namespace`) and with its list of references
-  (`ListFacts::with_namespace`).
+  (`ListFacts::with_namespace`). Every error of the reading (no `main`, no file, an invalid
+  file, no register, or a demand that finds no human owner with an active key) means that the
+  rules cannot be told: the hub refuses the update and the list, and never treats the
+  repository as outside a namespace.
 - **The combination.** The verdict about `main` combines any number of policies of the same
   format by the maximum per change (`Combined`): the highest level that a policy gives a path,
   and the highest escalation for weakened tests; the most agent approvals for the level; the
