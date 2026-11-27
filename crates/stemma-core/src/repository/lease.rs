@@ -1113,7 +1113,7 @@ mod tests {
         let format = repository.metadata_dir().join("format");
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 18\n"
+            "stemma-repository 20\n"
         );
         // A repository of version 7 moves to the current version with its next entry, a lease
         // entry among them.
@@ -1123,14 +1123,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 18\n"
+            "stemma-repository 20\n"
         );
-        // A program that reads up to version 18 refuses version 19: the number is not one of
+        // A program that reads up to version 20 refuses version 21: the number is not one of
         // its own.
-        fs::write(&format, "stemma-repository 19\n").unwrap();
+        fs::write(&format, "stemma-repository 21\n").unwrap();
         let error = Repository::open(dir.path()).map(|_| ()).unwrap_err();
         assert!(
-            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "19"),
+            matches!(error, crate::repository::OpenError::UnsupportedFormat { ref found, .. } if found == "21"),
             "{error:?}"
         );
     }

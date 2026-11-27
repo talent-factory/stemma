@@ -1272,6 +1272,7 @@ dependencies = [
  "nix",
  "signal-hook",
  "stemma-core",
+ "stemma-remote",
  "stemma-tui",
 ]
 

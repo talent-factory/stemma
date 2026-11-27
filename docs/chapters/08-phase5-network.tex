@@ -34,8 +34,9 @@ die Formate des Ref-Updates und der Aufzeichnung,
 die Anmeldung mit ihren drei Nachrichten,
 die signierten Erklärungen mit ihrer Menge im Klon,
 die annehmende Operation für Branches, Tags und eingereichte Erklärungen,
-das Festhalten des Schlüssels des Hubs im Klon
-und der HTTP-Client des Klons.
+das Festhalten des Schlüssels des Hubs im Klon,
+der HTTP-Client des Klons
+und die Befehle \type{remote}, \type{clone} und \type{fetch}.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -181,7 +182,8 @@ Fetch und Klon eines öffentlichen Repositorys kosten damit zwei Anfragen, unabh
 Grösse des Verlaufs.
 
 Gebaut sind beide im Kern, als \type{Repository::fetch} und \type{Repository::clone_remote},
-die über die Schnittstelle des Transports sprechen; die Befehle folgen.
+die über die Schnittstelle des Transports sprechen; die Befehle beschreibt
+\in{Abschnitt}[sec:network-commands].
 Der Autorisierer wird nach \type{fetch} mit dem Ziel \type{remote <Name>} gefragt.
 Nennt die Liste eine andere Repository-ID als die Konfiguration des Remote, liegt unter der
 Adresse ein anderes Repository: Der Fetch meldet es, empfängt nichts und bewegt nichts.
@@ -195,10 +197,11 @@ Objekt entfernt haben, das die erste Prüfung sah.
 Ein Klon liest zuerst die Liste, sodass ein Fehler dort nichts anlegt.
 Dann legt er das Repository an, schreibt die Konfiguration des Remote mit der Adresse und der
 ID aus der Liste und holt mit derselben Liste, also mit denselben zwei Anfragen.
-Er legt keinen lokalen Branch an; welcher Branch welcher Remote-Referenz folgt, entscheidet die
-Befehlsoberfläche.
-Den Schlüssel des Hubs hält der Klon in einem eigenen Teil fest (\in{Abschnitt}[sec:hub-anchor]),
-und eine Anmeldung macht der Aufrufer vorher auf dem Transport.
+Der Kern legt keinen lokalen Branch an; welcher Branch welcher Remote-Referenz folgt, entscheidet
+der Befehl \type{clone} (\in{Abschnitt}[sec:network-commands]).
+Den Schlüssel des Hubs aus der Liste hält der Klon fest, bevor er etwas anlegt
+(\in{Abschnitt}[sec:hub-key-pin]), und eine Anmeldung macht der Aufrufer vorher auf dem
+Transport.
 
 Ein \type{want} ist an eine Referenz gebunden: Der Hub liefert nur, was von einer Referenz eines
 Repositorys aus erreichbar ist, das der Anfragende lesen darf.
@@ -848,7 +851,8 @@ seine Aufzeichnung umgeschrieben; zwei solche Einträge mit der Signatur des Hub
 
 Im Klon ist eine Remote-Referenz eine Datei unter \type{refs/remotes/<Remote>/heads/} oder
 \type{refs/remotes/<Remote>/tags/} mit zwei Zeilen: dem Commit und dem Eintrag der Aufzeichnung.
-Nur \type{fetch} und \type{push} bewegen sie, mit je einem Eintrag im Operation Log.
+Nur \type{fetch} und \type{push} bewegen sie, mit je einem Eintrag im Operation Log;
+\type{remote remove} entfernt sie mit dem Remote.
 Ein Fetch entfernt eine Remote-Referenz, die der Hub nicht mehr führt, im selben Eintrag;
 \type{op restore} bringt sie zurück.
 Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteht nur durch
@@ -904,6 +908,97 @@ Was ein Purge am Ende mit ihnen tut, ist offen (\in{Abschnitt}[sec:phase5-open])
 Ein veraltetes Ref-Update beantwortet der Hub mit dem Stand jeder betroffenen Referenz.
 Der Klon meldet das und wiederholt nicht von selbst: Er müsste neu signieren, und zuerst
 entscheidet der Akteur, ob er seinen Branch neu aufspielt oder einen Merge macht.
+
+\section[sec:network-commands]{Remote, Klon und Fetch an der Kommandozeile}
+
+Die Befehle \type{remote}, \type{clone} und \type{fetch} verbinden den HTTP-Client
+(\in{Abschnitt}[sec:http-client]) mit den Operationen des Kerns.
+Sie entscheiden, was der Kern offen lässt: wie ein Remote ins Repository kommt und wieder geht,
+und welcher lokale Branch einer Remote-Referenz folgt.
+Die Adresse eines Repositorys hat die Form \type{https://<Hub>/<Namespace>/<Repository>}
+(ADR-027); ohne Namespace und Repository lehnt der Parser sie ab.
+Synopsis, Optionen und Exit-Codes stehen in \in{Kapitel}[chap:cli].
+
+{\bf Remote hinzufügen und entfernen.}
+\type{remote add} ist der erste Kontakt mit dem Hub (\in{Abschnitt}[sec:hub-key-pin]).
+
+\startitemize[n]
+\item Der Befehl fragt den Autorisierer nach \type{remote-add} und lehnt einen Namen ab, den es
+schon gibt, bevor er den Hub fragt.
+\item Er liest die Liste der Referenzen, nimmt die Repository-ID daraus und hält den Schlüssel
+des Hubs fest, gegen den Fingerabdruck aus \type{--expect-key}, wenn einer angegeben ist.
+\item Unter der Sperre der Referenzen schreibt er den Eintrag \type{remote-add} mit der ganzen
+Konfiguration und danach die Datei \type{remotes/<Remote>}.
+\stopitemize
+
+Eine Remote-Referenz bewegt \type{remote add} nicht; das tut der erste \type{fetch}.
+\type{remote remove} fragt den Hub nicht.
+Es schreibt unter der Sperre den Eintrag \type{remote-remove} mit der Konfiguration und mit jeder
+Remote-Referenz des Remote, entfernt danach die Remote-Referenzen und zuletzt die Konfiguration.
+Der Eintrag hält so fest, was da war, auch die Commits, auf die die Remote-Referenzen zeigten.
+\type{op restore} macht keinen der beiden Einträge rückgängig; die zwei Befehle heben sich
+gegenseitig auf, und ein \type{fetch} nach einem neuen \type{remote add} holt die
+Remote-Referenzen zurück.
+Mit den beiden Einträgen steigt das Repository-Format auf Version 20 (ADR-009).
+
+{\bf Welcher Branch folgt.}
+\type{clone} legt nach dem Fetch den Branch \type{main} auf \type{remotes/origin/heads/main} an
+und holt dessen Dateien ins Arbeitsverzeichnis, mit dem Mechanismus von \type{switch -c}.
+Hat der Hub kein \type{main}, bleibt der Branch ohne Commit, und die Ausgabe sagt es.
+Danach bewegt \type{fetch} nur Remote-Referenzen, nie einen lokalen Branch.
+Den eigenen Branch bringt \type{rebase remotes/origin/heads/main} nach, oder ein Branch, der mit
+\type{switch -c} an der Remote-Referenz beginnt und dann mit \type{merge} zusammengeführt wird;
+so entscheidet der Akteur, wann sich seine Arbeitskopie ändert, und jeder Schritt hat seinen
+eigenen Eintrag.
+Eine gespeicherte Zuordnung von Branch und Remote-Referenz, wie sie Git mit \type{upstream}
+kennt, gibt es nicht.
+
+{\bf Ablauf im laufenden Beispiel.}
+Das Repository aus \in{Kapitel}[chap:phase1] liegt auf einem Hub unter
+\type{https://hub.example/talent-factory/stemma}.
+Mia klont es und vergleicht den Fingerabdruck, den ihr Daniel über einen zweiten Kanal
+geschickt hat:
+
+\starttyping
+$ stemma clone --actor "human mia" --expect-key SHA256:6zzhw7QG... \
+    https://hub.example/talent-factory/stemma
+Cloned https://hub.example/talent-factory/stemma into `stemma`:
+  1 remote reference, 1 commit.
+The key of the hub has the expected fingerprint SHA256:6zzhw7QG...
+  and is pinned.
+The branch `main` starts at `remotes/origin/heads/main`.
+\stoptyping
+
+Im neuen Repository stehen danach vier Dinge: die Konfiguration \type{remotes/origin} mit dem
+festgehaltenen Schlüssel, die Remote-Referenz \type{remotes/origin/heads/main}, der Branch
+\type{main} auf demselben Commit und ein Working-Copy-Commit darauf.
+Das Log hat die Einträge \type{init}, \type{fetch} und \type{switch}.
+Kommt auf dem Hub ein Commit dazu, bewegt Mias nächster \type{fetch} nur die Remote-Referenz:
+
+\starttyping
+$ stemma fetch --actor "human mia"
+Fetched from `origin`: 1 remote reference, 1 commit received.
+  remotes/origin/heads/main  f5d52b9e7a81 -> e6d3b2bcdb12
+$ stemma rebase --actor "human mia" remotes/origin/heads/main
+\stoptyping
+
+Erst der \type{rebase} bewegt \type{main} und holt die Dateien; hat Mia keine eigenen Commits,
+spielt er keinen auf, und \type{main} steht danach auf dem Commit des Hubs.
+Ein zweiter \type{fetch} ohne Neues schreibt keinen Eintrag und meldet
+\type{Nothing new from `origin`.}
+
+\startinfobox
+{\bf Was der Befehl meldet.}
+Nennt der Hub einen anderen Schlüssel als den festgehaltenen, endet \type{fetch} mit Exit-Code 1
+und nennt beide Fingerabdrücke und den Aufruf \type{remote pin}, den ein Mensch nach dem
+Vergleich macht.
+Eine Umleitung (3xx) folgt der Client nie; die Meldung nennt die neue Adresse.
+Liefert der Hub das Repository nicht (404), sagt die Meldung, dass es fehlt, nicht gelesen
+werden darf oder umbenannt wurde.
+Ist der Hub beschäftigt (503) oder begrenzt er die Anfragen (429), endet der Befehl mit
+Exit-Code 6: Ein späterer Aufruf kann gelingen.
+In jedem dieser Fälle schreibt der Befehl nichts.
+\stopinfobox
 
 \section[sec:hub-enforcement]{Durchsetzung auf dem Hub}
 
@@ -1562,8 +1657,14 @@ Geht ein Hub verloren, geht die Aufzeichnung verloren und kein Objekt.
 \section[sec:phase5-open]{Offene Fragen}
 
 \startitemize
-\item Die Befehle: Namen, Optionen und Exit-Codes von \type{remote}, \type{clone}, \type{fetch}
-und \type{push}, der Befehle für Erklärungen und Anker und der Befehle eines Namespace.
+\item Die Befehle: Namen, Optionen und Exit-Codes von \type{push}, der Befehle für Erklärungen
+und Anker und der Befehle eines Namespace.
+\type{remote}, \type{clone} und \type{fetch} sind gebaut (\in{Abschnitt}[sec:network-commands]).
+\item Ein umbenanntes Repository: Der Hub soll mit einem eigenen Fehler antworten, der den neuen
+Namen nennt (ADR-027). Das Protokoll hat ihn noch nicht; bis dahin meldet der Klon nur, dass der
+Hub das Repository nicht liefert, und ändert seine Konfiguration nicht.
+\item Ein beschäftigter Hub (503) endet mit Exit-Code 6; die begrenzte Zahl von Wiederholungen,
+die ADR-023 dem Client gibt, ist nicht gebaut, und ein Skript wiederholt selbst.
 Jeder Teil entsteht mit seiner Umsetzung (\in{Kapitel}[chap:cli]).
 \item Purge auf dem Hub: Die Regel der Annahme steht.
 Offen ist, wie Klone einem \type{main} folgen, das ein Purge auf dem Hub umgeschrieben hat,

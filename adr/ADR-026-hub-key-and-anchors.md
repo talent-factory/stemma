@@ -4,7 +4,8 @@
 and carried into the ADRs by STEMMA-280. Built are the signature of the hub over a record entry,
 the check of a receipt and the keys of a hub by record number (STEMMA-291, ADR-025), and the
 pinning of the key in a clone with the signed list of former keys and the entry `remote-pin`
-(STEMMA-297); the anchors and the rest are not implemented yet.
+(STEMMA-297), and the commands `remote add`, `clone`, `remote pin`, and the check of the pinned
+key by `fetch` (STEMMA-305); the anchors and the rest are not implemented yet.
 
 ## Context
 
@@ -94,8 +95,12 @@ How it is built (STEMMA-297):
   writes the entry `remote-pin` with the old and the new key (ADR-011), then replaces the
   configuration. The same key as the pinned one writes nothing. The entry raises the repository
   format to 18 (ADR-009).
-- **The commands** (`remote add`, `clone` with an option for the expected fingerprint, and the
-  command that pins again) belong to the command slice.
+- **The commands** *(STEMMA-305)*. `remote add` and `clone` take the expected fingerprint as
+  `--expect-key SHA256:...`, pin the key of the list, and show its fingerprint; a key with
+  another fingerprint writes and makes nothing. `remote pin NAME --expect-key SHA256:...` pins
+  again. `fetch` refuses a list whose key is not the pinned one and names the call of
+  `remote pin`; a configuration from before the pinning, which holds no key, is fetched
+  without the check.
 
 Rejected: the key in a level 3 file of the tree (the tree would know its remotes, and the first
 clone does not have the repository yet), no pinning, and a statement of rotation that the old key

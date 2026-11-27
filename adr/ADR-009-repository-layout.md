@@ -10,8 +10,9 @@ layout were decided on 2026-11-23 and 2026-11-24 (see "The layout in Phase 5"). 
 configuration of the remotes and the remote references (STEMMA-285, format 14), the bare
 repository (STEMMA-284, format 15), and the journal of a running fetch with the directory of a
 receiving operation in `tmp/` (STEMMA-289) are implemented, and so are the signed statements
-(STEMMA-290, format 16) and the line `remote` of the entry `fetch` (STEMMA-295, format 17); the
-others are not yet.
+(STEMMA-290, format 16), the line `remote` of the entry `fetch` (STEMMA-295, format 17), the
+entry `remote-pin` (STEMMA-297, format 18), and the entries `remote-add` and `remote-remove`
+(STEMMA-305, format 20; 19 is assigned to the anchors, STEMMA-300); the others are not yet.
 
 ## Context
 
@@ -128,8 +129,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   newline, and nothing else. The version is decimal, without a leading zero. The reader accepts
   what the writer writes and nothing else, as for objects (ADR-005). `Repository::open` rejects a
   missing file, a file that is not in canonical form, and any version other than the ones it
-  supports: `init` and `init_bare` write version 18, the version of the entry `remote-pin`
-  (STEMMA-297), and `open` reads the versions 2 to 18.
+  supports: `init` and `init_bare` write version 20, the version of the entries `remote-add`
+  and `remote-remove` (STEMMA-305), and `open` reads the versions 2 to 18 and 20; version 19
+  is assigned to the anchors (STEMMA-300) and is read once they are built.
   A repository made before the purge existed (2), before the chain
   (3), before the owner (4), before the worktree of an entry (5), before the tags of a purge (6),
   before the leases (7, the entries `lease-acquire`, `lease-release`, `lease-takeover`, and
@@ -138,8 +140,12 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   entry `pr-approve`; ADR-004, ADR-011), before the checks (10), before the kind in the stub
   (11), before the former owner of a worktree (12), before the remotes (13), before the bare
   repository (14), before the signed statements (15), before the line `remote` (16), or before
-  the entry `remote-pin` (17) rises to 18 with its next entry or purge (ADR-014, ADR-011,
-  ADR-010).
+  the entry `remote-pin` (17), or before the entries of a remote (18) rises to 20 with its next
+  entry or purge (ADR-014, ADR-011, ADR-010).
+  Version 20 adds the entries `remote-add` and `remote-remove`, which add and remove a remote
+  with its configuration (ADR-011, STEMMA-305). It adds no file. A program that knows only
+  version 18 would read such an entry as a change without a pointer, which is damage, so it
+  has to refuse the repository.
   Version 18 adds the entry `remote-pin`, which pins the key of the hub of a remote again
   (ADR-011, ADR-026). It adds no file. A program that knows only version 17 would read it as a
   change without a pointer, which is damage, so it has to refuse the repository.
@@ -225,8 +231,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
     One file per remote follows the branches and the leases: a change replaces one
     file atomically, and two remotes do not touch each other. A repository without the directory
     knows no remote. The core reads the configuration (`Repository::remote`, `remotes`) and has
-    the encoding; the commands that write it (`remote add`, `clone`, pinning a key again) come
-    with their slices and their entries in the log. The clone of the core
+    the encoding; `remote add` writes it after the entry `remote-add`, `remote remove` deletes
+    it after the entry `remote-remove` (STEMMA-305), and `remote pin` replaces it after the
+    entry `remote-pin` (STEMMA-297). The clone of the core
     (`Repository::clone_remote`, STEMMA-295) writes it under the lock of the references, to a
     temporary file in `tmp/` that is flushed and renamed into place, with the address that
     the caller gives, the ID of the list, and no key, CA file, or sign-in; it has no entry of

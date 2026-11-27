@@ -83,6 +83,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use clap::error::ErrorKind;
 use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand};
 
+mod network;
 mod review;
 
 use crate::op_log::{self, JSON_SCHEMA};
@@ -187,6 +188,16 @@ enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+    // The network (STEMMA-305).
+    /// Add, list, and remove the remotes, and pin a new key of the hub of one
+    Remote {
+        #[command(subcommand)]
+        command: network::RemoteCommand,
+    },
+    /// Make a new repository from one on a hub, with the remote `origin` and the branch `main`
+    Clone(network::CloneArgs),
+    /// Bring the remote references of a remote to the state of its hub; moves no local branch
+    Fetch(network::FetchArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -1003,6 +1014,9 @@ enum CliError {
     /// A command of the review path (`pr`, `check`, `lease`) failed; the error holds the message
     /// and the exit code.
     Review(review::ReviewError),
+    /// A command of the network (`remote`, `clone`, `fetch`) failed; the error holds the message
+    /// and the exit code.
+    Network(network::NetworkError),
     /// There is no actor, neither as a flag nor in the environment.
     MissingActor,
     /// The flag or the variable is set, but empty. An empty flag does not fall back to the
@@ -1415,6 +1429,7 @@ impl CliError {
                 ExitCode::from(3)
             }
             Self::Review(error) => error.exit_code(),
+            Self::Network(error) => error.exit_code(),
             Self::Init(error) => by_kind(error.kind()),
             Self::Open(error) => by_kind(error.kind()),
             Self::Track(error) => by_kind(error.kind()),
@@ -1478,6 +1493,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Review(error) => error.fmt(f),
+            Self::Network(error) => error.fmt(f),
             Self::MissingActor => write!(
                 f,
                 "no actor: pass `--actor \"human <id>\"` or set {ACTOR_ENV}; an agent is \
@@ -1890,6 +1906,9 @@ fn run(cli: Cli, out: &mut dyn Write) -> Result<ExitCode, CliError> {
         Command::Check { command } => review::check(command, out).map(|()| ExitCode::SUCCESS),
         Command::Lease { command } => review::lease(command, out).map(|()| ExitCode::SUCCESS),
         Command::Purge(args) => purge(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Remote { command } => network::remote(command, out).map(|()| ExitCode::SUCCESS),
+        Command::Clone(args) => network::clone(args, out).map(|()| ExitCode::SUCCESS),
+        Command::Fetch(args) => network::fetch(args, out).map(|()| ExitCode::SUCCESS),
         Command::Worktree {
             command: WorktreeCommand::Add(args),
         } => worktree_add(args, out).map(|()| ExitCode::SUCCESS),

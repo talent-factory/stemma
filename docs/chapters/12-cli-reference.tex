@@ -284,6 +284,8 @@ Ein anderes Exit-Code 3, etwa bei einem \type{commit}, der nur einen Zeiger bewe
 schreibt kein Objekt, denn es gibt noch kein Ergebnis.
 Ein Objekt vor einem Exit-Code ungleich 0 nennt, was gemacht wurde, nicht dass der Befehl
 gelang; es entscheidet der Exit-Code.
+Die Befehle \type{remote}, \type{clone} und \type{fetch} schreiben mit \type{--json} ebenfalls
+JSON; ihre Abschnitte nennen die Felder.
 Die übrigen Befehle haben keine JSON-Form; sie folgt mit den Schnittstellen der Phase 6.
 
 {\bf Exit-Codes.} Ein Skript kann sich auf diese Werte verlassen.
@@ -543,7 +545,7 @@ solange der Eintrag fehlt, geht auch \hbox{\type{purge --abort}}
 \startxcell[width=0.35\textwidth] Das Journal lässt sich nicht lesen. \stopxcell
 \startxcell Das Journal von Hand reparieren; bis dahin schreibt kein Befehl. \stopxcell
 \stopxrow
-\startxrow[bottomframe=on]
+\startxrow
 \startxcell[width=0.26\textwidth] \type{purge} \stopxcell
 \startxcell[width=0.35\textwidth] Der Purge, das Fortsetzen oder das Zurücknehmen ist gemacht,
 aber die Ausgabe liess sich nicht schreiben oder das Verzeichnis ist nicht gesichert;
@@ -552,6 +554,41 @@ das Journal ist entfernt. \stopxcell
 Kommt das Journal nach einem Absturz wieder,
 beendet \hbox{\type{purge --resume}} den Purge
 und ein erneutes \hbox{\type{purge --abort}} das Zurücknehmen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{remote add}} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag \type{remote-add} steht im Log,
+aber die Konfiguration liess sich nicht schreiben, oder die Ausgabe nicht. \stopxcell
+\startxcell \type{remote list} zeigt, ob der Remote da ist; fehlt er,
+den Aufruf wiederholen (er schreibt einen zweiten Eintrag). \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{remote remove}} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag \type{remote-remove} steht im Log,
+aber nicht alle Remote-Referenzen oder die Konfiguration sind entfernt,
+oder die Ausgabe liess sich nicht schreiben. \stopxcell
+\startxcell Den Aufruf wiederholen, solange \type{remote list} den Remote zeigt. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.26\textwidth] \dontleavehmode\hbox{\type{remote pin}} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag \type{remote-pin} steht im Log,
+aber die Konfiguration hält vielleicht noch den alten Schlüssel. \stopxcell
+\startxcell Den Aufruf wiederholen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell[width=0.26\textwidth] \type{clone} \stopxcell
+\startxcell[width=0.35\textwidth] Das Repository ist angelegt,
+aber der Fetch oder der Branch \type{main} kam nicht zu Ende. \stopxcell
+\startxcell Das Verzeichnis nicht löschen; dort \type{fetch} aufrufen,
+und wenn nötig \type{switch -c main remotes/origin/heads/main}.
+Ohne Konfiguration des Remote nennt die Meldung, dass das Verzeichnis zu löschen ist. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell[width=0.26\textwidth] \type{fetch} \stopxcell
+\startxcell[width=0.35\textwidth] Der Eintrag \type{fetch} steht im Log, aber nicht alle
+Remote-Referenzen bewegten sich, oder das Journal \type{fetch-pending} blieb liegen,
+oder die Ausgabe liess sich nicht schreiben. \stopxcell
+\startxcell \type{fetch} wiederholen; er setzt beim Journal fort. \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
@@ -2546,8 +2583,7 @@ den neuesten Eintrag eines anderen als des Worktrees, in dem er läuft, nennt er
 zeigen nach den Tags je eine Zeile \type{remote} mit dem alten und dem neuen Commit einer
 Remote-Referenz, \type{-} für eine, die es nicht gab oder nicht mehr gibt (ADR-008, ADR-011).
 Den Eintrag der Aufzeichnung zeigt die Zeile nicht; die JSON-Form nennt ihn.
-Einen solchen Eintrag schreibt noch kein Befehl, nur der Kern
-(\in{Kapitel}[chap:phase5]).
+Den Eintrag schreiben \type{fetch} und \type{clone} (\in{Kapitel}[chap:phase5]).
 
 \starttyping
 7  2023-11-14T22:35:00Z  human daniel  fetch
@@ -2641,9 +2677,31 @@ Purge nennt ihn nie, und \type{op restore} lehnt ihn ab.
     remote origin  old SHA256:bypXheKaWn8w...  new SHA256:B8JSQsDUxln2...
 \stoptyping
 
+{\bf Remotes.} Die Einträge \type{remote-add} und \type{remote-remove} zeigen in der zweiten
+Zeile den Namen, die Adresse und den Fingerabdruck des festgehaltenen Schlüssels (\type{-},
+wenn die Konfiguration keinen hielt).
+Ein \type{remote-remove} zeigt danach je Remote-Referenz, die er entfernt hat, eine Zeile mit
+ihrem Commit.
+Beide bewegen keinen Zeiger der Arbeitskopie, und \type{op restore} lehnt sie ab.
+Ein Purge ersetzt ein \type{remote-remove} durch einen Stub, wenn er einen der Commits umschreibt.
+
+\starttyping
+5  2026-11-27T09:44:34Z  human daniel  remote-remove
+    remote origin  address https://hub.example/ns/project  key SHA256:6zzhw7QG...
+    remotes/origin/heads/main b3:2cfe...4b8f -
+2  2026-11-27T09:44:32Z  human daniel  remote-add
+    remote origin  address https://hub.example/ns/project  key SHA256:6zzhw7QG...
+\stoptyping
+
 {\bf JSON-Form.} Jede Zeile beginnt mit \type{schema} (heute 1), \type{number} und \type{kind}:
-\type{change}, \type{stub}, \type{purge}, \type{lease}, \type{pull}, \type{check} oder
-\type{remote-pin}.
+\type{change}, \type{stub}, \type{purge}, \type{lease}, \type{pull}, \type{check},
+\type{remote-pin} oder \type{remote}.
+Ein Eintrag \type{remote} hat dazu \type{time}, \type{actor}, \type{operation}
+(\type{remote-add} oder \type{remote-remove}), \type{remote}, \type{address},
+\type{repository}, \type{key} (der festgehaltene Schlüssel in der Form von OpenSSH oder
+\type{null}), \type{ca_file} oder \type{null}, \type{sign_in} und \type{references}, eine Liste
+der entfernten Remote-Referenzen mit \type{name}, \type{commit} und \type{entry}, leer bei
+\type{remote-add}; der Wert \type{remote} von \type{kind} kam ohne neues \type{schema} dazu.
 Ein Eintrag \type{remote-pin} hat dazu \type{time}, \type{actor}, \type{operation},
 \type{remote}, \type{old} (der bisherige Schlüssel in der Form von OpenSSH, \type{null}, wenn
 es keinen gab) und \type{new}; der Wert \type{remote-pin} von \type{kind} kam ohne neues
@@ -3703,6 +3761,267 @@ stemma purge b3:f60c95fed6cd1b78815519f28fd2983db284b4e836ecefb2c9f22f1a68518e55
     --apply --move-tags --actor "human daniel"
 stemma purge --resume -C projekt --actor "human daniel"
 stemma purge --abort --actor "human daniel"
+\stoptyping
+
+\section{remote add}
+
+Fügt einen Remote hinzu: Der Befehl liest die Liste der Referenzen des Hubs, hält den Schlüssel
+des Hubs fest und schreibt die Konfiguration (ADR-009, ADR-026).
+
+\starttyping
+stemma remote add [-C VERZEICHNIS] [--actor AKTEUR] [--expect-key FINGERABDRUCK]
+                  [--ca-file DATEI] [--sign-in] [--key SCHLÜSSELDATEI] [--json]
+                  NAME ADRESSE
+\stoptyping
+
+\startitemize
+\item {\bf NAME:} Der Name des Remote, eine Komponente nach den Regeln eines Branch-Namens
+(Exit-Code 2 sonst).
+\item {\bf ADRESSE:} Die Adresse des Repositorys, \type{https://<Hub>/<Namespace>/<Repository>}.
+Eine Adresse ohne Namespace und Repository ist ein Aufruffehler (Exit-Code 2).
+\type{http://} nimmt der Client nur zu \type{127.0.0.1}, \type{::1} und \type{localhost} an
+(ADR-028); sonst endet der Befehl mit Exit-Code 1, bevor er eine Anfrage stellt.
+\item {\bf \type{--expect-key} FINGERABDRUCK:} Der Fingerabdruck, den der Schlüssel des Hubs haben
+muss, in der Form von \type{ssh-keygen -l}: \type{SHA256:} und die Base64-Zeichen des Hashes.
+Er kommt über einen zweiten Kanal. Ohne die Option beruht der erste Kontakt auf Vertrauen, und
+die Ausgabe nennt den Fingerabdruck zum Vergleich. Eine andere Form ist ein Aufruffehler.
+\item {\bf \type{--ca-file} DATEI:} Eine Datei mit Zertifikaten in PEM, deren Wurzeln für diesen
+Remote an die Stelle der eingebauten treten. Der Pfad ist absolut, denn alle Worktrees teilen
+die Konfiguration.
+\item {\bf \type{--sign-in}:} Der Hub verlangt eine Anmeldung (ADR-024). Jeder Befehl mit diesem
+Remote meldet sich dann zuerst an und braucht \type{--key}.
+\item {\bf \type{--key} SCHLÜSSELDATEI:} Die Schlüsseldatei des Akteurs für die Anmeldung, für
+\type{ssh-keygen -Y sign}: der private Schlüssel, dessen öffentlicher in
+\type{SCHLÜSSELDATEI.pub} liegt, oder der öffentliche, wenn \type{ssh-agent} den privaten hält.
+\item {\bf \type{-C}, \type{--repository} VERZEICHNIS:} Ein Verzeichnis des Repositories.
+Standard ist das aktuelle.
+\item {\bf \type{--actor} AKTEUR:} Wer den Befehl ausführt; fehlt die Option, gilt
+\type{STEMMA_ACTOR}.
+\item {\bf \type{--json}:} Schreibt das Ergebnis als ein JSON-Objekt.
+\stopitemize
+
+Der Kern fragt den Autorisierer nach \type{remote-add} mit dem Namen des Remote (Stufe 2,
+ADR-004) und lehnt einen Namen ab, den es schon gibt, bevor er den Hub fragt.
+Dann liest er die Liste der Referenzen, nimmt die Repository-ID daraus und hält den Schlüssel
+des Hubs fest. Unter der Sperre der Referenzen prüft er den Namen noch einmal, schreibt den
+Eintrag \type{remote-add} mit der ganzen Konfiguration und danach die Datei
+\type{remotes/NAME} (ADR-011). Eine Remote-Referenz bewegt der Befehl nicht; das tut
+\type{fetch}.
+
+{\bf Textform.} Zwei Zeilen: \type{Added the remote `NAME` at ADRESSE.} und eine Zeile mit dem
+Fingerabdruck, die sagt, ob er dem erwarteten entspricht oder zu vergleichen ist.
+
+{\bf JSON-Form.} Die Felder \type{schema} (heute 1), \type{remote}, \type{address},
+\type{repository}, \type{fingerprint}, \type{expected} (\type{true}, wenn \type{--expect-key}
+ihn bestätigt hat) und \type{entry}, die Nummer des Eintrags.
+
+{\bf Fehler.} Exit-Code 1, ohne Eintrag: ein Name, den es gibt (\type{exists already}), ein
+Schlüssel, der nicht den erwarteten Fingerabdruck hat (die Meldung nennt beide), ein Hub, der
+ablehnt, keine Antwort des Protokolls gibt, umleitet (die Meldung nennt die neue Adresse; der
+Client folgt nie) oder das Repository nicht liefert (es fehlt, darf nicht gelesen werden oder
+wurde umbenannt), eine Anmeldung, die scheitert oder ohne \type{--key} ist, und eine CA-Datei, die
+sich nicht lesen lässt. Exit-Code 6: Die Sperre der Referenzen ist gehalten, oder der Hub ist
+beschäftigt (503) oder begrenzt die Anfragen (429); ein späterer Aufruf kann gelingen.
+Exit-Code 3: Der Eintrag steht im Log, aber die Konfiguration liess sich nicht schreiben, oder
+die Ausgabe nicht. Exit-Code 5: Eine Konfiguration eines Remote ist beschädigt.
+
+{\bf Wiederholen.} Nach Exit-Code 1 und 6 ist nichts geschrieben. Nach Exit-Code 3 zeigt
+\type{remote list}, ob der Remote da ist; fehlt er, schreibt ein zweiter Aufruf einen zweiten
+Eintrag. Nach einem Erfolg lehnt ein zweiter Aufruf den Namen ab.
+
+{\bf Beispiel.}
+
+\starttyping
+stemma remote add origin https://hub.example/talent-factory/stemma \
+    --actor "human daniel"
+\stoptyping
+
+\section{remote list}
+
+Listet die Remotes, nach Name sortiert.
+
+\starttyping
+stemma remote list [-C VERZEICHNIS] [--json]
+\stoptyping
+
+Je Remote eine Zeile \type{NAME ADRESSE FINGERABDRUCK}, \type{-} für einen Remote ohne
+festgehaltenen Schlüssel, und danach \type{ca-file=DATEI} und \type{sign-in}, wo sie gesetzt
+sind. Mit \type{--json} je Remote ein Objekt mit \type{schema}, \type{remote}, \type{address},
+\type{repository}, \type{fingerprint} (oder \type{null}), \type{ca_file} (oder \type{null}) und
+\type{sign_in}. Der Befehl liest nur, braucht keinen Akteur und fragt keinen Hub.
+Eine Konfiguration, die nicht in kanonischer Form ist, endet mit Exit-Code 5; eine Ausgabe, die
+sich nicht schreiben lässt, mit Exit-Code 1.
+
+\starttyping
+$ stemma remote list
+origin https://hub.example/talent-factory/stemma SHA256:6zzhw7QG...
+\stoptyping
+
+\section{remote remove}
+
+Entfernt einen Remote: seine Konfiguration und alle seine Remote-Referenzen.
+
+\starttyping
+stemma remote remove [-C VERZEICHNIS] [--actor AKTEUR] [--json] NAME
+\stoptyping
+
+Der Kern fragt den Autorisierer nach \type{remote-remove} mit dem Namen. Unter der Sperre der
+Referenzen schreibt er den Eintrag \type{remote-remove} mit der Konfiguration und mit jeder
+Remote-Referenz des Remote, entfernt dann die Remote-Referenzen und zuletzt die Konfiguration.
+Der Hub wird nicht gefragt. \type{op restore} macht den Eintrag nicht rückgängig; ein neues
+\type{remote add} und ein \type{fetch} bringen den Remote zurück.
+
+{\bf Textform.} Eine Zeile mit dem Namen und der Zahl der entfernten Remote-Referenzen:
+
+\starttyping
+Removed the remote `NAME` and its N remote references.
+\stoptyping
+
+{\bf JSON-Form.} \type{schema}, \type{remote}, \type{references} (die Zahl) und \type{entry}.
+
+{\bf Fehler.} Ein Remote, den es nicht gibt, endet mit Exit-Code 1 ohne Eintrag; eine gehaltene
+Sperre mit Exit-Code 6. Exit-Code 3: Der Eintrag steht im Log, aber nicht alle Remote-Referenzen
+oder die Konfiguration sind entfernt, oder die Ausgabe liess sich nicht schreiben; ein zweiter
+Aufruf, solange \type{remote list} den Remote zeigt, beendet es mit einem zweiten Eintrag.
+
+\starttyping
+stemma remote remove origin --actor "human daniel"
+\stoptyping
+
+\section{remote pin}
+
+Hält einen neuen Schlüssel des Hubs eines Remote fest, nachdem ein Mensch dessen Fingerabdruck
+über einen zweiten Kanal verglichen hat (ADR-026).
+
+\starttyping
+stemma remote pin [-C VERZEICHNIS] [--actor AKTEUR] [--key SCHLÜSSELDATEI] [--json]
+                  --expect-key FINGERABDRUCK NAME
+\stoptyping
+
+Der Befehl liest die Liste der Referenzen des Hubs. Nennt sie einen Schlüssel mit dem
+Fingerabdruck aus \type{--expect-key}, schreibt der Kern unter der Sperre den Eintrag
+\type{remote-pin} mit altem und neuem Schlüssel und ersetzt dann die Konfiguration.
+Ist der Schlüssel schon festgehalten, schreibt er nichts. \type{--expect-key} ist Pflicht
+(Exit-Code 2 sonst), \type{--key} gilt wie bei \type{remote add}.
+
+{\bf Textform.} Mit einem Eintrag die Zeile
+\type{Pinned the key FINGERABDRUCK for the hub of the remote `NAME`.},
+ohne Eintrag die Zeile
+\type{The key FINGERABDRUCK is pinned for the remote `NAME` already.}
+{\bf JSON-Form.} \type{schema}, \type{remote}, \type{fingerprint} und \type{entry} (\type{null}
+ohne Eintrag).
+
+{\bf Fehler.} Exit-Code 1, ohne Eintrag: ein Agent als Akteur (nur ein Mensch hält einen
+Schlüssel neu fest), ein anderer Fingerabdruck als der erwartete, ein Remote, den es nicht gibt,
+die Liste eines anderen Repositorys und die Fehler des Hubs wie bei \type{remote add}.
+Exit-Code 6 wie dort. Exit-Code 3: Der Eintrag steht im Log, und die Konfiguration hält
+vielleicht noch den alten Schlüssel; ein zweiter Aufruf schreibt einen zweiten Eintrag.
+
+\starttyping
+stemma remote pin origin --expect-key SHA256:duPj+IawbJ7y... --actor "human daniel"
+\stoptyping
+
+\section{clone}
+
+Legt ein neues Repository als Klon eines Repositorys auf einem Hub an, mit dem Remote
+\type{origin} und dem Branch \type{main} (ADR-008, ADR-023, ADR-026).
+
+\starttyping
+stemma clone [--actor AKTEUR] [--remote NAME] [--expect-key FINGERABDRUCK]
+             [--ca-file DATEI] [--sign-in] [--key SCHLÜSSELDATEI] [--json]
+             ADRESSE [VERZEICHNIS]
+\stoptyping
+
+\startitemize
+\item {\bf ADRESSE:} wie bei \type{remote add}.
+\item {\bf VERZEICHNIS:} Das Verzeichnis des neuen Repositorys. Standard ist die letzte
+Komponente der Adresse im aktuellen Verzeichnis.
+\item {\bf \type{--remote} NAME:} Der Name des Remote im neuen Repository, Standard
+\type{origin}.
+\item {\bf \type{--expect-key}, \type{--ca-file}, \type{--sign-in}, \type{--key}:} wie bei
+\type{remote add}; die drei ersten landen in der Konfiguration des Remote.
+\item {\bf \type{--json}:} Schreibt das Ergebnis als ein JSON-Objekt.
+\stopitemize
+
+Der Kern fragt den Autorisierer nach \type{fetch}, liest die Liste der Referenzen und hält den
+Schlüssel des Hubs fest; scheitert einer dieser Schritte, legt er nichts an. Dann macht er das
+Repository wie \type{init}, schreibt die Konfiguration des Remote und holt mit derselben Liste.
+Zuletzt legt der Befehl den Branch \type{main} auf \type{remotes/NAME/heads/main} an und holt
+dessen Dateien, wie \type{switch -c}; hat der Hub kein \type{main}, bleibt der Branch ohne
+Commit. Das Log hat danach die Einträge \type{init}, \type{fetch} und \type{switch}.
+Kein lokaler Branch folgt einer Remote-Referenz von selbst: Spätere \type{fetch} bewegen nur
+die Remote-Referenzen.
+
+{\bf Textform.} Eine Zeile mit Adresse, Verzeichnis und der Zahl der Remote-Referenzen und
+Commits, eine Zeile mit dem Fingerabdruck wie bei \type{remote add} und eine Zeile zum Branch
+\type{main}. {\bf JSON-Form.} \type{schema}, \type{directory}, \type{remote}, \type{address},
+\type{repository}, \type{fingerprint}, \type{expected}, \type{references}, \type{commits} und
+\type{branch} (\type{main} oder \type{null}).
+
+{\bf Fehler.} Exit-Code 1, ohne dass ein Verzeichnis entsteht: ein unerwarteter Schlüssel und
+die Fehler des Hubs wie bei \type{remote add}; ebenso ein Verzeichnis, das schon ein
+\type{.stemma} hat. Exit-Code 6 wie bei \type{remote add}. Exit-Code 3: Das Repository ist
+angelegt, aber der Fetch oder der Branch \type{main} kam nicht zu Ende. Das Verzeichnis bleibt;
+ein \type{fetch} dort setzt fort, und die Meldung nennt den Aufruf \type{switch}, der
+\type{main} anlegt. Fehlt die Konfiguration des Remote, sagt die Meldung, dass das Verzeichnis
+zu löschen und der Klon zu wiederholen ist.
+
+\starttyping
+$ stemma clone --actor "human mia" https://hub.example/talent-factory/stemma
+Cloned https://hub.example/talent-factory/stemma into `stemma`:
+  1 remote reference, 1 commit.
+Pinned the key of the hub with the fingerprint SHA256:6zzhw7QG...;
+  compare it on a second channel.
+The branch `main` starts at `remotes/origin/heads/main`.
+\stoptyping
+
+\section{fetch}
+
+Bringt die Remote-Referenzen eines Remote auf den Stand seines Hubs (ADR-008, ADR-023).
+Kein lokaler Branch bewegt sich.
+
+\starttyping
+stemma fetch [-C VERZEICHNIS] [--actor AKTEUR] [--key SCHLÜSSELDATEI] [--json]
+             [REMOTE]
+\stoptyping
+
+\startitemize
+\item {\bf REMOTE:} Der Name des Remote, Standard \type{origin}.
+\item {\bf \type{--key} SCHLÜSSELDATEI:} wie bei \type{remote add}, für einen Remote mit
+Anmeldung.
+\item {\bf \type{--json}:} Schreibt das Ergebnis als ein JSON-Objekt.
+\stopitemize
+
+Der Kern fragt den Autorisierer nach \type{fetch} mit dem Ziel \type{remote REMOTE}, liest die
+Liste der Referenzen, prüft die Repository-ID und den festgehaltenen Schlüssel, empfängt den
+Strom der Objekte und prüft jeden Commit der Liste. Erst dann schreibt er unter der Sperre den
+Eintrag \type{fetch} und bewegt die Remote-Referenzen; eine Referenz, die der Hub nicht mehr
+führt, entfernt er im selben Eintrag (\in{Kapitel}[chap:phase5]). Haben alle Remote-Referenzen
+ihren Stand schon, schreibt er keinen Eintrag. Einen lokalen Branch bringt
+\type{rebase remotes/REMOTE/heads/main} nach.
+
+{\bf Textform.} \type{Nothing new from `REMOTE`.} oder eine Zeile mit der Zahl der
+Remote-Referenzen und der empfangenen Commits, danach je Referenz eine Zeile mit altem und
+neuem Commit, \type{new at} für eine neue und \type{deleted} für eine entfernte.
+{\bf JSON-Form.} \type{schema}, \type{remote}, \type{entry} (oder \type{null}), \type{commits},
+\type{objects} und \type{references}, eine Liste mit \type{name}, \type{old} und \type{new}
+(\type{null} für eine Referenz, die es nicht gab oder nicht mehr gibt).
+
+{\bf Fehler.} Exit-Code 1, ohne Eintrag: ein Remote, den es nicht gibt, ein Hub, der einen
+anderen Schlüssel als den festgehaltenen nennt (die Meldung nennt beide Fingerabdrücke und den
+Aufruf \type{remote pin}), eine Liste eines anderen Repositorys, ein Strom, der abbricht oder
+nicht vollständig ist, und die Fehler des Hubs wie bei \type{remote add}. Was ganz ankam, bleibt
+im Speicher und im Journal \type{fetch-pending}, und der nächste \type{fetch} setzt dort fort.
+Exit-Code 6: eine gehaltene Sperre oder ein beschäftigter Hub. Exit-Code 3: Der Eintrag steht im
+Log, und nicht alle Remote-Referenzen bewegten sich, oder das Journal blieb liegen; ein zweiter
+Aufruf beendet es. Exit-Code 5: ein Schaden im Repository.
+
+{\bf Wiederholen.} \type{fetch} lässt sich nach Erfolg, Fehler und Absturz wiederholen.
+
+\starttyping
+$ stemma fetch --actor "human mia"
+Fetched from `origin`: 1 remote reference, 1 commit received.
+  remotes/origin/heads/main  f5d52b9e7a81 -> e6d3b2bcdb12
 \stoptyping
 
 \stopappendices
