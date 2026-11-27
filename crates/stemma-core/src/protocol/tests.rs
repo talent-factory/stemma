@@ -175,6 +175,11 @@ fn written(example_name: &str) -> Vec<u8> {
         "range-to-the-end" => held::tests::example_range_to_the_end().encode(),
         "error-statement-refused" => held::tests::example_refused().encode(),
         "error-not-readable" => ErrorMessage::NotReadable.encode(),
+        // The anchors of a log (STEMMA-300).
+        "anchor" => anchor::tests::example_anchor().encode(),
+        "held-anchor" => anchor::tests::example_held().encode(),
+        "anchors" => anchor::tests::example_request().encode(),
+        "error-anchor-refused" => anchor::tests::example_refused().encode(),
         // The gate on a hub (STEMMA-303).
         "error-refused-gate" => refusal::tests::example_refused_gate().encode(),
         other => {
@@ -211,6 +216,12 @@ fn round_trips(message: Message, bytes: &[u8]) -> bool {
             held::HeldStatement::parse(bytes).is_ok_and(|m| m.encode() == bytes)
         }
         Message::Range => held::Range::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        // The anchors of a log (STEMMA-300).
+        Message::Anchor => anchor::Anchor::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::HeldAnchor => anchor::HeldAnchor::parse(bytes).is_ok_and(|m| m.encode() == bytes),
+        Message::AnchorsRequest => {
+            anchor::AnchorsRequest::parse(bytes).is_ok_and(|m| m.encode() == bytes)
+        }
     }
 }
 
@@ -253,6 +264,9 @@ fn every_example_is_refused_by_the_readers_of_the_other_messages() {
         Message::TokenAnswer,
         Message::HeldStatement,
         Message::Range,
+        Message::Anchor,
+        Message::HeldAnchor,
+        Message::AnchorsRequest,
     ];
     for example in examples::ALL {
         for other in all {

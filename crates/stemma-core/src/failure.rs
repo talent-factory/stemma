@@ -440,6 +440,64 @@ impl Classify for crate::repository::AcceptError {
     }
 }
 
+// The anchors of a log (ADR-026, STEMMA-300).
+impl Classify for crate::repository::AnchorError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Hub(error) => error.kind(),
+            // The list of the anchors does not read, or does not belong to the log.
+            Self::Anchors(_) | Self::Order { .. } => FailureKind::Damaged,
+            // An answer to the sender, a wrong argument, the destination, the clock, or the
+            // signer.
+            Self::NotBare { .. }
+            | Self::Refused(_)
+            | Self::AnchorsIo { .. }
+            | Self::Time { .. }
+            | Self::Seal(_) => FailureKind::Other,
+        }
+    }
+}
+
+impl Classify for crate::repository::LogAnchorError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Refs(error) => error.kind(),
+            Self::OpLog(error) => error.kind(),
+            Self::Format(error) => error.kind(),
+            Self::Remote(error) => error.kind(),
+            // A file of the anchors that is not in canonical form, and a log that no longer
+            // holds what the hub confirmed.
+            Self::LogIdDamaged { .. }
+            | Self::LogIdMissing { .. }
+            | Self::ConfirmationDamaged { .. }
+            | Self::Diverged(_)
+            | Self::Confirmation(
+                crate::repository::AnchorFinding::Cut { .. }
+                | crate::repository::AnchorFinding::Rewritten { .. },
+            ) => FailureKind::Damaged,
+            // An anchor of another key, log, or repository, and a list out of order or without
+            // the kept confirmation: an answer of the hub, not the state of this repository.
+            Self::Confirmation(_) => FailureKind::Other,
+            Self::Register(error) => match &**error {
+                crate::register::ModeError::Io(_) | crate::register::ModeError::Head(_) => {
+                    FailureKind::Other
+                }
+                crate::register::ModeError::Store(error) => error
+                    .store_error()
+                    .map_or(FailureKind::Damaged, Classify::kind),
+                _ => FailureKind::Damaged,
+            },
+            Self::Io { .. }
+            | Self::NoRemote(_)
+            | Self::HubKey(_)
+            | Self::Unchained
+            | Self::Seal(_)
+            | Self::NotConfirmed
+            | Self::Older { .. } => FailureKind::Other,
+        }
+    }
+}
+
 impl Classify for crate::receive::FetchJournalError {
     fn kind(&self) -> FailureKind {
         match self {

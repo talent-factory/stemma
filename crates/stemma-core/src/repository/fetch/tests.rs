@@ -215,7 +215,7 @@ fn a_clone_holds_every_reference_of_the_hub_as_a_remote_reference() {
     repository.check_connectivity(&main).unwrap();
     assert_eq!(
         fs::read_to_string(repository.metadata_dir().join("format")).unwrap(),
-        "stemma-repository 18\n"
+        "stemma-repository 19\n"
     );
 }
 
