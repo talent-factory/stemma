@@ -735,15 +735,6 @@ impl Repository {
         }
         let sender = self.sender_of(update, main_tip)?;
         let identity = Identity::of(sender.verified.actor());
-        // The gate on a hub folds the held statements for a move of `main` after the first push.
-        let gated = !sender.first && moves.iter().any(|moved| moved.name() == &main);
-        let held = match (&mut context.statements, gated) {
-            (Some(statements), true) => {
-                statement::read_destination(&mut **statements, record.chain.last_number())
-                    .map_err(|error| AcceptError::Statements(Box::new(error)))?
-            }
-            _ => Vec::new(),
-        };
         let mut policies = Vec::new();
         let mut proof = None;
         for moved in moves {
@@ -752,6 +743,16 @@ impl Repository {
             }
             let verdict = match sender.ask(moved, also) {
                 Ok(allowed) if moved.name() == &main && !sender.first => {
+                    // The held statements are read only for a move of `main` that the
+                    // authorizer allowed, so a refusal stays a refusal.
+                    let held = match &mut context.statements {
+                        Some(statements) => statement::read_destination(
+                            &mut **statements,
+                            record.chain.last_number(),
+                        )
+                        .map_err(|error| AcceptError::Statements(Box::new(error)))?,
+                        None => Vec::new(),
+                    };
                     let state = main::HubState {
                         tip: sender.register,
                         record: &record,

@@ -400,13 +400,21 @@ impl Classify for crate::repository::AcceptError {
                 _ => FailureKind::Other,
             },
             // The store failed under the verdict; whether it is damage, its error says.
-            Self::Verdict(error) => match &**error {
-                crate::repository::GateError::Store(error) => error.kind(),
-                crate::repository::GateError::Read(error) => error
-                    .store_error()
-                    .map_or(FailureKind::Damaged, Classify::kind),
-                _ => FailureKind::Other,
-            },
+            Self::Verdict(error) => {
+                use crate::repository::{CheckError, GateError, LevelError};
+                match &**error {
+                    GateError::Store(error) => error.kind(),
+                    GateError::Read(error) => error
+                        .store_error()
+                        .map_or(FailureKind::Damaged, Classify::kind),
+                    GateError::Merge(error) => error.kind(),
+                    GateError::History(error) | GateError::Check(CheckError::History(error)) => {
+                        error.kind()
+                    }
+                    GateError::Level(LevelError::Diff(error)) => error.kind(),
+                    _ => FailureKind::Other,
+                }
+            }
             // A register of `main` that does not parse, or a `main` without one, is no state
             // that an accepted update left.
             Self::Register(error) => match &**error {

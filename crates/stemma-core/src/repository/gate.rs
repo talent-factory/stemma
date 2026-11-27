@@ -501,8 +501,17 @@ impl Repository {
 
     /// [`merge_gate`](Self::merge_gate) with the rules of the policy of the base commit
     /// (STEMMA-246): the level of the change is derived from the policy file of the tip of `main`
-    /// that the attempt merges onto ([`level_of_change`](Self::level_of_change)), and `mode` says
-    /// which results of checks count (the register of an enforcing repository).
+    /// that the attempt merges onto, the highest level of its paths
+    /// ([`level_of_change`](Self::level_of_change)) raised by the escalation for weakened tests
+    /// (ADR-004, rule 10), and `mode` says which results of checks count (the register of an
+    /// enforcing repository).
+    ///
+    /// In an enforcing repository the approvals of ADR-004 must count as well, by the recount of
+    /// [`recount_approvals`](Self::recount_approvals) (STEMMA-303): as many approvals of
+    /// registered agents as the policy names for the level, and at the levels 2 and 3 one
+    /// approval of a registered human, at level 3 of an owner ([`GateError::NotApproved`]). The
+    /// open mode has no register and asks for none. The verdict is the one that a hub reaches
+    /// for the same inputs.
     ///
     /// In the open mode a repository without a policy file has the default policy: every path has
     /// level 2, except the files that the floor of the core keeps at level 3. In the enforcing
@@ -519,8 +528,8 @@ impl Repository {
     ///
     /// # Errors
     ///
-    /// The errors of [`merge_gate`](Self::merge_gate), [`GateError::Policy`], and
-    /// [`GateError::Level`].
+    /// The errors of [`merge_gate`](Self::merge_gate), [`GateError::Policy`],
+    /// [`GateError::Level`], and [`GateError::NotApproved`].
     ///
     /// On a bare repository the call is refused before anything else, with the error
     /// [`Bare`](crate::refs::RefError::Bare) of the references; see

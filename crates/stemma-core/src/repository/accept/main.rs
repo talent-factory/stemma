@@ -43,12 +43,15 @@ struct HubProofs<'a> {
     /// The `record` line of every placed statement, by its number in the fold.
     order: &'a BTreeMap<u64, u64>,
     /// The registers of the commits that the record moved `main` to, as far as they are read.
-    registers: RefCell<HashMap<CommitId, Option<Register>>>,
+    /// `None` for a register that could not be read.
+    registers: RefCell<HashMap<CommitId, Option<Option<Register>>>>,
 }
 
 impl HubProofs<'_> {
     /// The number of the first record entry that moved `main` to a commit whose register holds
-    /// `key` of `identity` in another state than active, or `None`.
+    /// `key` of `identity` in another state than active, or `None`. A register that cannot be
+    /// read ends the key at its entry: a store that fails must not widen the window in which a
+    /// key counts, so the reading fails closed.
     fn ended_at(&self, identity: &Identity, key: &PublicKey) -> Option<u64> {
         let main = super::main_reference();
         let mut registers = self.registers.borrow_mut();
@@ -62,7 +65,10 @@ impl HubProofs<'_> {
                 .and_then(Move::new_commit)?;
             let register = registers
                 .entry(commit)
-                .or_insert_with(|| Register::at_commit(self.store, &commit).ok().flatten());
+                .or_insert_with(|| Register::at_commit(self.store, &commit).ok());
+            let Some(register) = register else {
+                return Some(entry.number());
+            };
             let state = register
                 .as_ref()?
                 .entry(identity)?
@@ -191,11 +197,20 @@ impl Repository {
         let refusal = match self.judge_main(&case).map_err(failed)? {
             Ok(Verdict::Merge(merge)) if merge.tree == merge_tree => return Ok(Ok(())),
             Ok(Verdict::Merge(_)) => return refuse(GateRefusal::NotTheMerge),
-            // `M` changes nothing, so the change is on `main` already.
+            // The head is on `main` already: an `M` that changes nothing is no change, and one that
+            // changes files is not the merge.
             Ok(Verdict::Landed) => {
-                return refuse(GateRefusal::Level(Reason::from_message(
-                    &LevelError::NoChange,
-                )))
+                let tip_tree = self
+                    .objects()
+                    .get_commit(&tip)
+                    .map_err(|error| failed(GateError::Read(error)))?
+                    .map(|commit| commit.tree());
+                if tip_tree == Some(merge_tree) {
+                    return refuse(GateRefusal::Level(Reason::from_message(
+                        &LevelError::NoChange,
+                    )));
+                }
+                return refuse(GateRefusal::NotTheMerge);
             }
             Err(refusal) => refusal,
         };

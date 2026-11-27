@@ -11,14 +11,14 @@ use std::io::{self, Read};
 use crate::change::ChangeId;
 use crate::index::Index;
 use crate::object::{Blob, Commit, CommitId, FileMode};
-use crate::oplog::CheckResult;
-use crate::policy::RiskLevel;
+use crate::oplog::{CheckResult, OperationName};
+use crate::policy::{Policy, RiskLevel};
 use crate::protocol::held::HeldStatement;
 use crate::protocol::record::tests::Seeded;
 use crate::protocol::record::{
     read_record, HubAddress, Move, RecordEntry, RefUpdate, RefUpdatePayload, StatementHash,
 };
-use crate::protocol::refusal::{GateRefusal, LevelSource, RefusalReason, Refused};
+use crate::protocol::refusal::{GateRefusal, LevelSource, RefOperation, RefusalReason, Refused};
 use crate::protocol::statement::{Approval, Body, Checked, Opening, Statement};
 use crate::protocol::{ErrorMessage, QualifiedName, RepositoryId};
 use crate::register::{self, Identity, Register, Role};
@@ -30,7 +30,7 @@ use crate::signature::{self, PayloadKind, Signer};
 use crate::store::ObjectStore;
 use crate::testutil::TempDir;
 use crate::transport::{Answer, MemoryTransport, OtherSide, Refusal, Transport};
-use crate::{policy, Actor, AllowAll};
+use crate::{policy, Actor, AllowAll, Authorizer, Decision};
 
 const ADDRESS: &str = "https://hub.example";
 const REPOSITORY: &str = "00112233445566778899aabbccddeeff";
@@ -116,6 +116,19 @@ fn register_of() -> Register {
     register
 }
 
+/// Refuses one operation and allows every other.
+struct Deny(&'static str);
+
+impl Authorizer for Deny {
+    fn authorize(&self, _actor: &Actor, operation: &OperationName, _target: &str) -> Decision {
+        if operation.as_str() == self.0 {
+            Decision::Deny
+        } else {
+            Decision::Allow
+        }
+    }
+}
+
 /// A destination in memory for the record and the statements.
 #[derive(Default)]
 struct Memory(Vec<u8>);
@@ -149,6 +162,12 @@ struct Hub {
     record: RefCell<Memory>,
     statements: RefCell<Memory>,
     time: Cell<i64>,
+    /// The policies that the context names beside the policy of `T`.
+    policies: RefCell<Vec<Policy>>,
+    /// Whether the context names no destination of the statements.
+    no_statements: Cell<bool>,
+    /// An operation that one more authorizer denies.
+    denied: Cell<Option<&'static str>>,
 }
 
 impl Hub {
@@ -162,6 +181,9 @@ impl Hub {
             record: RefCell::default(),
             statements: RefCell::default(),
             time: Cell::new(START),
+            policies: RefCell::default(),
+            no_statements: Cell::new(false),
+            denied: Cell::new(None),
         }
     }
 
@@ -224,16 +246,24 @@ impl OtherSide for Hub {
         let signer = hub_key();
         let mut record = self.record.borrow_mut();
         let mut statements = self.statements.borrow_mut();
-        let context = AcceptContext::new(
+        let policies = self.policies.borrow();
+        let mut context = AcceptContext::new(
             &hub,
             repository_id(),
             &mut *record,
             self.time.get(),
             &signer,
         )
-        .with_statements(&mut *statements);
+        .with_policies(&policies);
+        if !self.no_statements.get() {
+            context = context.with_statements(&mut *statements);
+        }
+        let also: Box<dyn Authorizer> = match self.denied.get() {
+            Some(operation) => Box::new(Deny(operation)),
+            None => Box::new(AllowAll),
+        };
         self.repository
-            .accept_ref_update(update, context)
+            .accept_ref_update_with(update, context, &*also)
             .map_err(|error| match error.answer() {
                 Some(message) => Refusal::Error(message),
                 None => Refusal::Failed(error.to_string()),
@@ -342,6 +372,16 @@ fn refused(answer: Result<RecordEntry, ErrorMessage>) -> GateRefusal {
     }
 }
 
+/// The files of the root of [`gated_with`], with `register` and `policy`.
+fn base_files<'a>(register: &'a str, policy: &'a str) -> Vec<(&'a str, &'a str)> {
+    vec![
+        (register::FILE, register),
+        (policy::FILE_NAME, policy),
+        ("tests/t.rs", TEST),
+        ("src/lib.rs", "pub fn one() {}\n"),
+    ]
+}
+
 /// A hub after the first push of Daniel, with a pull request of Mia open on `feature`.
 struct Gated {
     wire: Wire,
@@ -437,6 +477,55 @@ impl Gated {
         )
         .unwrap();
         store.put_commit(&commit).unwrap()
+    }
+
+    /// Lands a change of Mia that replaces the register with `register` through the gate: level
+    /// 3, which Daniel approves and Ana checks, declared as a repair of `repairs`. Returns the
+    /// new tip.
+    fn land_register(&mut self, register: &Register, repairs: Option<CommitId>) -> CommitId {
+        let text = register.encode();
+        let tip = self.tip();
+        let keys = self
+            .wire
+            .side()
+            .commit("mia", &base_files(&text, POLICY), vec![tip]);
+        let moved = to(&self.wire, "heads/keys", Some(keys), None);
+        push(&mut self.wire, &mia(), vec![moved]).unwrap();
+        let opening = Opening::try_new(
+            Some(repository_id()),
+            crate::refs::BranchName::try_new("keys").unwrap(),
+            keys,
+            Vec::new(),
+            repairs,
+        )
+        .unwrap();
+        let pull = submit(&mut self.wire, Body::Opening(opening), &mia());
+        let approval = Approval::new(Some(repository_id()), pull, keys);
+        submit(&mut self.wire, Body::Approval(approval), &daniel());
+        self.check(keys, Some(tip), CheckResult::Pass);
+        let store = self.wire.side().repository.objects();
+        let tree = store.get_commit(&keys).unwrap().unwrap().tree();
+        let landed = Commit::try_new(
+            tree,
+            vec![tip],
+            ChangeId::generate().unwrap(),
+            Actor::human("daniel").unwrap(),
+            2,
+            "Merge",
+        )
+        .unwrap();
+        let landed = store.put_commit(&landed).unwrap();
+        let moved = to(&self.wire, "heads/main", Some(landed), Some(pull));
+        push(&mut self.wire, &daniel(), vec![moved]).unwrap();
+        landed
+    }
+
+    /// The merge of the change of `docs/a.md` onto the tip `tip`, whose register is `register`.
+    fn docs_onto(&self, tip: CommitId, register: &Register) -> CommitId {
+        let text = register.encode();
+        let mut files = base_files(&text, POLICY);
+        files.push(("docs/a.md", "a\n"));
+        self.wire.side().commit("daniel", &files, vec![tip])
     }
 
     /// Sends the move of `main` to `merged` with the pull request as its evidence.
@@ -545,7 +634,7 @@ fn a_merge_without_the_approvals_of_its_level_is_refused_with_the_count() {
             humans_needed: 0,
         }
     );
-    // The opener's own approval does not count, and neither does a human one for an agent.
+    // An approval of a human does not stand in for the approval of an agent.
     g.approve(g.head, &daniel());
     assert!(matches!(
         refused(g.land(merged)),
@@ -577,75 +666,13 @@ fn an_approval_of_a_key_that_was_revoked_before_the_merge_does_not_count() {
     let mut g = gated();
     g.approve(g.head, &bot());
     g.check(g.head, Some(g.root), CheckResult::Pass);
-    // A second pull request of Mia revokes the key of `bot` and lands through the gate: level 3,
-    // which an owner approves.
+    // A second pull request revokes the key of `bot` and lands through the gate.
     let mut revoked = register_of();
     revoked.revoke(&agent("bot"), &bot().public(), 1).unwrap();
-    let revoked = revoked.encode();
-    let keys = g.wire.side().commit(
-        "mia",
-        &[
-            (register::FILE, revoked.as_str()),
-            (policy::FILE_NAME, POLICY),
-            ("tests/t.rs", TEST),
-            ("src/lib.rs", "pub fn one() {}\n"),
-        ],
-        vec![g.root],
-    );
-    let moved = to(&g.wire, "heads/keys", Some(keys), None);
-    push(&mut g.wire, &mia(), vec![moved]).unwrap();
-    let opening = Opening::try_new(
-        Some(repository_id()),
-        crate::refs::BranchName::try_new("keys").unwrap(),
-        keys,
-        Vec::new(),
-        None,
-    )
-    .unwrap();
-    let keys_pull = submit(&mut g.wire, Body::Opening(opening), &mia());
-    let approval = Approval::new(Some(repository_id()), keys_pull, keys);
-    submit(&mut g.wire, Body::Approval(approval), &daniel());
-    g.check(keys, Some(g.root), CheckResult::Pass);
-    let tree = g
-        .wire
-        .side()
-        .repository
-        .objects()
-        .get_commit(&keys)
-        .unwrap()
-        .unwrap()
-        .tree();
-    let landed = Commit::try_new(
-        tree,
-        vec![g.root],
-        ChangeId::generate().unwrap(),
-        Actor::human("daniel").unwrap(),
-        2,
-        "Merge",
-    )
-    .unwrap();
-    let landed = g
-        .wire
-        .side()
-        .repository
-        .objects()
-        .put_commit(&landed)
-        .unwrap();
-    let moved = to(&g.wire, "heads/main", Some(landed), Some(keys_pull));
-    push(&mut g.wire, &daniel(), vec![moved]).unwrap();
+    let landed = g.land_register(&revoked, None);
 
     // The approval of `bot` came before the revocation and is void all the same.
-    let merged = g.wire.side().commit(
-        "daniel",
-        &[
-            (register::FILE, revoked.as_str()),
-            (policy::FILE_NAME, POLICY),
-            ("tests/t.rs", TEST),
-            ("src/lib.rs", "pub fn one() {}\n"),
-            ("docs/a.md", "a\n"),
-        ],
-        vec![landed],
-    );
+    let merged = g.docs_onto(landed, &revoked);
     assert!(matches!(
         refused(g.land(merged)),
         GateRefusal::NotApproved {
@@ -657,6 +684,53 @@ fn an_approval_of_a_key_that_was_revoked_before_the_merge_does_not_count() {
     // The approval of an agent whose key holds counts.
     g.approve(g.head, &cat());
     assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn a_statement_before_the_retirement_of_its_key_counts() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    // The only result of the change is a run of Ana, whose key is retired after it.
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let mut retired = register_of();
+    retired
+        .add_key(&human("ana"), Seeded::new(8).public())
+        .unwrap();
+    retired.retire(&human("ana"), &ana().public(), 1).unwrap();
+    let landed = g.land_register(&retired, None);
+
+    let merged = g.docs_onto(landed, &retired);
+    assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn a_failing_run_before_the_revocation_of_its_key_keeps_the_tip_red() {
+    let mut g = gated_with(POLICY, &[("src/lib.rs", "pub fn two() {}\n")]);
+    g.approve_all();
+    let mut revoked = register_of();
+    revoked
+        .add_key(&human("ana"), Seeded::new(8).public())
+        .unwrap();
+    revoked.revoke(&human("ana"), &ana().public(), 1).unwrap();
+    // Ana's run fails on the root, then her key is revoked by a change that repairs the root.
+    g.check(g.root, None, CheckResult::Fail);
+    let landed = g.land_register(&revoked, Some(g.root));
+    let text = revoked.encode();
+    let mut files = base_files(&text, POLICY);
+    files.retain(|(path, _)| *path != "src/lib.rs");
+    files.push(("src/lib.rs", "pub fn two() {}\n"));
+    let merged = g.wire.side().commit("daniel", &files, vec![landed]);
+    let checked = Checked::try_new(
+        Some(repository_id()),
+        g.head,
+        Some(landed),
+        CheckResult::Pass,
+    )
+    .unwrap();
+    // A run of Daniel, who neither opened nor wrote the change, counts at level 2.
+    submit(&mut g.wire, Body::Check(checked), &daniel());
+
+    assert_eq!(refused(g.land(merged)), GateRefusal::RedTip { red: g.root });
 }
 
 #[test]
@@ -679,40 +753,131 @@ fn a_weakened_test_raises_the_level_of_its_path() {
             humans_needed: 1,
         }
     );
+    // At level 2 the approval of a member counts as the approval of a human.
     g.approve(g.head, &cat());
-    g.approve(g.head, &daniel());
+    g.approve(g.head, &ana());
     assert_eq!(verdict(g.land(merged)), None);
 }
 
 #[test]
 fn a_merge_that_lowers_the_policy_is_judged_by_the_old_one() {
-    // The change makes every path level 0 and edits `src/lib.rs`, which is level 2 by the
-    // policy of `T`; the policy file itself is level 3.
+    // The policy of `T` asks for an agent at level 3; the change drops that line. A change of the
+    // policy file is level 3 by the floor of the core.
+    let strict = "stemma-policy 1\nlevel 0 docs/\nlevel 0 tests/\napprovals 3 1\n";
     let lowered = "stemma-policy 1\nlevel 0 docs/\nlevel 0 tests/\nlevel 0 src/\n";
-    let mut g = gated_with(
-        POLICY,
-        &[
-            (policy::FILE_NAME, lowered),
-            ("src/lib.rs", "pub fn two() {}\n"),
-        ],
-    );
-    g.approve(g.head, &bot());
+    let mut g = gated_with(strict, &[(policy::FILE_NAME, lowered)]);
     g.check(g.head, Some(g.root), CheckResult::Pass);
     let merged = g.merge();
 
+    // At level 3 the human must be an owner: the approval of Ana, a member, does not count.
+    g.approve(g.head, &ana());
     assert_eq!(
         refused(g.land(merged)),
         GateRefusal::NotApproved {
             level: RiskLevel::Three,
             source: LevelSource::Paths,
-            agents: 1,
-            agents_needed: 0,
+            agents: 0,
+            agents_needed: 1,
             humans: 0,
             humans_needed: 1,
         }
     );
+    // With the owner, the agent that the old policy asks for is still missing.
     g.approve(g.head, &daniel());
+    assert!(matches!(
+        refused(g.land(merged)),
+        GateRefusal::NotApproved {
+            agents: 0,
+            agents_needed: 1,
+            humans: 1,
+            ..
+        }
+    ));
+    g.approve(g.head, &bot());
     assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn the_policies_of_the_context_count_beside_the_policy_of_the_tip() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let merged = g.merge();
+    // A further policy that raises `docs/` to level 2.
+    let extra = Policy::parse(b"stemma-policy 1\nlevel 2 docs/\n").unwrap();
+    *g.wire.side().policies.borrow_mut() = vec![extra];
+    assert!(matches!(
+        refused(g.land(merged)),
+        GateRefusal::NotApproved {
+            level: RiskLevel::Two,
+            ..
+        }
+    ));
+    // A further policy with the stricter bound of the unverified window.
+    let extra = Policy::parse(b"stemma-policy 1\nlevel 0 docs/\nmax-unverified 1\n").unwrap();
+    *g.wire.side().policies.borrow_mut() = vec![extra];
+    assert_eq!(
+        refused(g.land(merged)),
+        GateRefusal::Unverified { count: 1, max: 1 }
+    );
+    g.wire.side().policies.borrow_mut().clear();
+    assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn the_authorizer_is_asked_for_main_before_the_gate() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let merged = g.merge();
+    g.wire.side().denied.set(Some("push"));
+    assert_eq!(
+        verdict(g.land(merged)),
+        Some(RefusalReason::Denied {
+            operation: RefOperation::Push
+        })
+    );
+    assert_eq!(g.tip(), g.root);
+}
+
+#[test]
+fn a_hub_without_statements_or_with_unknown_evidence_holds_no_pull_request() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let merged = g.merge();
+    g.wire.side().no_statements.set(true);
+    assert_eq!(refused(g.land(merged)), GateRefusal::NoPull);
+    g.wire.side().no_statements.set(false);
+    // Evidence that names a held statement which is no opening.
+    let approval = Approval::new(Some(repository_id()), g.pull, g.head);
+    let approval = Statement::sign(Body::Approval(approval), &bot())
+        .unwrap()
+        .hash();
+    let moved = to(&g.wire, "heads/main", Some(merged), Some(approval));
+    assert_eq!(
+        refused(push(&mut g.wire, &daniel(), vec![moved])),
+        GateRefusal::NoPull
+    );
+    assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn a_branch_that_moved_after_the_opening_is_refused() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let merged = g.merge();
+    let next = g
+        .wire
+        .side()
+        .commit("mia", &[("docs/a.md", "b\n")], vec![g.head]);
+    let moved = to(&g.wire, "heads/feature", Some(next), None);
+    push(&mut g.wire, &mia(), vec![moved]).unwrap();
+    assert_eq!(
+        refused(g.land(merged)),
+        GateRefusal::BranchMoved { head: Some(next) }
+    );
 }
 
 #[test]
@@ -914,4 +1079,12 @@ fn the_local_gate_and_the_hub_reach_the_same_verdict_on_the_same_inputs() {
     assert_eq!(verdict(g.land(merged)), None);
     let landed = local().unwrap();
     assert_eq!(landed.tip, root);
+    // The merge of the clone has the tree that the hub accepted.
+    let tree_of = |store: &dyn ObjectStore, commit: CommitId| {
+        store.get_commit(&commit).unwrap().unwrap().tree()
+    };
+    assert_eq!(
+        tree_of(clone.objects(), landed.commit),
+        tree_of(g.wire.side().repository.objects(), merged)
+    );
 }
