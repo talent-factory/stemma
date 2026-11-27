@@ -845,3 +845,192 @@ fn a_configuration_that_cannot_be_written_after_its_entry_is_code_3_and_a_repeat
     assert_eq!(ok(local.path(), &["remote", "list"]).stdout, "");
     ok(local.path(), &["op", "verify"]);
 }
+
+// The statements of a pull request on a hub (STEMMA-312). The fixture answers no request for
+// statements: the HTTP mapping of those requests comes with STEMMA-326, so a submission here
+// fails as one to a hub that does not take it, and the tests of the submission itself run
+// against the transport in memory in the core.
+
+/// A clone of the hub with the branch `feat` one commit ahead of `main`.
+fn clone_with_feature(hub: &Hub, place: &Dir) -> PathBuf {
+    ok(
+        place.path(),
+        &["clone", "--actor", ACTOR, &hub.address, "copy"],
+    );
+    let copy = place.path().join("copy");
+    ok(&copy, &["branch", "--actor", ACTOR, "feat"]);
+    ok(&copy, &["switch", "--actor", ACTOR, "feat"]);
+    write(&copy, "feature.txt", "feature\n");
+    track_ok(&copy, "feature.txt");
+    ok(&copy, &["commit", "--actor", ACTOR, "-m", "feature"]);
+    copy
+}
+
+/// The number in this clone of the only pull request, as `pr list` shows it.
+fn listed_number(copy: &Path) -> String {
+    let listed = ok(copy, &["pr", "list"]).stdout;
+    listed.split_whitespace().next().unwrap().to_owned()
+}
+
+/// The digits of the name that `pr list` shows for the only pull request.
+fn listed_id(copy: &Path) -> String {
+    let listed = ok(copy, &["pr", "list"]).stdout;
+    listed
+        .split(" id ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("{listed}"))
+        .to_owned()
+}
+
+#[test]
+fn an_opening_for_a_hub_counts_in_the_clone_when_it_cannot_be_submitted() {
+    let hub = Hub::start();
+    let place = Dir::new();
+    let copy = clone_with_feature(&hub, &place);
+    let opened = run(
+        &copy,
+        &["pr", "open", "--actor", ACTOR, "feat", "--remote", "origin"],
+    );
+    // The entry is written, and the submission did not finish: exit 3.
+    assert_eq!(opened.code, 3, "{}", opened.stderr);
+    assert!(
+        opened.stdout.contains("Opened pull request"),
+        "{}",
+        opened.stdout
+    );
+    assert!(
+        opened.stderr.contains("counts in this clone")
+            && opened.stderr.contains("stemma pr submit"),
+        "{}",
+        opened.stderr
+    );
+    let listed = ok(&copy, &["pr", "list"]).stdout;
+    assert!(listed.contains(" hub\n"), "{listed}");
+    let id = listed_id(&copy);
+    assert_eq!(id.len(), 12, "{id}");
+    // The pull request is named by its hash as well as by its number.
+    let shown = ok(&copy, &["pr", "show", &id[..8]]).stdout;
+    assert!(
+        shown.contains(&format!("({id}), open")) && shown.contains(&"11".repeat(16)),
+        "{shown}"
+    );
+    let shown = ok(&copy, &["pr", "show", &id, "--json"]).stdout;
+    assert!(
+        shown.contains(&format!("\"repository\":\"{}\"", "11".repeat(16)))
+            && shown.contains("\"kind\":\"pr-opening\",\"in_clone\":true,\"held\":null"),
+        "{shown}"
+    );
+    // `pr submit` makes another attempt and writes nothing.
+    let before = operations(&copy).len();
+    let submitted = run(&copy, &["pr", "submit", "--actor", ACTOR, &id]);
+    assert_eq!(submitted.code, 1, "{}", submitted.stderr);
+    assert_eq!(operations(&copy).len(), before);
+    // An approval follows the opening to the hub, and counts here all the same.
+    let approved = run(
+        &copy,
+        &["pr", "approve", "--actor", "human mia", &id, "--offline"],
+    );
+    assert_eq!(approved.code, 0, "{}", approved.stderr);
+    assert!(
+        approved.stdout.contains("`stemma pr submit"),
+        "{}",
+        approved.stdout
+    );
+    let listed = ok(&copy, &["pr", "list"]).stdout;
+    assert!(listed.contains("approvals 1"), "{listed}");
+}
+
+#[test]
+fn an_offline_opening_is_made_for_the_hub_and_submitted_later() {
+    let hub = Hub::start();
+    let place = Dir::new();
+    let copy = clone_with_feature(&hub, &place);
+    let opened = run(
+        &copy,
+        &[
+            "pr",
+            "open",
+            "--actor",
+            ACTOR,
+            "feat",
+            "--remote",
+            "origin",
+            "--offline",
+        ],
+    );
+    assert_eq!(opened.code, 0, "{}", opened.stderr);
+    assert!(
+        opened
+            .stdout
+            .contains("counts in this clone; `stemma pr submit"),
+        "{}",
+        opened.stdout
+    );
+    let number = listed_number(&copy);
+    let shown = ok(&copy, &["pr", "show", &number]).stdout;
+    assert!(shown.contains("For the repository"), "{shown}");
+    // A check for the hub, offline as well.
+    let checked = run(
+        &copy,
+        &[
+            "check",
+            "record",
+            "--actor",
+            ACTOR,
+            "feat",
+            "--result",
+            "pass",
+            "--remote",
+            "origin",
+            "--offline",
+        ],
+    );
+    assert_eq!(checked.code, 0, "{}", checked.stderr);
+    let shown = ok(&copy, &["pr", "show", &number]).stdout;
+    assert!(shown.contains("  check-result "), "{shown}");
+}
+
+#[test]
+fn the_statements_of_a_pull_request_of_this_clone_only_go_to_no_hub() {
+    let hub = Hub::start();
+    let place = Dir::new();
+    let copy = clone_with_feature(&hub, &place);
+    ok(&copy, &["pr", "open", "--actor", ACTOR, "feat"]);
+    let number = listed_number(&copy);
+    let shown = ok(&copy, &["pr", "show", &number]).stdout;
+    assert!(shown.contains("For this clone only."), "{shown}");
+    let submitted = run(&copy, &["pr", "submit", "--actor", ACTOR, &number]);
+    assert_eq!(submitted.code, 1, "{}", submitted.stderr);
+    assert!(
+        submitted.stderr.contains("counts in this clone only"),
+        "{}",
+        submitted.stderr
+    );
+    let before = operations(&copy).len();
+    let approved = run(
+        &copy,
+        &[
+            "pr",
+            "approve",
+            "--actor",
+            "human mia",
+            &number,
+            "--remote",
+            "origin",
+        ],
+    );
+    assert_eq!(approved.code, 1, "{}", approved.stderr);
+    assert_eq!(operations(&copy).len(), before, "nothing is written");
+    // `--offline` without a hub, and a name that is no name, are refused before anything.
+    let refused = run(
+        &copy,
+        &["pr", "open", "--actor", ACTOR, "feat", "--offline"],
+    );
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    for name in ["abc", "1a", "zzzzzzzzzz", "99"] {
+        let refused = run(&copy, &["pr", "show", name]);
+        assert_eq!(refused.code, 1, "{name}: {}", refused.stderr);
+    }
+    assert_eq!(operations(&copy).len(), before);
+}

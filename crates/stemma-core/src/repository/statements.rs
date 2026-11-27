@@ -83,7 +83,7 @@ impl Repository {
     /// stand-in as well; `op verify` reports it. A stand-in does only what makes things
     /// stricter: the gate keeps the reservation of a pull request that it ended, and a failing
     /// run that stands in only makes its commit red (ADR-019).
-    fn placed(
+    pub(super) fn placed(
         &self,
         entries: &[Entry],
         register: Option<&Register>,

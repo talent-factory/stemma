@@ -54,14 +54,14 @@ pub(super) struct NetworkError {
 }
 
 impl NetworkError {
-    fn refused(message: impl Into<String>) -> Self {
+    pub(super) fn refused(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: 1,
         }
     }
 
-    fn of_kind(message: impl Into<String>, kind: FailureKind) -> Self {
+    pub(super) fn of_kind(message: impl Into<String>, kind: FailureKind) -> Self {
         let code = match kind {
             FailureKind::Damaged => 5,
             FailureKind::Locked => 6,
@@ -73,7 +73,7 @@ impl NetworkError {
         }
     }
 
-    fn incomplete(message: impl Into<String>) -> Self {
+    pub(super) fn incomplete(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: 3,
@@ -82,6 +82,12 @@ impl NetworkError {
 
     pub(super) fn exit_code(&self) -> ExitCode {
         ExitCode::from(self.code)
+    }
+
+    /// The message, for a command that reports the failure as part of another one
+    /// (STEMMA-312).
+    pub(super) fn message(&self) -> &str {
+        &self.message
     }
 }
 
@@ -294,7 +300,7 @@ pub(super) struct FetchArgs {
     remote: RemoteName,
 }
 
-fn parse_remote_name(text: &str) -> Result<RemoteName, String> {
+pub(super) fn parse_remote_name(text: &str) -> Result<RemoteName, String> {
     RemoteName::try_new(text).map_err(|error| error.to_string())
 }
 
@@ -347,7 +353,10 @@ fn hub_of(address: &RemoteAddress) -> Option<String> {
 // The connection.
 
 /// A transport to the repository of `config`, signed in if the configuration asks for it.
-fn connect(config: &RemoteConfig, key: Option<&Path>) -> Result<HttpTransport, NetworkError> {
+pub(super) fn connect(
+    config: &RemoteConfig,
+    key: Option<&Path>,
+) -> Result<HttpTransport, NetworkError> {
     let mut transport = HttpTransport::new(config, Timeouts::DEFAULT)
         .map_err(|error| NetworkError::refused(format!("{error}; nothing was written")))?;
     if config.sign_in {
@@ -417,7 +426,11 @@ fn read_public_key(key: &Path) -> Result<PublicKey, NetworkError> {
 /// The error of a command that spoke to a hub, with what the status of the last answer adds: a
 /// busy hub and a limit on requests are code 6, a redirect is named with its new address, and a
 /// repository that the hub does not serve and a missing sign-in are said as such (ADR-023).
-fn with_status(message: String, kind: FailureKind, transport: &HttpTransport) -> NetworkError {
+pub(super) fn with_status(
+    message: String,
+    kind: FailureKind,
+    transport: &HttpTransport,
+) -> NetworkError {
     // The message of the transport names the status, the wait, and the new address already.
     match transport.last_status() {
         Some(Status::Busy(_)) | Some(Status::RateLimited(_)) if kind == FailureKind::Other => {

@@ -14,7 +14,9 @@
 //! the signature before anything is written. In the open mode there is no key, and the
 //! statement is unsigned. The statement comes before its entry: a stop in between leaves a
 //! statement that no entry names, which counts for nothing, and the same call can be made
-//! again. A statement made here names no repository of a hub and counts locally only.
+//! again. A statement made here names no repository of a hub and counts locally only, unless
+//! the pull request was opened for one ([`Repository::open_pull_for`], STEMMA-312): then its
+//! opening, its approvals, and its closing name that repository.
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -31,6 +33,7 @@ use crate::oplog::{
 };
 use crate::protocol::record::SealError;
 use crate::protocol::statement::{self, Body, Closing, Opening, Statement, StatementProblem};
+use crate::protocol::RepositoryId;
 use crate::pull::{self, Approval, PullRequest, Recount, TARGET};
 use crate::refs::{BranchName, RefError};
 use crate::register::{Identity, ProofError, Register};
@@ -125,17 +128,71 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, PullError> {
         self.require_oplog("open a pull request")?;
+        self.open_pull_in(
+            None, branch, actor, reviewers, repairs, register, signer, authorizer,
+        )
+    }
+
+    /// [`open_pull`](Self::open_pull) for the repository `repository` of a hub (STEMMA-312):
+    /// the opening names it, so that the hub can hold it, and the approvals and the closing of
+    /// the pull request name it as well. The pull request counts in this clone at once, as one
+    /// of `open_pull` does; the submission to the hub is a call of its own
+    /// ([`submit_statements`](Self::submit_statements)), which can come later, for a clone
+    /// that is offline now.
+    ///
+    /// # Errors
+    ///
+    /// As [`open_pull`](Self::open_pull).
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_pull_for(
+        &self,
+        repository: RepositoryId,
+        branch: &BranchName,
+        actor: &Actor,
+        reviewers: Vec<Actor>,
+        repairs: Option<CommitId>,
+        register: Option<&Register>,
+        signer: Option<&dyn Signer>,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, PullError> {
+        self.require_oplog("open a pull request")?;
+        self.open_pull_in(
+            Some(repository),
+            branch,
+            actor,
+            reviewers,
+            repairs,
+            register,
+            signer,
+            authorizer,
+        )
+    }
+
+    /// The opening of [`open_pull`](Self::open_pull), for a repository of a hub or none.
+    #[allow(clippy::too_many_arguments)]
+    fn open_pull_in(
+        &self,
+        repository: Option<RepositoryId>,
+        branch: &BranchName,
+        actor: &Actor,
+        reviewers: Vec<Actor>,
+        repairs: Option<CommitId>,
+        register: Option<&Register>,
+        signer: Option<&dyn Signer>,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, PullError> {
         let allowed = self.allowed_for_pull(PR_OPEN, branch.as_str(), actor, authorizer)?;
         if branch.as_str() == TARGET {
             return Err(PullError::TargetBranch);
         }
         let signed_head = self.branch_head(branch)?;
         let identities = reviewers.iter().map(Identity::of).collect();
-        let opening = Opening::try_new(None, branch.clone(), signed_head, identities, repairs)
-            .map_err(|problem| match problem {
-                StatementProblem::TargetBranch => PullError::TargetBranch,
-                _ => PullError::Entry(EntryError::BadReviewers),
-            })?;
+        let opening =
+            Opening::try_new(repository, branch.clone(), signed_head, identities, repairs)
+                .map_err(|problem| match problem {
+                    StatementProblem::TargetBranch => PullError::TargetBranch,
+                    _ => PullError::Entry(EntryError::BadReviewers),
+                })?;
         // The entry holds the rules of the reviewers that need the opener, so it is built
         // before the statement is signed: a refusal comes before the key is asked.
         let entry = PullEntry::open(
@@ -246,7 +303,7 @@ impl Repository {
         let pull = open_pull_of(&pulls, number)?;
         may_close(pull)?;
         let id = pull.id();
-        let closing = Body::Closing(Closing::new(None, id));
+        let closing = Body::Closing(Closing::new(pull.repository(), id));
         let statement = make_statement(closing, actor, register, signer)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
         let pulls = self.evidence(register)?.pulls;
@@ -357,7 +414,8 @@ impl Repository {
             let pulls = self.evidence(register)?.pulls;
             let pull = open_pull_of(&pulls, number)?;
             let head = self.branch_head(pull.branch())?;
-            let approval = Body::Approval(statement::Approval::new(None, pull.id(), head));
+            let approval =
+                Body::Approval(statement::Approval::new(pull.repository(), pull.id(), head));
             (head, make_statement(approval, actor, register, signer)?)
         };
         let allowed =

@@ -26,6 +26,7 @@ use crate::oplog::{CheckEntry, CheckResult, Entry, OpLogError, OperationName, CH
 use crate::policy::RiskLevel;
 use crate::protocol::record::SealError;
 use crate::protocol::statement::{Body, Checked};
+use crate::protocol::RepositoryId;
 use crate::refs::RefError;
 use crate::register::{ProofError, Register};
 use crate::signature::Signer;
@@ -72,6 +73,57 @@ impl Repository {
         authorizer: &dyn Authorizer,
     ) -> Result<Entry, CheckError> {
         self.require_oplog("record a check")?;
+        self.record_check_in(
+            None, commit, base, result, actor, register, signer, authorizer,
+        )
+    }
+
+    /// [`record_check`](Self::record_check) for the repository `repository` of a hub
+    /// (STEMMA-312): the statement names it, so that the hub can hold it. It counts in this
+    /// clone at once; the submission is a call of its own
+    /// ([`submit_statements`](Self::submit_statements)).
+    ///
+    /// # Errors
+    ///
+    /// As [`record_check`](Self::record_check).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_check_for(
+        &self,
+        repository: RepositoryId,
+        commit: CommitId,
+        base: Option<CommitId>,
+        result: CheckResult,
+        actor: &Actor,
+        register: Option<&Register>,
+        signer: Option<&dyn Signer>,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, CheckError> {
+        self.require_oplog("record a check")?;
+        self.record_check_in(
+            Some(repository),
+            commit,
+            base,
+            result,
+            actor,
+            register,
+            signer,
+            authorizer,
+        )
+    }
+
+    /// The check of [`record_check`](Self::record_check), for a repository of a hub or none.
+    #[allow(clippy::too_many_arguments)]
+    fn record_check_in(
+        &self,
+        repository: Option<RepositoryId>,
+        commit: CommitId,
+        base: Option<CommitId>,
+        result: CheckResult,
+        actor: &Actor,
+        register: Option<&Register>,
+        signer: Option<&dyn Signer>,
+        authorizer: &dyn Authorizer,
+    ) -> Result<Entry, CheckError> {
         let name = OperationName::try_new(CHECK).expect("`check` is an operation name");
         let target = commit.to_string();
         let allowed = self
@@ -80,7 +132,7 @@ impl Repository {
                 operation: CHECK.to_owned(),
                 target,
             })?;
-        let checked = Checked::try_new(None, commit, base, result)
+        let checked = Checked::try_new(repository, commit, base, result)
             .map_err(|_| CheckError::BaseIsCommit { commit })?;
         let statement = make_statement(Body::Check(checked), actor, register, signer)?;
         let lock = self.refs_store().lock_writer(&allowed)?;
