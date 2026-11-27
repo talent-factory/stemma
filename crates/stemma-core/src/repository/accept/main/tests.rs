@@ -396,6 +396,11 @@ struct Gated {
 /// `main` at a root with the register, `policy`, and the files `tests/t.rs` and `src/lib.rs`;
 /// `feature` at a commit of Mia that adds or changes `change`, opened by her.
 fn gated_with(policy: &str, change: &[(&str, &str)]) -> Gated {
+    gated_by(policy, change, &mia())
+}
+
+/// [`gated_with`], with the head pushed to `feature` and opened by `writer`.
+fn gated_by(policy: &str, change: &[(&str, &str)], writer: &Seeded) -> Gated {
     let hub = Hub::new();
     let register = register_of().encode();
     let base = [
@@ -416,7 +421,7 @@ fn gated_with(policy: &str, change: &[(&str, &str)]) -> Gated {
     let moved = to(&wire, "heads/main", Some(root), None);
     push(&mut wire, &daniel(), vec![moved]).unwrap();
     let moved = to(&wire, "heads/feature", Some(head), None);
-    push(&mut wire, &mia(), vec![moved]).unwrap();
+    push(&mut wire, writer, vec![moved]).unwrap();
     let opening = Opening::try_new(
         Some(repository_id()),
         crate::refs::BranchName::try_new("feature").unwrap(),
@@ -425,7 +430,7 @@ fn gated_with(policy: &str, change: &[(&str, &str)]) -> Gated {
         None,
     )
     .unwrap();
-    let pull = submit(&mut wire, Body::Opening(opening), &mia());
+    let pull = submit(&mut wire, Body::Opening(opening), writer);
     Gated {
         wire,
         root,
@@ -615,6 +620,80 @@ fn a_tree_that_is_not_the_clean_merge_is_refused() {
     );
 
     assert_eq!(refused(g.land(merged)), GateRefusal::NotTheMerge);
+    assert_eq!(g.tip(), g.root);
+}
+
+#[test]
+fn a_merge_that_breaks_the_register_or_the_policy_is_refused() {
+    // Every later update reads the register of the tip and every later move of `main` its
+    // policy: a merge that the gate allows but that breaks one of them would lock the hub.
+    for change in [
+        (register::FILE, "not a register\n"),
+        (policy::FILE_NAME, "not a policy\n"),
+    ] {
+        let mut g = gated_with(POLICY, &[change]);
+        g.approve_all();
+        g.check(g.head, Some(g.root), CheckResult::Pass);
+        let merged = g.merge();
+        assert!(
+            matches!(refused(g.land(merged)), GateRefusal::Unusable(_)),
+            "{}",
+            change.0
+        );
+        assert_eq!(g.tip(), g.root);
+    }
+}
+
+#[test]
+fn a_check_of_an_agent_of_the_opener_does_not_count_at_level_2() {
+    // Daniel pushed and opened the head; `bot` is his agent. Its approval counts as one of two
+    // agents (ADR-004), but its run is not independent of the change at level 2 (ADR-019).
+    let mut g = gated_by(POLICY, &[("src/lib.rs", "pub fn two() {}\n")], &daniel());
+    for signer in [bot(), cat(), ana()] {
+        g.approve(g.head, &signer);
+    }
+    let checked = Checked::try_new(
+        Some(repository_id()),
+        g.head,
+        Some(g.root),
+        CheckResult::Pass,
+    )
+    .unwrap();
+    submit(&mut g.wire, Body::Check(checked), &bot());
+    let merged = g.merge();
+    assert_eq!(
+        refused(g.land(merged)),
+        GateRefusal::NotChecked {
+            level: RiskLevel::Two,
+            source: LevelSource::Paths,
+        }
+    );
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    assert_eq!(verdict(g.land(merged)), None);
+}
+
+#[test]
+fn a_head_on_main_already_lands_no_change_and_no_other_tree() {
+    let mut g = gated();
+    // A pull request whose head is the tip of `main` itself.
+    let moved = to(&g.wire, "heads/same", Some(g.root), None);
+    push(&mut g.wire, &mia(), vec![moved]).unwrap();
+    let opening = Opening::try_new(
+        Some(repository_id()),
+        crate::refs::BranchName::try_new("same").unwrap(),
+        g.root,
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    g.pull = submit(&mut g.wire, Body::Opening(opening), &mia());
+    let register = register_of().encode();
+    let mut files = base_files(&register, POLICY);
+    let same = g.wire.side().commit("daniel", &files, vec![g.root]);
+    assert!(matches!(refused(g.land(same)), GateRefusal::Level(_)));
+    files.push(("src/more.rs", "smuggled\n"));
+    let other = g.wire.side().commit("daniel", &files, vec![g.root]);
+    assert_eq!(refused(g.land(other)), GateRefusal::NotTheMerge);
     assert_eq!(g.tip(), g.root);
 }
 

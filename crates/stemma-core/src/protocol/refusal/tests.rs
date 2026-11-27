@@ -519,6 +519,10 @@ fn every_verdict() -> Vec<(GateRefusal, String)> {
             "level no file differs".to_owned(),
         ),
         (
+            GateRefusal::Unusable(reason("the merge holds no register")),
+            "unusable the merge holds no register".to_owned(),
+        ),
+        (
             GateRefusal::NotChecked {
                 level: RiskLevel::Three,
                 source: LevelSource::Paths,

@@ -7,6 +7,7 @@
 //! The rules are the ones of the local writer of phase 4, asked against the register at the tip
 //! of `main` on the hub; they stand in the documentation of the method, which is the public one.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fmt;
@@ -421,9 +422,23 @@ pub(super) struct Actors<'a> {
     /// The store, which holds the register commits that the lines name, as far as they are
     /// not gone.
     pub(super) store: &'a dyn ObjectStore,
+    /// The first register commit that a line names and that could not be read, or that holds
+    /// no register, while an identity was asked for that the register at the tip does not hold.
+    /// The actor of such an identity has no sponsor of its time, so the gate on a hub fails
+    /// instead of judging with it.
+    pub(super) unreadable: RefCell<Option<ModeError>>,
 }
 
-impl Actors<'_> {
+impl<'a> Actors<'a> {
+    /// The actors of the lines of a hub whose register at the tip of `main` is `register`.
+    pub(super) fn new(register: &'a Register, store: &'a dyn ObjectStore) -> Self {
+        Self {
+            register,
+            store,
+            unreadable: RefCell::default(),
+        }
+    }
+
     /// The actor of `identity`, from the lines of a held statement or an entry that name the
     /// register commit `at`. The lines name an identity of the register of their time, so the
     /// step is never dropped: that would change the state of a pull request. The actor is the
@@ -431,16 +446,15 @@ impl Actors<'_> {
     /// whose sponsor of an agent is the one of its time. Where neither holds the identity, it is
     /// the identity alone, an agent with its own ID in the place of the sponsor: the rules of
     /// the fold and of the writers compare identities, but the independence of a check
-    /// ([`crate::check::is_independent`]) reads the sponsor, and the gate on a hub must ask the
-    /// register for such an agent itself.
+    /// ([`crate::check::is_independent`]) reads the sponsor. A register at `at` that cannot be
+    /// read is kept in [`Actors::unreadable`], which the gate on a hub asks.
     pub(super) fn of(&self, identity: &Identity, at: CommitId) -> Actor {
         self.register
             .actor_of(identity)
-            .or_else(|| {
-                Register::at_commit(self.store, &at)
-                    .ok()
-                    .flatten()
-                    .and_then(|register| register.actor_of(identity))
+            .or_else(|| match Register::at_commit(self.store, &at) {
+                Ok(Some(register)) => register.actor_of(identity),
+                Ok(None) => self.unread(ModeError::RegisterMissing),
+                Err(error) => self.unread(error),
             })
             .unwrap_or_else(|| {
                 let id = identity.id();
@@ -450,6 +464,12 @@ impl Actors<'_> {
                 }
                 .expect("an identity of the lines of the hub is a valid actor")
             })
+    }
+
+    /// Keeps the first register that could not be read; the actor is then not found there.
+    fn unread(&self, error: ModeError) -> Option<Actor> {
+        self.unreadable.borrow_mut().get_or_insert(error);
+        None
     }
 }
 
@@ -475,7 +495,7 @@ pub fn statements_of_open_pulls(
     register: &Register,
     store: &dyn ObjectStore,
 ) -> Vec<HeldStatement> {
-    let evidence = evidence_of(held, record, &Actors { register, store });
+    let evidence = evidence_of(held, record, &Actors::new(register, store));
     let open: Vec<_> = evidence
         .pulls
         .iter()
@@ -621,10 +641,7 @@ impl Repository {
         let register = Register::at_commit(self.objects(), &tip)
             .map_err(unreadable)?
             .ok_or_else(|| unreadable(ModeError::RegisterMissing))?;
-        let actors = Actors {
-            register: &register,
-            store: self.objects(),
-        };
+        let actors = Actors::new(&register, self.objects());
         let evidence = evidence_of(&held, &record.entries, &actors);
         let hash = statement.hash();
         if let Some(same) = held.iter().find(|held| held.hash() == hash) {

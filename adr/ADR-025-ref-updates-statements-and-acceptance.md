@@ -746,7 +746,10 @@ one of them later). For a move of `main` after the first push, the operation ask
 for `push` and then the gate: `M` is a commit with the single parent `T`, its evidence line names
 an opening that the hub holds and whose pull request is open, the hub folds its held statements
 and the merges of its record in its order, and the tree of `M` is the tree that the verdict
-computes. Nothing that the sender claims enters it: the update names no level, and an `M` that
+computes. The register and the policy of `M` must be readable, as every later update reads the
+register of the tip and every later move of `main` its policy: a merge that removed or broke one
+of them would leave nothing that could move `main` to repair it. Nothing that the sender claims
+enters it: the update names no level, and an `M` that
 changes `.stemma-policy` is judged by the policy of `T`. An accepted entry names the commit of the
 policy of `T` in its `policy` line, as the verdict rests on it. The first version computes all of
 it under the lock; moving the tree merge and the verdict before the lock waits for the measured
@@ -767,6 +770,7 @@ branch-moved <commit or ->         the branch is not at the head of the opening
 conflict -                         the merge onto T has a conflict
 policy <text>                      the policy of T cannot be used
 level <text>                       the level cannot be told, or the change changes nothing
+unusable <text>                    the register or the policy of M cannot be used
 not-checked <level> <source>       no result of a check counts
 not-approved <level> <source> <agents> <agents needed> <humans> <humans needed>
 red-tip <commit>                   the first red tip

@@ -1083,6 +1083,10 @@ Namespace-Policy, weitere Policies, die mit der Policy von $T$ nach dem Maximum 
 und ruft das Urteil auf, mit dem Register und der Policy von $T$, den Branches des Hubs und
 seiner Zeit.
 \item Der Tree von $M$ ist der Tree, den das Urteil als sauberen Merge berechnet.
+\item Register und Policy von $M$ lassen sich lesen.
+Jede spätere Aktualisierung liest das Register der Spitze, jede spätere Bewegung von \type{main}
+ihre Policy; ein Merge, der eines davon entfernt oder zerbricht, liesse nichts übrig, das
+\type{main} zur Reparatur bewegen könnte.
 \stopitemize
 
 Ob eine Signatur zählt, beurteilt das Register von $T$.
@@ -1145,6 +1149,10 @@ hat. \stopxcell
 \startxcell \type{not-approved} \stopxcell
 \startxcell Zu wenige Freigaben zählen; die Zeile nennt die Stufe, ihre Herkunft und die
 gezählten und verlangten Freigaben von Agenten und Menschen. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{unusable} \stopxcell
+\startxcell Register oder Policy von $M$ lassen sich nicht verwenden. \stopxcell
 \stopxrow
 \startxrow[bottomframe=on]
 \startxcell \type{red-tip}, \type{unverified}, \type{reserved} \stopxcell

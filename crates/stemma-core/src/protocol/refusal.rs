@@ -52,6 +52,7 @@
 //! parents -                          not-the-merge -
 //! branch-moved <commit or ->         conflict -
 //! policy <one line>                  level <one line>
+//! unusable <one line>
 //! not-checked <level> <source>
 //! not-approved <level> <source> <agents> <agents needed> <humans> <humans needed>
 //! red-tip <commit>                   unverified <commits> <bound>
@@ -525,6 +526,11 @@ pub enum GateRefusal {
     /// The level of the change cannot be told, or the change has no file that differs from `T`.
     /// Carries what was found.
     Level(Reason),
+    /// The register or the policy of `M` cannot be used: `M` holds no register, or one or a
+    /// policy that its reader refuses. Every later update reads the register of the tip of
+    /// `main`, and every later move of `main` its policy, so such an `M` would end the use of
+    /// the repository on the hub. Carries what the reader reported.
+    Unusable(Reason),
     /// No result of a check counts at the level of the change (ADR-019).
     NotChecked {
         /// The level of the change.
@@ -595,6 +601,12 @@ impl fmt::Display for GateRefusal {
             Self::Conflict => f.write_str("the head conflicts with the tip of `main`"),
             Self::Policy(reason) => write!(f, "the policy of the tip cannot be used: {reason}"),
             Self::Level(reason) => write!(f, "the level of the change cannot be told: {reason}"),
+            Self::Unusable(reason) => {
+                write!(
+                    f,
+                    "the register or the policy of the merge cannot be used: {reason}"
+                )
+            }
             Self::NotChecked {
                 level,
                 source: from,
@@ -646,6 +658,7 @@ impl GateRefusal {
             Self::Conflict => format!("conflict {NONE}"),
             Self::Policy(reason) => format!("policy {reason}"),
             Self::Level(reason) => format!("level {reason}"),
+            Self::Unusable(reason) => format!("unusable {reason}"),
             Self::NotChecked { level, source } => {
                 format!("not-checked {level} {}", source.name())
             }
@@ -707,6 +720,7 @@ impl GateRefusal {
             }),
             "policy" => reason(Self::Policy),
             "level" => reason(Self::Level),
+            "unusable" => reason(Self::Unusable),
             "not-checked" => match words.as_slice() {
                 [found, from] => Ok(Self::NotChecked {
                     level: level(found)?,

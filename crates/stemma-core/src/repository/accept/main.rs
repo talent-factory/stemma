@@ -24,7 +24,7 @@ use crate::protocol::record::Move;
 use crate::protocol::refusal::{GateRefusal, RefusalReason};
 use crate::protocol::statement::{Statement, StatementKind};
 use crate::protocol::Reason;
-use crate::register::{Identity, KeyState, ProofError, Register};
+use crate::register::{Identity, KeyState, ModeError, ProofError, Register};
 use crate::repository::verdict::{Case, Proofs, Refusal, Rules, Verdict};
 use crate::repository::{GateError, LevelError, Pause, PolicyError, Repository};
 use crate::signature::PublicKey;
@@ -48,13 +48,17 @@ struct HubProofs<'a> {
 }
 
 impl HubProofs<'_> {
-    /// The number of the first record entry that moved `main` to a commit whose register holds
-    /// `key` of `identity` in another state than active, or `None`. A register that cannot be
-    /// read ends the key at its entry: a store that fails must not widen the window in which a
+    /// The number of the first record entry that moved `main` to a commit whose register no
+    /// longer holds `key` of `identity` as active, after one that held it so, or `None`. A
+    /// register before the key was added does not hold it and ends nothing. After that, every
+    /// entry ends the key whose register does not hold it as active: one that retired or
+    /// revoked it, one that removed the key or its identity, one without a register, and one
+    /// whose register cannot be read. A store that fails must not widen the window in which a
     /// key counts, so the reading fails closed.
     fn ended_at(&self, identity: &Identity, key: &PublicKey) -> Option<u64> {
         let main = super::main_reference();
         let mut registers = self.registers.borrow_mut();
+        let mut seen = false;
         self.record.entries.iter().find_map(|entry| {
             let commit = entry
                 .update()
@@ -66,17 +70,19 @@ impl HubProofs<'_> {
             let register = registers
                 .entry(commit)
                 .or_insert_with(|| Register::at_commit(self.store, &commit).ok());
-            let Some(register) = register else {
-                return Some(entry.number());
-            };
             let state = register
-                .as_ref()?
-                .entry(identity)?
-                .keys()
-                .iter()
-                .find(|held| &held.key == key)?
-                .state;
-            (state != KeyState::Active).then_some(entry.number())
+                .as_ref()
+                .and_then(Option::as_ref)
+                .and_then(|register| register.entry(identity))
+                .and_then(|held| held.keys().iter().find(|held| &held.key == key))
+                .map(|held| held.state);
+            let active = state == Some(KeyState::Active);
+            // Unread or without a register, an entry ends the key even before it was seen, as
+            // nothing tells when it was added.
+            let unknown = !matches!(register, Some(Some(_)));
+            let ended = (seen && !active) || unknown;
+            seen |= active;
+            ended.then_some(entry.number())
         })
     }
 }
@@ -152,10 +158,7 @@ impl Repository {
         let Some(opening) = moved.evidence() else {
             return refuse(GateRefusal::NoPull);
         };
-        let actors = Actors {
-            register: state.register,
-            store: self.objects(),
-        };
+        let actors = Actors::new(state.register, self.objects());
         let (placed, merges, order) = placed_in_order(state.held, &state.record.entries, &actors);
         let evidence = evidence::fold(&placed, &merges);
         let Some(pull) = evidence.pulls.iter().find(|pull| pull.id() == opening) else {
@@ -176,6 +179,11 @@ impl Repository {
             Err(super::StatementError::Hub(error)) => return Err(*error),
             Err(other) => return Err(AcceptError::Statements(Box::new(other))),
         };
+        // An actor whose register of its time cannot be read has no sponsor to judge the
+        // independence of a check by; the hub fails instead of judging with it.
+        if let Some(error) = actors.unreadable.take() {
+            return Err(AcceptError::Register(Box::new(error)));
+        }
         let proofs = HubProofs {
             register: state.register,
             store: self.objects(),
@@ -195,7 +203,9 @@ impl Repository {
             now: state.now,
         };
         let refusal = match self.judge_main(&case).map_err(failed)? {
-            Ok(Verdict::Merge(merge)) if merge.tree == merge_tree => return Ok(Ok(())),
+            Ok(Verdict::Merge(merge)) if merge.tree == merge_tree => {
+                return self.usable(&merged);
+            }
             Ok(Verdict::Merge(_)) => return refuse(GateRefusal::NotTheMerge),
             // The head is on `main` already: an `M` that changes nothing is no change, and one that
             // changes files is not the merge.
@@ -262,6 +272,36 @@ impl Repository {
             }
         };
         refuse(verdict)
+    }
+
+    /// Whether the register and the policy of the merge `M` can be used. Every later update
+    /// reads the register of the tip of `main`, and every later move of `main` its policy, so a
+    /// merge that the gate allows but that removes or breaks one of them would end the use of
+    /// the repository on the hub: nothing could move `main` to repair it.
+    fn usable(&self, merged: &CommitId) -> Result<Result<(), RefusalReason>, AcceptError> {
+        let refuse = |error: &dyn std::fmt::Display| {
+            Ok(Err(RefusalReason::Verdict(GateRefusal::Unusable(
+                Reason::from_message(error),
+            ))))
+        };
+        match Register::at_commit(self.objects(), merged) {
+            Ok(Some(_)) => {}
+            Ok(None) => return refuse(&"the merge holds no register"),
+            Err(error @ (ModeError::Parse(_) | ModeError::NotRegisterFile)) => {
+                return refuse(&error);
+            }
+            Err(error) => return Err(AcceptError::Register(Box::new(error))),
+        }
+        match self.policy_at(merged, true) {
+            Ok(_) => Ok(Ok(())),
+            Err(
+                error @ (PolicyError::Missing | PolicyError::NotAFile | PolicyError::Invalid(_)),
+            ) => refuse(&error),
+            Err(error) => Err(AcceptError::Policy {
+                damaged: self.policy_is_damaged(merged),
+                source: Box::new(error),
+            }),
+        }
     }
 }
 
