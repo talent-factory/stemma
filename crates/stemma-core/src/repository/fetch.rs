@@ -31,7 +31,8 @@
 //! A clone is the same fetch without `have` into a new repository: it reads the list, makes the
 //! repository with [`Repository::init`], writes the configuration of the remote with the address
 //! and the repository ID of the list, and fetches with the list that it read, so it costs the
-//! same two requests. The key of the hub is not pinned here (ADR-026, a slice of its own), and a
+//! same two requests. It pins the key of the hub that the list names before it makes anything
+//! (ADR-026), a fetch refuses a list whose key is not the pinned one, and a
 //! sign-in, where the remote needs one, is made by the caller on the transport before
 //! ([`transport::sign_in`](crate::transport::sign_in)). A clone creates no local branch: which
 //! local branch follows which remote reference belongs to the command surface (ADR-008).
@@ -52,8 +53,10 @@ use crate::protocol::{ErrorMessage, FetchRequest, ParseError, RefList, Repositor
 use crate::receive::{Bounds, ConnectivityError, FetchJournalError, ReceiveError, Received};
 use crate::refs::{RefError, RefStore, PURGE_JOURNAL};
 use crate::remote::{
-    self, RemoteAddress, RemoteConfig, RemoteError, RemoteName, RemoteRef, RemoteRefName,
+    self, HubKeyError, RemoteConfig, RemoteError, RemoteName, RemoteRef, RemoteRefName,
 };
+// The setup of a remote on the first contact (STEMMA-305).
+use super::remote_config::RemoteSetup;
 use crate::transport::{Answer, Body, Transport, TransportError};
 use crate::{Actor, Allowed, Authorizer};
 
@@ -105,7 +108,10 @@ impl Repository {
     /// [`FetchError::NoSuchRemote`] if there is none, [`FetchError::Transport`],
     /// [`FetchError::Body`], [`FetchError::TooLarge`], [`FetchError::List`],
     /// [`FetchError::Refused`], and [`FetchError::Unreadable`] for the two requests and their
-    /// answers, and [`FetchError::OtherRepository`] for a list of another repository.
+    /// answers, [`FetchError::OtherRepository`] for a list of another repository, and
+    /// [`FetchError::HubKey`] if the configuration pinned no key of the hub or the list names
+    /// another one. Under the lock, [`FetchError::RemoteChanged`] if the configuration was removed
+    /// or changed during the transfer; what arrived stays for the next fetch.
     ///
     /// The receiving side: [`FetchError::Receive`] if the journal cannot be opened or the stream
     /// is refused, cut off, or not complete, and [`FetchError::Connectivity`] if a listed commit
@@ -136,22 +142,28 @@ impl Repository {
                 found: list.repository(),
             });
         }
-        self.fetch_listed(remote, &list, transport, actor, &allowed)
+        // The pinned key of the hub must be the key that the list names (ADR-026, STEMMA-305):
+        // a changed key moves nothing, and a configuration that pinned none is not trusted.
+        config.hub_keys(&list).map_err(FetchError::HubKey)?;
+        self.fetch_listed(remote, &config, &list, transport, actor, &allowed)
     }
 
-    /// Makes a new repository at `path` as a clone of the repository at `address`, reached
-    /// through `transport`, under the remote name `remote` (ADR-023): the list is read first, so
-    /// that a failure there makes nothing; then [`init`](Self::init) runs with `options`, the
-    /// configuration of the remote is written with the repository ID of the list, and the fetch
-    /// runs with that list, so the clone costs the two requests of a fetch. It pins no key of the
-    /// hub (ADR-026) and makes no local branch.
+    /// Makes a new repository at `path` as a clone of the repository at the address of `setup`,
+    /// reached through `transport`, under the remote name `remote` (ADR-023): the list is read
+    /// first, and the key of the hub that it names is pinned against the expected fingerprint of
+    /// `setup` if there is one (ADR-026), so that a failure there makes nothing; then
+    /// [`init`](Self::init) runs with `options`, the configuration of the remote is written with
+    /// the repository ID of the list, the pinned key, and the CA file and the sign-in of
+    /// `setup`, and the fetch runs with that list, so the clone costs the two requests of a
+    /// fetch. It makes no local branch.
     ///
     /// The authorizer is asked for `fetch` first, before anything is made, and for `init` by
     /// `init`.
     ///
     /// # Errors
     ///
-    /// [`CloneError::Before`] for a failure of the list, before anything was made;
+    /// [`CloneError::Before`] for a failure of the list or of the key of the hub
+    /// ([`FetchError::HubKey`]), before anything was made;
     /// [`CloneError::Init`] if the repository cannot be made; and [`CloneError::After`] for a
     /// failure after the repository was made, which stays where it is with what it holds. Its
     /// `configured` says whether the configuration of the remote was written: then a
@@ -161,7 +173,7 @@ impl Repository {
         path: impl AsRef<Path>,
         options: &InitOptions,
         remote: &RemoteName,
-        address: RemoteAddress,
+        setup: &RemoteSetup,
         transport: &mut dyn Transport,
         actor: &Actor,
         authorizer: &dyn Authorizer,
@@ -170,6 +182,10 @@ impl Repository {
         // The authorizer is asked before anything is made, so a refusal leaves no directory.
         let allowed = authorize_fetch(remote, actor, authorizer).map_err(CloneError::Before)?;
         let list = read_list(transport).map_err(CloneError::Before)?;
+        // The first contact pins the key of the hub (ADR-026, STEMMA-305).
+        let config = setup
+            .first_contact(&list)
+            .map_err(|error| CloneError::Before(FetchError::HubKey(error)))?;
         let repository = Self::init(path, options, actor, authorizer).map_err(CloneError::Init)?;
         let after = |configured, source| CloneError::After {
             path: path.to_path_buf(),
@@ -183,8 +199,6 @@ impl Repository {
                 .refs_store()
                 .lock_writer(&allowed)
                 .map_err(|error| after(false, FetchError::Update(UpdateError::Refs(error))))?;
-            // The key of the hub is pinned by its own slice (ADR-026); until then it stays `-`.
-            let config = RemoteConfig::new(address, list.repository());
             remote::write_config(
                 &repository.metadata_dir(),
                 &repository.metadata_dir().join("tmp"),
@@ -194,7 +208,7 @@ impl Repository {
             .map_err(|error| after(false, FetchError::Remote(error)))?;
         }
         let fetched = repository
-            .fetch_listed(remote, &list, transport, actor, &allowed)
+            .fetch_listed(remote, &config, &list, transport, actor, &allowed)
             .map_err(|error| after(true, error))?;
         Ok((repository, fetched))
     }
@@ -203,6 +217,7 @@ impl Repository {
     fn fetch_listed(
         &self,
         remote: &RemoteName,
+        config: &RemoteConfig,
         list: &RefList,
         transport: &mut dyn Transport,
         actor: &Actor,
@@ -274,6 +289,12 @@ impl Repository {
             .refs_store()
             .lock_writer(allowed)
             .map_err(|error| FetchError::Update(UpdateError::Refs(error)))?;
+        // The configuration is read once more under the lock (STEMMA-305): a `remote remove` or
+        // a pinning during the transfer must not be undone by remote references of the remote
+        // as it was before.
+        if self.remote(remote).map_err(FetchError::Remote)?.as_ref() != Some(config) {
+            return Err(FetchError::RemoteChanged(remote.clone()));
+        }
         // The references to remove are read under the lock, so that none that a writer made in
         // between stays beside the list.
         let kept: BTreeSet<RemoteRefName> = targets.iter().map(|(name, _)| name.clone()).collect();
@@ -363,6 +384,20 @@ fn log_error(error: OpLogError) -> FetchError {
     FetchError::Update(UpdateError::Log(error))
 }
 
+// The list of references for a command (STEMMA-305).
+
+/// Asks the other side for its list of references and reads it, as the first step of a fetch
+/// does. `remote pin` reads it so, to pin the key that the hub names now.
+///
+/// # Errors
+///
+/// [`FetchError::Transport`], [`FetchError::Body`], [`FetchError::TooLarge`],
+/// [`FetchError::List`], [`FetchError::Refused`], and [`FetchError::Unreadable`], as for the
+/// first request of a fetch.
+pub fn read_ref_list(transport: &mut dyn Transport) -> Result<RefList, FetchError> {
+    read_list(transport)
+}
+
 /// Asks for the list of references and reads it.
 fn read_list(transport: &mut dyn Transport) -> Result<RefList, FetchError> {
     match transport.refs().map_err(FetchError::Transport)? {
@@ -448,6 +483,14 @@ pub enum FetchError {
         /// Why the journal stayed.
         source: FetchJournalError,
     },
+    // The key of the hub (ADR-026, STEMMA-305).
+    /// The hub names another key than the pinned one, the list is that of another repository,
+    /// or a first contact found another key than the expected one. Nothing moved.
+    HubKey(HubKeyError),
+    /// The configuration of the remote was removed or changed while the fetch received, which a
+    /// `remote remove` or a pinning does. What arrived stays in the store and in the journal;
+    /// nothing moved.
+    RemoteChanged(RemoteName),
 }
 
 impl FetchError {
@@ -476,7 +519,9 @@ impl FetchError {
             | Self::List(_)
             | Self::Refused(_)
             | Self::Unreadable(_)
-            | Self::OtherRepository { .. } => None,
+            | Self::OtherRepository { .. }
+            | Self::HubKey(_)
+            | Self::RemoteChanged(_) => None,
         }
     }
 }
@@ -514,6 +559,12 @@ impl fmt::Display for FetchError {
                 f,
                 "the fetch has happened, but its journal stayed: {source}"
             ),
+            Self::HubKey(error) => write!(f, "{error}; nothing was fetched"),
+            Self::RemoteChanged(name) => write!(
+                f,
+                "the remote `{name}` was removed or changed while the fetch received; no remote \
+                 reference moved, and a fetch of the remote as it is now goes on"
+            ),
         }
     }
 }
@@ -535,7 +586,9 @@ impl Error for FetchError {
             Self::NoSuchRemote(_)
             | Self::TooLarge
             | Self::Refused(_)
-            | Self::OtherRepository { .. } => None,
+            | Self::OtherRepository { .. }
+            | Self::HubKey(_)
+            | Self::RemoteChanged(_) => None,
         }
     }
 }

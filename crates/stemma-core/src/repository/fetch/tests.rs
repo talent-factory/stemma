@@ -14,6 +14,7 @@ use crate::protocol::record::HubKeys;
 use crate::protocol::RecordHash;
 use crate::receive::FETCH_JOURNAL;
 use crate::refs::{encode_branch, ConflictKind, RefKind};
+use crate::remote::{RemoteAddress, RemoteConfig};
 use crate::serve::{Answering, ListFacts};
 use crate::signature::PublicKey;
 use crate::store::ObjectStore;
@@ -128,7 +129,7 @@ fn clone(dir: &TempDir, hub: &Hub) -> (Repository, Fetched) {
         dir.path().join("clone"),
         &InitOptions::default(),
         &origin(),
-        address(),
+        &RemoteSetup::new(address()),
         &mut hub.transport(),
         &daniel(),
         &AllowAll,
@@ -191,11 +192,12 @@ fn a_clone_holds_every_reference_of_the_hub_as_a_remote_reference() {
         repository.refs().remote_ref(&branch("main")).unwrap(),
         Some(value(main[0], hub.entry))
     );
-    // The configuration holds the address and the ID of the list; no key is pinned here.
+    // The configuration holds the address and the ID of the list, and the key of the hub that
+    // the list names is pinned (ADR-026, STEMMA-305).
     let config = repository.remote(&origin()).unwrap().unwrap();
     assert_eq!(config.address, address());
     assert_eq!(config.repository, hub.id);
-    assert_eq!(config.hub_key, None);
+    assert_eq!(config.hub_key, Some(PublicKey::from_openssh(KEY).unwrap()));
     // One entry `fetch` after the entry of `init`, with every reference as created.
     let entry = fetched.entry.unwrap();
     let change = entry.change().unwrap();
@@ -215,7 +217,7 @@ fn a_clone_holds_every_reference_of_the_hub_as_a_remote_reference() {
     repository.check_connectivity(&main).unwrap();
     assert_eq!(
         fs::read_to_string(repository.metadata_dir().join("format")).unwrap(),
-        "stemma-repository 19\n"
+        "stemma-repository 20\n"
     );
 }
 
@@ -525,7 +527,7 @@ fn no_remote_reference_moves_before_the_connectivity_check_has_passed() {
         dir.path().join("clone"),
         &InitOptions::default(),
         &origin(),
-        address(),
+        &RemoteSetup::new(address()),
         &mut transport,
         &daniel(),
         &AllowAll,
@@ -661,7 +663,7 @@ fn a_clone_whose_list_fails_makes_nothing() {
         dir.path().join("clone"),
         &InitOptions::default(),
         &origin(),
-        address(),
+        &RemoteSetup::new(address()),
         &mut MemoryTransport::new(Failing),
         &daniel(),
         &AllowAll,
@@ -688,7 +690,11 @@ fn a_fetch_leaves_the_references_of_another_remote_alone() {
         &repository.metadata_dir(),
         &repository.metadata_dir().join("tmp"),
         &upstream,
-        &RemoteConfig::new(address(), hub.id),
+        &{
+            let mut config = RemoteConfig::new(address(), hub.id);
+            config.hub_key = Some(PublicKey::from_openssh(KEY).unwrap());
+            config
+        },
     )
     .unwrap();
     repository
@@ -872,7 +878,7 @@ fn a_clone_that_the_authorizer_refuses_makes_nothing() {
         dir.path().join("clone"),
         &InitOptions::default(),
         &origin(),
-        address(),
+        &RemoteSetup::new(address()),
         &mut hub.transport(),
         &daniel(),
         &Deny,

@@ -117,7 +117,7 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
     let log = repository.log_id().unwrap();
     assert_eq!(text, format!("stemma-log-id 1\n{log}\n"));
     assert_eq!(repository.log_id().unwrap(), log);
-    assert_eq!(format_of(&repository), "stemma-repository 19\n");
+    assert_eq!(format_of(&repository), "stemma-repository 20\n");
 
     // A repository of version 18 has no ID; it gets one, and the format rises.
     fs::remove_file(&path).unwrap();
@@ -129,7 +129,7 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
     let new = repository.log_id().unwrap();
     assert_ne!(new, log);
     assert_eq!(repository.log_id().unwrap(), new);
-    assert_eq!(format_of(&repository), "stemma-repository 19\n");
+    assert_eq!(format_of(&repository), "stemma-repository 20\n");
 
     // Another clone has another ID.
     let other = TempDir::new();
@@ -144,7 +144,7 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
     );
     assert!(error.to_string().contains("was removed"), "{error}");
     assert_eq!(error.kind(), crate::failure::FailureKind::Damaged);
-    // Any rise to 19, such as the next entry, gives a repository of 18 its ID.
+    // Any rise across 19, such as the next entry, gives a repository of 18 its ID.
     fs::write(
         repository.metadata_dir().join("format"),
         "stemma-repository 18\n",
@@ -152,7 +152,7 @@ fn init_writes_the_id_of_the_log_and_an_older_repository_gets_one_when_first_nee
     .unwrap();
     commit(&dir, &repository, "a.txt", "one\n");
     assert!(path.exists());
-    assert_eq!(format_of(&repository), "stemma-repository 19\n");
+    assert_eq!(format_of(&repository), "stemma-repository 20\n");
 
     // A file that is not in canonical form is damage, not a reason for a new ID.
     fs::write(&path, format!("stemma-log-id 1\n{}\n", "A".repeat(32))).unwrap();

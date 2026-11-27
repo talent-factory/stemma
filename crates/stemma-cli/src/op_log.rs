@@ -5,7 +5,7 @@ use std::fmt::{self, Display, Write};
 
 use stemma_core::oplog::{
     Change, CheckEntry, Entry, LeaseEntry, Moved, Outcome, PullEntry, Purge, Record,
-    RemotePinEntry, CHECK, REMOTE_PIN,
+    RemoteConfigEntry, RemotePinEntry, CHECK, REMOTE_PIN,
 };
 use stemma_core::refs::Head;
 use stemma_core::remote::RemoteRef;
@@ -139,6 +139,27 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             }
             let _ = write!(out, "  new {}", pin.new_key().fingerprint());
             out.push('\n');
+            return out;
+        }
+        Record::RemoteConfig(remote) => {
+            let mut out = head(&remote.kind().operation());
+            let config = remote.config();
+            let _ = write!(
+                out,
+                "    remote {}  address {}",
+                remote.remote(),
+                config.address
+            );
+            match &config.hub_key {
+                Some(key) => {
+                    let _ = write!(out, "  key {}", key.fingerprint());
+                }
+                None => out.push_str("  key -"),
+            }
+            out.push('\n');
+            for (name, value) in remote.refs() {
+                let _ = writeln!(out, "    {name} {} -", value.commit);
+            }
             return out;
         }
         Record::Check(check) => {
@@ -290,6 +311,10 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// three are `null` where the operation has none.
 /// The pinning of the key of a hub has `time`, `actor`, `operation` (`remote-pin`), `remote`,
 /// `old`, the key that was pinned before or `null`, and `new`, each key in its OpenSSH form.
+/// The addition and the removal of a remote have `time`, `actor`, `operation` (`remote-add` or
+/// `remote-remove`), `remote`, `address`, `repository`, `key`, the pinned key in its OpenSSH form
+/// or `null`, `ca_file` or `null`, `sign_in`, and `references`, the remote references that a
+/// removal deleted, each with `name`, `commit`, and `entry` (STEMMA-305).
 /// A stub has only `time` and `actor` besides; a purge has `time`, `actor`, `operation`,
 /// `commits`, `tags`, and `stubs`, a list of ranges `[start, end]` (ADR-014). The fields above
 /// are those of a change, which has `purge_pending` before `took_effect` as well: `true` if a
@@ -308,7 +333,41 @@ pub fn json(entry: &Entry, outcome: Outcome, pending: bool) -> String {
         Record::Pull(pull) => pull_json(entry, pull),
         Record::Check(check) => check_json(entry, check),
         Record::RemotePin(pin) => remote_pin_json(entry, pin),
+        Record::RemoteConfig(remote) => remote_config_json(entry, remote),
     }
+}
+
+fn remote_config_json(entry: &Entry, remote: &RemoteConfigEntry) -> String {
+    let config = remote.config();
+    let or_null = |value: Option<String>| value.map_or_else(|| "null".to_owned(), |v| quote(&v));
+    let references: Vec<String> = remote
+        .refs()
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{{\"name\":{},\"commit\":{},\"entry\":{}}}",
+                quote(&name.to_string()),
+                quote(&value.commit.to_string()),
+                quote(&value.entry.to_string())
+            )
+        })
+        .collect();
+    format!(
+        "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"remote\",\"time\":{},\
+         \"actor\":{},\"operation\":{},\"remote\":{},\"address\":{},\"repository\":{},\
+         \"key\":{},\"ca_file\":{},\"sign_in\":{},\"references\":[{}]}}",
+        entry.number(),
+        entry.time(),
+        quote(&entry.actor().to_string()),
+        quote(remote.kind().operation()),
+        quote(remote.remote().as_str()),
+        quote(config.address.as_str()),
+        quote(&config.repository.to_string()),
+        or_null(config.hub_key.as_ref().map(ToString::to_string)),
+        or_null(config.ca_file.as_ref().map(ToString::to_string)),
+        config.sign_in,
+        references.join(",")
+    )
 }
 
 fn remote_pin_json(entry: &Entry, pin: &RemotePinEntry) -> String {

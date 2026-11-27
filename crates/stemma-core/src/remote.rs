@@ -57,7 +57,7 @@ use crate::signature::PublicKey;
 pub(crate) const REMOTES_DIR: &str = "remotes";
 
 /// The first line of the configuration of a remote.
-const CONFIG_HEADER: &str = "stemma-remote 1";
+pub(crate) const CONFIG_HEADER: &str = "stemma-remote 1";
 
 /// The value of a line of the configuration that is not set.
 const UNSET: &str = "-";
@@ -964,6 +964,30 @@ pub(crate) fn write_config(
             "move the configuration of the remote into place at",
             &path,
         )(error));
+    }
+    crate::store::flush_directory(&dir).map_err(io_error("flush the directory", &dir))
+}
+
+// The removal of the configuration (STEMMA-305).
+
+/// Deletes the configuration of the remote `name` below the metadata directory `root` and
+/// flushes the directory `remotes/`. A configuration that is gone already is no error. The
+/// caller holds the lock of the references; this function takes none.
+///
+/// # Errors
+///
+/// [`RemoteError::Io`] if the file cannot be deleted or the directory cannot be flushed.
+pub(crate) fn delete_config(root: &Path, name: &RemoteName) -> Result<(), RemoteError> {
+    let dir = root.join(REMOTES_DIR);
+    let path = dir.join(name.as_str());
+    match fault::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(io_error("delete the configuration of the remote", &path)(
+                error,
+            ))
+        }
     }
     crate::store::flush_directory(&dir).map_err(io_error("flush the directory", &dir))
 }

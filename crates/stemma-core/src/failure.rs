@@ -545,6 +545,7 @@ impl Classify for RestoreError {
         match self {
             Self::Update(error) => error.kind(),
             Self::Log(error) => error.kind(),
+            Self::Remote(error) => error.kind(),
             Self::Refs(error) => error.kind(),
             Self::Snapshot(error) => error.kind(),
             Self::Checkout(error) | Self::CheckoutFailed { source: error, .. } => error.kind(),
@@ -560,10 +561,12 @@ impl Classify for RestoreError {
             | Self::IsPull { .. }
             | Self::IsCheck { .. }
             | Self::IsRemotePin { .. }
+            | Self::IsRemoteConfig { .. }
             | Self::TagsOnly { .. }
             | Self::OtherWorktree { .. }
             | Self::WorktreeEntry { .. }
             | Self::GoneWorktree { .. }
+            | Self::GoneRemote { .. }
             | Self::PurgePending { .. }
             | Self::OutcomeUnknown { .. }
             | Self::NoOldValue { .. } => FailureKind::Other,
@@ -745,7 +748,9 @@ impl Classify for crate::repository::FetchError {
             | Self::List(_)
             | Self::Refused(_)
             | Self::Unreadable(_)
-            | Self::OtherRepository { .. } => FailureKind::Other,
+            | Self::OtherRepository { .. }
+            | Self::HubKey(_) => FailureKind::Other,
+            Self::RemoteChanged(_) => FailureKind::Locked,
         }
     }
 }
@@ -756,6 +761,22 @@ impl Classify for crate::repository::CloneError {
             Self::Before(error) => error.kind(),
             Self::After { source, .. } => source.kind(),
             Self::Init(error) => error.kind(),
+        }
+    }
+}
+
+// Adding and removing a remote (STEMMA-305).
+impl Classify for crate::repository::RemoteConfigError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Refs(error) => error.kind(),
+            Self::Remote(error) | Self::Written { source: error, .. } => error.kind(),
+            Self::List(error) => error.kind(),
+            Self::Log(error) => error.kind(),
+            Self::Update(error) => error.kind(),
+            Self::Denied { .. } | Self::Exists(_) | Self::NoSuchRemote(_) | Self::HubKey(_) => {
+                FailureKind::Other
+            }
         }
     }
 }

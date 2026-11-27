@@ -14,6 +14,8 @@ path = "src/main.rs"
 # `wrap_help` wraps the help text at the width of the terminal.
 clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
 stemma-core = { path = "../stemma-core" }
+# The HTTP client of the network commands (ADR-028, STEMMA-305).
+stemma-remote = { path = "../stemma-remote" }
 stemma-tui = { path = "../stemma-tui" }
 
 # `signal-hook` reports which signal came, so that a SIGTERM or SIGHUP can end the command while
