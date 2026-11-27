@@ -740,6 +740,46 @@ fn a_pull_request_whose_branch_was_deleted_is_refused() {
 }
 
 #[test]
+fn a_pull_request_whose_head_was_removed_with_its_branch_is_refused() {
+    let mut g = gated();
+    g.approve(g.head, &bot());
+    g.check(g.head, Some(g.root), CheckResult::Pass);
+    let merged = g.merge();
+    let moved = to(&g.wire, "heads/feature", None, None);
+    push(&mut g.wire, &mia(), vec![moved]).unwrap();
+    // No reference names the head any more, and the removal of unreachable objects takes it
+    // with the merge. The merge is uploaded again, as a clone does before its ref update.
+    let hub = g.wire.side();
+    let store = hub.repository.objects();
+    let kept: Vec<_> = store
+        .ids()
+        .unwrap()
+        .into_iter()
+        .filter(|id| *id != g.head.object_id())
+        .map(|id| store.get(&id).unwrap().unwrap())
+        .collect();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(7200);
+    let removed = hub
+        .repository
+        .remove_unreachable_objects_at(
+            &mut *hub.record.borrow_mut(),
+            std::time::Duration::from_secs(3600),
+            later,
+        )
+        .unwrap();
+    assert!(removed.removed().contains(&g.head.object_id()));
+    for object in kept {
+        store.put_raw(object.kind(), object.body()).unwrap();
+    }
+    assert!(!store.contains(&g.head.object_id()).unwrap());
+    // The refusal is the one of a branch that is gone, not a failure of the hub.
+    assert_eq!(
+        refused(g.land(merged)),
+        GateRefusal::BranchMoved { head: None }
+    );
+}
+
+#[test]
 fn a_merge_that_records_a_conflict_or_is_not_stored_is_refused() {
     let mut g = gated();
     g.approve(g.head, &bot());

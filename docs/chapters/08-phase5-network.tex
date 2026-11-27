@@ -323,10 +323,13 @@ Ein abgelehnter Push hinterlässt unbenannte Objekte auf dem Hub, die er nie aus
 Von Zeit zu Zeit entfernt der Hub, was kein Branch und kein Tag erreicht (ADR-007).
 Die Aufzeichnung der Ref-Updates hält nichts fest; was ein Rewrite oder das Löschen einer
 Referenz zurücklässt, geht mit.
+Nur den letzten Eintrag schont der Hub, solange dessen Bewegungen noch nicht ausgeführt sind.
 Zwischen Upload und Ref-Update hält der Hub keinen Zustand.
 Er schont deshalb jedes Objekt, das jünger ist als eine Frist, die er selbst wählt.
-Kommt das Ref-Update erst nach der Frist und sind die Objekte inzwischen fort, lehnt der Hub es als
-unvollständig ab (\type{Incomplete}).
+Sind Objekte des Push beim Ref-Update fort, lehnt der Hub es als unvollständig ab
+(\type{Incomplete}).
+Das geschieht, wenn das Ref-Update erst nach der Frist kommt, und selten auch innerhalb der Frist:
+Ein Objekt, das der Hub vor dem Upload schon hatte, behält das Alter seiner Datei.
 Der Klon lädt sie dann noch einmal hoch und sendet das Ref-Update erneut.
 Eine zu kurze Frist kostet also einen zweiten Upload und nie Daten.
 Ist die Remote-Referenz des Klons veraltet, scheitert das Compare-and-Swap (\type{Stale}), und der

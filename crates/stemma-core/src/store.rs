@@ -681,7 +681,8 @@ impl FsObjectStore {
     }
 
     /// Removes the file of an object and flushes its directory, so that the removal survives a
-    /// crash. Only the purge deletes objects (ADR-014), and only those that nothing kept reaches.
+    /// crash. Only the purge (ADR-014) and the removal of unreachable objects on a bare
+    /// repository (ADR-007) delete objects, and only those that nothing kept reaches.
     /// Returns `false` if the store has no file for the ID. Either way the removal is durable when
     /// the call returns, and the call fails if the flush fails. A repeated call is therefore
     /// harmless, but it flushes the directory again, because an earlier call may have removed the

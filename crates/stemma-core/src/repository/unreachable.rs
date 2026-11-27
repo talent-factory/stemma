@@ -134,7 +134,14 @@ impl Repository {
         let mut removed = Vec::new();
         let mut young = 0;
         let objects = self.objects();
-        for id in objects.ids().map_err(store)? {
+        let failed = |removed: &Vec<ObjectId>| {
+            let removed = removed.len();
+            move |error| UnreachableError::Store {
+                source: Box::new(error),
+                removed,
+            }
+        };
+        for id in objects.ids().map_err(failed(&removed))? {
             if reachable.contains(&id) {
                 continue;
             }
@@ -144,7 +151,7 @@ impl Repository {
                 // Removed since the listing, by nothing in this crate.
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => {
-                    return Err(store(StoreError::Io {
+                    return Err(failed(&removed)(StoreError::Io {
                         operation: "read the time of the object file",
                         path,
                         source: error,
@@ -157,7 +164,7 @@ impl Repository {
                 young += 1;
                 continue;
             }
-            if objects.remove(&id).map_err(store)? {
+            if objects.remove(&id).map_err(failed(&removed))? {
                 removed.push(id);
             }
         }
@@ -180,15 +187,14 @@ impl Repository {
             if !seen.insert(id.object_id()) {
                 continue;
             }
-            let commit =
-                objects
-                    .get_any_commit(&id)
-                    .map_err(read)?
-                    .ok_or(UnreachableError::Missing {
-                        id: id.object_id(),
-                        kind: Kind::Commit,
-                        needed_by,
-                    })?;
+            let commit = objects
+                .get_any_commit(&id)
+                .map_err(read(needed_by))?
+                .ok_or(UnreachableError::Missing {
+                    id: id.object_id(),
+                    kind: Kind::Commit,
+                    needed_by,
+                })?;
             let by = Some(id.object_id());
             commits.extend(commit.parents().iter().map(|parent| (*parent, by)));
             trees.extend(
@@ -204,15 +210,14 @@ impl Repository {
                 if !seen.insert(tree_id.object_id()) {
                     continue;
                 }
-                let tree =
-                    objects
-                        .get_tree(&tree_id)
-                        .map_err(read)?
-                        .ok_or(UnreachableError::Missing {
-                            id: tree_id.object_id(),
-                            kind: Kind::Tree,
-                            needed_by: Some(needed_by),
-                        })?;
+                let tree = objects
+                    .get_tree(&tree_id)
+                    .map_err(read(Some(needed_by)))?
+                    .ok_or(UnreachableError::Missing {
+                        id: tree_id.object_id(),
+                        kind: Kind::Tree,
+                        needed_by: Some(needed_by),
+                    })?;
                 for entry in tree.entries() {
                     match entry.mode() {
                         EntryMode::Directory => {
@@ -258,10 +263,21 @@ pub enum UnreachableError {
     },
     /// A commit or a tree that the roots reach cannot be read: the storage failed, its file is
     /// damaged, it has another kind, or the strict reader refuses its body. Nothing was removed.
-    Read(Box<ReadError>),
+    Read {
+        /// The commit or the tree that names it, or `None` for a root.
+        needed_by: Option<ObjectId>,
+        /// The error of the read, which names the object.
+        source: Box<ReadError>,
+    },
     /// The objects cannot be listed, the time of a file cannot be read, or a file cannot be
     /// removed.
-    Store(Box<StoreError>),
+    Store {
+        /// The error of the store.
+        source: Box<StoreError>,
+        /// The number of objects that were removed before the error. They stay removed: none of
+        /// them was reachable.
+        removed: usize,
+    },
 }
 
 impl UnreachableError {
@@ -270,8 +286,8 @@ impl UnreachableError {
         match self {
             Self::RecordIo(source) => Some(source),
             Self::Refs(source) => source.io_error(),
-            Self::Read(source) => source.store_error().and_then(StoreError::io_error),
-            Self::Store(source) => source.io_error(),
+            Self::Read { source, .. } => source.store_error().and_then(StoreError::io_error),
+            Self::Store { source, .. } => source.io_error(),
             Self::NotBare { .. } | Self::Record(_) | Self::Missing { .. } => None,
         }
     }
@@ -294,10 +310,11 @@ impl fmt::Display for UnreachableError {
                 kind,
                 needed_by,
             } => {
-                let kind = match kind {
-                    Kind::Commit | Kind::Commit2 => "commit",
-                    Kind::Tree => "tree",
-                    Kind::Blob => "blob",
+                // The walk looks for commits and trees only.
+                let kind = if *kind == Kind::Tree {
+                    "tree"
+                } else {
+                    "commit"
                 };
                 match needed_by {
                     Some(by) => write!(f, "the {kind} {id} that {by} names is missing")?,
@@ -305,8 +322,19 @@ impl fmt::Display for UnreachableError {
                 }
                 write!(f, "; nothing was removed")
             }
-            Self::Read(error) => write!(f, "{error}; nothing was removed"),
-            Self::Store(error) => write!(f, "{error}"),
+            Self::Read { needed_by, source } => {
+                write!(f, "{source}")?;
+                if let Some(by) = needed_by {
+                    write!(f, " ({by} names the object)")?;
+                }
+                write!(f, "; nothing was removed")
+            }
+            Self::Store { source, removed } => {
+                write!(
+                    f,
+                    "{source}; {removed} unreachable objects were removed before"
+                )
+            }
         }
     }
 }
@@ -314,13 +342,12 @@ impl fmt::Display for UnreachableError {
 impl Error for UnreachableError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::RecordIo(source) => Some(source),
-            Self::Refs(_)
-            | Self::Record(_)
-            | Self::Read(_)
-            | Self::Store(_)
-            | Self::NotBare { .. }
-            | Self::Missing { .. } => None,
+            // The message holds the cause itself, so the chain starts below it.
+            Self::RecordIo(source) => source.source(),
+            Self::Refs(source) => source.source(),
+            Self::Read { source, .. } => source.source(),
+            Self::Store { source, .. } => source.source(),
+            Self::Record(_) | Self::NotBare { .. } | Self::Missing { .. } => None,
         }
     }
 }
@@ -329,10 +356,9 @@ fn refs(error: RefError) -> UnreachableError {
     UnreachableError::Refs(Box::new(error))
 }
 
-fn read(error: ReadError) -> UnreachableError {
-    UnreachableError::Read(Box::new(error))
-}
-
-fn store(error: StoreError) -> UnreachableError {
-    UnreachableError::Store(Box::new(error))
+fn read(needed_by: Option<ObjectId>) -> impl FnOnce(ReadError) -> UnreachableError {
+    move |error| UnreachableError::Read {
+        needed_by,
+        source: Box::new(error),
+    }
 }

@@ -179,6 +179,13 @@ impl Repository {
             return refuse(GateRefusal::NotOpen);
         }
         let heads: BTreeMap<_, _> = self.refs().branches()?.into_iter().collect();
+        // The verdict refuses a branch that moved or is gone as well; it is refused here before
+        // the history of the head is read, because no reference may name that head any more,
+        // and the removal of unreachable objects may have taken it (ADR-007).
+        let found = heads.get(pull.branch()).copied();
+        if found != Some(*pull.head()) {
+            return refuse(GateRefusal::BranchMoved { head: found });
+        }
         let writers: Vec<Actor> = match self.writers(*pull.head(), tip, state.record) {
             Ok(writers) => writers
                 .iter()

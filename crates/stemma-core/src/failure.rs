@@ -448,11 +448,13 @@ impl Classify for crate::repository::UnreachableError {
             // A reference or the record reaches an object that is not there, or the record does
             // not read: no state that a writer left.
             Self::Record(_) | Self::Missing { .. } => FailureKind::Damaged,
-            // A body that the strict reader refuses has no error of the store, and is damage.
-            Self::Read(error) => error
-                .store_error()
-                .map_or(FailureKind::Damaged, Classify::kind),
-            Self::Store(error) => error.kind(),
+            // A body that the strict reader refuses has no error of the store, and is damage. So
+            // is an object of another kind: a reference or a tree named it, not a caller.
+            Self::Read { source, .. } => match source.store_error() {
+                None | Some(StoreError::KindMismatch { .. }) => FailureKind::Damaged,
+                Some(error) => error.kind(),
+            },
+            Self::Store { source, .. } => source.kind(),
             Self::NotBare { .. } | Self::RecordIo(_) => FailureKind::Other,
         }
     }

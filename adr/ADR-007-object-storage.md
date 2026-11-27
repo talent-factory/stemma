@@ -187,7 +187,9 @@ server will later keep objects elsewhere (API-first). The implementation is
       that is missing or unreadable stops it before the first removal, because what it names
       cannot be told from what is unreachable. The walk costs one read of each reachable
       commit and tree, the listing one entry per object, and each unreachable object one
-      inspection of its file.
+      inspection of its file. The head of an open pull request is no root either: once its
+      branch moved or was deleted, the head can go, so the gate on a hub refuses such a branch
+      (`BranchMoved`) before it reads the history of the head.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31). A receiving operation, which is the upload on a hub and the
       receiving side of a fetch, runs without the lock, so it writes its temporary files into a

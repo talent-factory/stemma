@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use super::*;
-use crate::object::{Kind, ObjectId};
+use crate::object::{Commit2, Kind, ObjectId, TreeId};
 use crate::refs::encode_branch;
 use crate::repository::{RemovedObjects, UnreachableError};
 
@@ -270,23 +270,133 @@ fn a_reachable_object_that_is_missing_or_a_damaged_record_stops_the_removal() {
     assert!(uploaded.is_subset(&stored(&wire)));
 }
 
+/// A tree with these files, each with its mode, stored in the store of the hub.
+fn tree_with(hub: &Hub, files: &[(&str, FileMode, &str)]) -> TreeId {
+    let store = hub.repository.objects();
+    let mut index = Index::new();
+    for (path, mode, text) in files {
+        let blob = store.put_blob(&Blob::new(*text)).unwrap();
+        index.insert(*path, *mode, blob).unwrap();
+    }
+    index.write_tree(store).unwrap()
+}
+
 #[test]
-fn a_branch_file_that_names_a_commit_of_no_upload_is_reported() {
-    // A reference that names an absent commit is damage: the removal stops before it
-    // removes anything.
-    let (wire, _) = started();
-    let clone = Hub::new();
-    let absent = clone.commit(&[("c.txt", "three\n")], vec![]);
-    let repository = &wire.side().repository;
-    fs::write(
-        repository.metadata_dir().join("refs/heads/broken"),
-        encode_branch(&absent),
+fn the_history_below_a_tip_and_every_side_of_a_conflict_are_kept() {
+    let (mut wire, root) = started();
+    let hub = wire.side();
+    // A chain whose middle commit only its child names, with an executable and a link.
+    let middle = hub.commit(&[("m.txt", "middle\n")], vec![root]);
+    let modes = tree_with(
+        hub,
+        &[
+            ("run.sh", FileMode::Executable, "#!/bin/sh\n"),
+            ("link", FileMode::Symlink, "run.sh"),
+        ],
+    );
+    let tip = Commit::try_new(
+        modes,
+        vec![middle],
+        ChangeId::generate().unwrap(),
+        Actor::human("daniel").unwrap(),
+        2,
+        "the tip",
     )
     .unwrap();
+    let tip = hub.repository.objects().put_commit(&tip).unwrap();
+    // A commit that records an open conflict: three trees, each with a file of its own.
+    let sides: Vec<TreeId> = ["side one\n", "base\n", "side two\n"]
+        .iter()
+        .map(|text| tree_with(hub, &[("c.txt", FileMode::File, text)]))
+        .collect();
+    let conflict = Commit2::try_new(
+        sides,
+        vec![middle],
+        ChangeId::generate().unwrap(),
+        Actor::human("daniel").unwrap(),
+        3,
+        "a conflict",
+    )
+    .unwrap();
+    let conflict = CommitId::new(
+        hub.repository
+            .objects()
+            .put_raw(Kind::Commit2, &conflict.encode())
+            .unwrap(),
+    );
+    let moves = vec![
+        to(&mut wire, "heads/chain", Some(tip)),
+        to(&mut wire, "heads/conflict", Some(conflict)),
+    ];
+    push(&mut wire, &mia(), moves).unwrap();
+
+    let before = stored(&wire);
+    let removed = remove_at(&wire, later()).unwrap();
+    assert_eq!(removed.removed(), []);
+    assert_eq!(stored(&wire), before);
+    // Everything in the store is reached: the walk counts each object once.
+    assert_eq!(removed.reachable(), before.len());
+}
+
+#[test]
+fn a_file_with_a_time_after_the_clock_is_young() {
+    let (wire, _) = started();
+    let clone = Hub::new();
+    clone.commit(&[("b.txt", "two\n")], vec![]);
+    let uploaded = upload(&wire, &clone);
+    // The clock of the system stands before the time of the files.
+    let earlier = SystemTime::now() - 2 * GRACE;
+    let kept = remove_at(&wire, earlier).unwrap();
+    assert_eq!(kept.removed(), []);
+    assert_eq!(kept.young(), uploaded.len());
+    assert!(uploaded.is_subset(&stored(&wire)));
+}
+
+#[test]
+fn a_reference_to_an_object_of_another_kind_or_to_no_object_is_damage() {
+    let (wire, _) = started();
+    let clone = Hub::new();
+    clone.commit(&[("b.txt", "two\n")], vec![]);
+    let uploaded = upload(&wire, &clone);
+    let repository = &wire.side().repository;
+    let branch = repository.metadata_dir().join("refs/heads/broken");
+
+    // A branch that names a blob.
+    let blob = repository
+        .objects()
+        .put_blob(&Blob::new("a blob\n"))
+        .unwrap();
+    fs::write(&branch, encode_branch(&CommitId::new(blob.object_id()))).unwrap();
+    let error = remove_at(&wire, later()).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            UnreachableError::Read {
+                needed_by: None,
+                ..
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(error.kind(), FailureKind::Damaged);
+    assert!(
+        error.to_string().ends_with("; nothing was removed"),
+        "{error}"
+    );
+
+    // A branch that names a commit of no upload.
+    let absent = Hub::new().commit(&[("c.txt", "three\n")], vec![]);
+    fs::write(&branch, encode_branch(&absent)).unwrap();
     let error = remove_at(&wire, later()).unwrap_err();
     assert!(
         matches!(error, UnreachableError::Missing { id, kind: Kind::Commit, needed_by: None }
             if id == absent.object_id()),
         "{error}"
     );
+    assert_eq!(error.kind(), FailureKind::Damaged);
+    assert_eq!(
+        error.to_string(),
+        format!("the commit {absent} of a root is missing; nothing was removed")
+    );
+    assert!(uploaded.is_subset(&stored(&wire)));
 }

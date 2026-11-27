@@ -982,9 +982,9 @@ impl Repository {
     /// the functions of the crate that take an object store, such as the tree merge
     /// ([`crate::merge`]), the register of a commit
     /// ([`Register::at_commit`](crate::register::Register::at_commit)), and the verification of
-    /// trees and commits ([`crate::verify`]). None of them takes the lock but the removal. The remotes and the
-    /// remote references are read as well ([`remotes`](Self::remotes) and the references of
-    /// [`refs`](Self::refs)); a bare repository has none. The accessors
+    /// trees and commits ([`crate::verify`]). None of them takes the lock but the removal. The
+    /// remotes and the remote references are read as well ([`remotes`](Self::remotes) and the
+    /// references of [`refs`](Self::refs)); a bare repository has none. The accessors
     /// ([`path`](Self::path), [`metadata_dir`](Self::metadata_dir), and
     /// [`worktree_name`](Self::worktree_name)) answer as well.
     ///
