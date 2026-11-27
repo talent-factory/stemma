@@ -12,12 +12,14 @@ a second working copy per actor with `stemma worktree add`) and the commands of 
 
 - **In this repository**, Git stays the single source of truth: commits, branches and pull
   requests run through Git (see `CLAUDE.md`). Stemma runs next to it as the example of the book,
-  so the history is double on purpose. Call `stemma` here only when the human asks for it.
+  so the history is double on purpose. Call `stemma` here only when the human asks for it,
+  except for the check of the coordinator below.
   The working copy of the root belongs to the human, who keeps it in line with Git by the
   procedure of `stemma-alongside-git.md` (`stemma init` once, then `just stemma-sync` after
   every `git pull` or merge on `main`). The coordinator only reminds the human of the sync and
-  checks it with `stemma op log` and `stemma op verify`, which only read; it calls no command
-  that takes a snapshot or writes. An agent in a Git worktree calls no `stemma` at all.
+  checks it with `stemma op log` and `stemma op verify`, which only read and need no request
+  of the human; it calls no command that takes a snapshot or writes. An agent in a Git worktree
+  calls no `stemma` at all.
 - **In any other repository** that uses Stemma, the rules below apply as written. An agent gets
   its own working copy there with `stemma worktree add <path> -b <branch>` (run by the human or
   by the agent, as the authorizer allows); it works on its own branch and the human merges it.

@@ -999,14 +999,16 @@ Der dritte Befund betrifft den Anfang. Ein bestehendes \type{.stemma} lässt \ty
 unverändert und endet mit Exit-Code~1, und ein Commit legt sich auf den vorhandenen Verlauf.
 Geht das Verzeichnis verloren, ist auch der Verlauf weg, und mit ihm der Eintrag, den ein Anker
 in den Notizen eines Releases nennt.
-So ging es nach \type{v0.4.0}: Das Log, dessen Eintrag~13 die Notizen verankern, gibt es nicht
-mehr, der Anker lässt sich nicht mehr prüfen, und der Verlauf beginnt neu.
+Das geschah zweimal. Das erste Log ging vor \type{v0.4.0} verloren, so dass sich der Anker von
+\type{v0.3.0} nicht mehr prüfen lässt; das zweite, am 18.~November 2026 angelegt, nach
+\type{v0.4.0}. Das Log, dessen Eintrag~13 die Notizen von \type{v0.4.0} verankern, gibt es
+nicht mehr, und der Verlauf beginnt ein drittes Mal neu.
 
 Der vierte Befund betrifft das Nachführen.
 Eine Datei, die über Git hereinkommt, verfolgt Stemma nicht von selbst, und \type{track .}
 nähme auch Dateien auf, die Git ignoriert.
 Deshalb ruft der Mensch, dem die Arbeitskopie der Wurzel gehört (ADR-010),
-nach jedem \type{git pull} auf \type{main} \type{just stemma-sync} auf.
+nach jedem \type{git pull} oder Merge auf \type{main} \type{just stemma-sync} auf.
 Das Rezept verfolgt genau die Dateien, die \type{git ls-files} nennt,
 die für Stemma unverfolgt sind und die \type{.stemmaignore} nicht ausschliesst.
 Es committet nur bei einer Änderung, mit dem kurzen Hash und dem Betreff
@@ -1017,7 +1019,7 @@ Der Koordinator erinnert nach jeder Welle daran und prüft das Ergebnis nur mit
 Das Vorgehen steht in \type{docs/agents/stemma-alongside-git.md}.
 
 Die erste Erprobung lief in einer Kopie des Stands \type{main}, ohne Eingriff in Git;
-erst danach entstand der Basis-Commit des Verlaufs, der nach \type{v0.4.0} verloren ging.
+erst danach entstand der Basis-Commit des ersten Logs.
 
 \subsection{Bewertung von Code aus Agentenhand}
 

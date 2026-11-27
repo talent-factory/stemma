@@ -9,7 +9,8 @@
 #    entry if one changed). Refuses after it when the working copy holds a conflict.
 # 3. Tracks the files that `git ls-files` lists and `status` reports as untracked. A file that
 #    `.stemmaignore` excludes is never reported as untracked, so it stays out, and so does a
-#    file that Git does not track.
+#    file that Git does not track. The names are compared byte for byte; an untracked name
+#    that is not ASCII is reported as a warning (it may be a Git file in another Unicode form).
 # 4. Commits when the working-copy commit has a change (a new, changed, or deleted file), with
 #    the short hash and the subject of the Git `HEAD` in the message.
 #
@@ -111,6 +112,15 @@ if [ "${#paths[@]}" -gt 0 ]; then
 fi
 
 read_status "$status"
+
+# The comparison is byte for byte. Git on macOS lists names in NFC (`core.precomposeunicode`),
+# the disk may hold them in NFD, so a file that Git tracks can stay untracked here. Name every
+# untracked path that is not plain ASCII, so that the human can check it.
+jq -r '.untracked[] | select(explode | all(. < 128) | not)
+    | "stemma-sync: warning: untracked, with a name that is not ASCII; if Git tracks it, its "
+      + "Unicode form may differ from the one on disk: \(.)"' "$status" >&2 \
+    || fail "cannot read the untracked paths of \`stemma status\`"
+
 if [ "$(jq '.changes | length' "$status")" -eq 0 ]; then
     echo "Nothing to commit at Git $head"
     exit 0

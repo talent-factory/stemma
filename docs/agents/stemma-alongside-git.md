@@ -31,12 +31,14 @@ The agent side is in `using-stemma.md`; the command line reference
   export STEMMA_ACTOR="human daniel"
   ```
 
-  The variable holds only in the shell that set it. Never use an actor `agent ...` here.
+  The variable holds only in the shell that set it; `just` also reads it from a `.env` in the
+  root (`set dotenv-load`). Never use an actor `agent ...` here.
 
 ## Once: the start
 
-Since the release `v0.4.0` the root has had no `.stemma`. The log that the notes of `v0.4.0`
-anchor with entry 13 (a log created on 2026-11-18) is gone, and the history starts anew.
+After the release `v0.4.0` the `.stemma` of the root was lost. The log that the notes of
+`v0.4.0` anchor with entry 13 (a log created on 2026-11-18) is gone, and the history starts
+anew.
 
 1. Go to the root of the Git checkout, on `main`, with a clean working tree:
 
@@ -47,7 +49,7 @@ anchor with entry 13 (a log created on 2026-11-18) is gone, and the history star
    ```
 
 2. Check that there is no `.stemma` yet (`ls -d .stemma` fails). `init` refuses an existing
-   one with exit code 1, the same code as for any other failure.
+   one with exit code 1, the same code as for other failures.
 3. Create the repository:
 
    ```sh
@@ -112,6 +114,11 @@ example 3 for a result that is not complete, 5 for damage (stop and look), and 6
 (try again later). An output of `status` that the script cannot read ends it with 1. Exit code 1
 is thus both a refusal and a failure of `stemma`; the message on stderr tells them apart.
 
+The names are compared byte for byte. Git on macOS lists a name in NFC, and a file created
+locally may have its name in NFD on disk; such a file stays untracked. The script names every
+untracked path that is not plain ASCII in a warning; check it, and track it by hand if Git
+tracks it.
+
 The sync only adds files. A file that Git stops tracking but that stays on disk
 (`git rm --cached`) stays tracked in Stemma, because Stemma has no command to stop tracking a
 file; only a purge takes it out of the history, and that is for secrets (ADR-014).
@@ -122,8 +129,8 @@ The sync is not part of `just ci`: it writes into the history of the root.
 
 | Command | When |
 | ------- | ---- |
-| `stemma status` | To see what Stemma would record. It takes a snapshot. |
-| `stemma diff` | To read the change of the working-copy commit. Without an argument it takes a snapshot. |
+| `stemma status` | To see what the next commit would contain. It takes a snapshot first. |
+| `stemma diff` | To read the change of the working-copy commit. Unless it is given two commits, it takes a snapshot. |
 | `stemma log -n 5` | To read the commits. It only reads. |
 | `stemma op log -n 5` | To read the operation log. It only reads. |
 | `stemma op verify` | After each sync, or at least before a release. Keep the `anchor` line outside the repository; a later `op verify --anchor <number>:<hash>` shows that the log was not rewritten. |
@@ -137,7 +144,9 @@ The release step of `CLAUDE.md` (section "Releases"), with the sync:
 1. Merge the PR that closes the phase, then `git switch main && git pull` in the root.
 2. `just stemma-sync`. Its commit is the Stemma commit of the release state. If it prints
    `Nothing to commit`, the last sync commit already is that state; `stemma commit -m` would end
-   with exit code 1, because there is nothing to commit.
+   with exit code 1, because there is nothing to commit. Its message may then name an older
+   Git commit than the release, when the merges since touched only files that `.stemmaignore`
+   excludes; the content is the same.
 3. `stemma op verify`, before a tag, so that the anchor names the entry of the commit. The
    `anchor` line and that entry (`stemma op log -n 3` names it) go into the section
    `Stemma history` of the release notes, in the format of the notes of `v0.2.0`
