@@ -722,7 +722,7 @@ fn pr_open(args: PrOpenArgs, out: &mut dyn Write) -> Result<(), CliError> {
         None => None,
     };
     if let Some(destination) = &destination {
-        destination.check_key(args.signing.key.as_deref())?;
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
     }
     let entry = match &destination {
         Some(destination) => repository.open_pull_for(
@@ -865,7 +865,7 @@ fn pr_close(args: PrNumberArgs, out: &mut dyn Write) -> Result<(), CliError> {
         args.submitting.offline,
     )?;
     if let Some(destination) = &destination {
-        destination.check_key(args.signing.key.as_deref())?;
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
     }
     let entry = repository
         .close_pull(
@@ -906,7 +906,7 @@ fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> 
         args.submitting.offline,
     )?;
     if let Some(destination) = &destination {
-        destination.check_key(args.signing.key.as_deref())?;
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
     }
     let entry = repository
         .approve_pull(
@@ -1161,7 +1161,7 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
         None => None,
     };
     if let Some(destination) = &destination {
-        destination.check_key(args.signing.key.as_deref())?;
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
     }
     let entry = match &destination {
         Some(destination) => repository.record_check_for(

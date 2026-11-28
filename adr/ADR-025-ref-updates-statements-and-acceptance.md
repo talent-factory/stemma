@@ -810,12 +810,18 @@ Built in STEMMA-312, as a proposal that the review confirms: `Repository::open_p
   its code (an answer outside the protocol 1, a busy hub 6, damage 5), and a refusal of the
   statement of the command is exit 1; the entry stays. An opening that the hub answers with
   `not-open` is held for a pull request that ended there, and is no refusal for the command.
+- **Refused before the entry.** A statement for a hub in an open repository (it would be
+  unsigned), and without `--offline` a remote without a pinned hub key or a sign-in remote
+  without a key, are refused before the entry is written. With `--offline` and without
+  `--remote`, `pr approve` and `pr close` write their statement in a clone where no single
+  remote has the repository of the opening.
 - **The checks of an answer.** Both the submission and the reading take the list of references
   first. A held statement must be the submitted one and carry the signature of the key of the
   hub at its time: the pinned key, or a former key of the list whose range holds the number of
   its `record` line or the next one, as the hub accepted it between the two.
 - **The name of a pull request for people.** A pull request is named by its number in the clone
   or by a prefix of at least 8 hexadecimal digits of the hash of its opening; `pr list` shows 12.
+  Decimal digits alone are a number, so a prefix of only such digits takes `b3:`.
   The hash holds in every clone and on the hub, offline as well. The running number of the hub
   is no name: it exists only once the hub holds the opening, and two hubs count differently.
 - **Not yet.** The HTTP mapping of the three requests (STEMMA-326), the statements of other

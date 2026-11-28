@@ -883,14 +883,91 @@ fn listed_id(copy: &Path) -> String {
         .to_owned()
 }
 
+/// Makes an Ed25519 key pair in `dir` with `ssh-keygen` and returns the path of the private key.
+/// `None` if `ssh-keygen` is not on the path (the test is skipped, unless
+/// STEMMA_REQUIRE_SSH_KEYGEN is set).
+fn generate_key(dir: &Path, name: &str) -> Option<String> {
+    let file = dir.join(name);
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+        .arg(&file)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !made {
+        assert!(
+            std::env::var_os("STEMMA_REQUIRE_SSH_KEYGEN").is_none(),
+            "STEMMA_REQUIRE_SSH_KEYGEN is set, but `ssh-keygen` does not work"
+        );
+        eprintln!("SKIPPED: `ssh-keygen` is not on the path");
+        return None;
+    }
+    Some(file.to_str().unwrap().to_owned())
+}
+
+/// A clone of the hub as [`clone_with_feature`] makes it, in the enforcing mode, with the
+/// identities `human daniel` (owner) and `human mia`, so that its statements are signed, as a
+/// hub accepts them only: the clone and the private keys of daniel and of mia. `None` without
+/// `ssh-keygen`.
+fn signed_clone_with_feature(
+    hub: &Hub,
+    place: &Dir,
+    keys: &Dir,
+) -> Option<(PathBuf, String, String)> {
+    let daniel = generate_key(keys.path(), "daniel")?;
+    let mia = generate_key(keys.path(), "mia")?;
+    ok(
+        place.path(),
+        &["clone", "--actor", ACTOR, &hub.address, "copy"],
+    );
+    let copy = place.path().join("copy");
+    ok(
+        &copy,
+        &[
+            "enforce",
+            "--actor",
+            ACTOR,
+            "--owner-key",
+            &format!("{daniel}.pub"),
+        ],
+    );
+    track_ok(&copy, ".stemma-actors/register");
+    ok(&copy, &["commit", "--actor", ACTOR, "-m", "enforce"]);
+    ok(
+        &copy,
+        &[
+            "register",
+            "add-human",
+            &format!("{mia}.pub"),
+            "--human",
+            "mia",
+            "--actor",
+            ACTOR,
+        ],
+    );
+    track_ok(&copy, ".stemma-actors/register");
+    ok(&copy, &["commit", "--actor", ACTOR, "-m", "register"]);
+    ok(&copy, &["branch", "--actor", ACTOR, "feat"]);
+    ok(&copy, &["switch", "--actor", ACTOR, "feat"]);
+    write(&copy, "feature.txt", "feature\n");
+    track_ok(&copy, "feature.txt");
+    ok(&copy, &["commit", "--actor", ACTOR, "-m", "feature"]);
+    ok(&copy, &["lease", "take", "feat", "--actor", ACTOR]);
+    Some((copy, daniel, mia))
+}
+
 #[test]
 fn an_opening_for_a_hub_counts_in_the_clone_when_it_cannot_be_submitted() {
     let hub = Hub::start();
-    let place = Dir::new();
-    let copy = clone_with_feature(&hub, &place);
+    let (place, keys) = (Dir::new(), Dir::new());
+    let Some((copy, daniel, mia)) = signed_clone_with_feature(&hub, &place, &keys) else {
+        return;
+    };
     let opened = run(
         &copy,
-        &["pr", "open", "--actor", ACTOR, "feat", "--remote", "origin"],
+        &[
+            "pr", "open", "--actor", ACTOR, "--key", &daniel, "feat", "--remote", "origin",
+        ],
     );
     // The entry is written, and the submission did not finish: exit 3.
     assert_eq!(opened.code, 3, "{}", opened.stderr);
@@ -909,13 +986,19 @@ fn an_opening_for_a_hub_counts_in_the_clone_when_it_cannot_be_submitted() {
     assert!(listed.contains(" hub\n"), "{listed}");
     let id = listed_id(&copy);
     assert_eq!(id.len(), 12, "{id}");
-    // The pull request is named by its hash as well as by its number.
-    let shown = ok(&copy, &["pr", "show", &id[..8]]).stdout;
+    // The pull request is named by its hash as well as by its number; a name of decimal digits
+    // alone is a number, so a prefix of such digits takes `b3:`.
+    let prefix = if id[..8].bytes().all(|byte| byte.is_ascii_digit()) {
+        format!("b3:{}", &id[..8])
+    } else {
+        id[..8].to_owned()
+    };
+    let shown = ok(&copy, &["pr", "show", &prefix]).stdout;
     assert!(
         shown.contains(&format!("({id}), open")) && shown.contains(&"11".repeat(16)),
         "{shown}"
     );
-    let shown = ok(&copy, &["pr", "show", &id, "--json"]).stdout;
+    let shown = ok(&copy, &["pr", "show", &format!("b3:{id}"), "--json"]).stdout;
     assert!(
         shown.contains(&format!("\"repository\":\"{}\"", "11".repeat(16)))
             && shown.contains("\"kind\":\"pr-opening\",\"in_clone\":true,\"held\":null"),
@@ -923,13 +1006,25 @@ fn an_opening_for_a_hub_counts_in_the_clone_when_it_cannot_be_submitted() {
     );
     // `pr submit` makes another attempt and writes nothing.
     let before = operations(&copy).len();
-    let submitted = run(&copy, &["pr", "submit", "--actor", ACTOR, &id]);
+    let submitted = run(
+        &copy,
+        &["pr", "submit", "--actor", ACTOR, "--key", &daniel, &prefix],
+    );
     assert_eq!(submitted.code, 1, "{}", submitted.stderr);
     assert_eq!(operations(&copy).len(), before);
     // An approval follows the opening to the hub, and counts here all the same.
     let approved = run(
         &copy,
-        &["pr", "approve", "--actor", "human mia", &id, "--offline"],
+        &[
+            "pr",
+            "approve",
+            "--actor",
+            "human mia",
+            "--key",
+            &mia,
+            &prefix,
+            "--offline",
+        ],
     );
     assert_eq!(approved.code, 0, "{}", approved.stderr);
     assert!(
@@ -942,10 +1037,12 @@ fn an_opening_for_a_hub_counts_in_the_clone_when_it_cannot_be_submitted() {
 }
 
 #[test]
-fn an_offline_opening_is_made_for_the_hub_and_submitted_later() {
+fn an_offline_opening_is_made_for_the_hub_and_its_pull_request_ends_without_the_remote() {
     let hub = Hub::start();
-    let place = Dir::new();
-    let copy = clone_with_feature(&hub, &place);
+    let (place, keys) = (Dir::new(), Dir::new());
+    let Some((copy, daniel, _)) = signed_clone_with_feature(&hub, &place, &keys) else {
+        return;
+    };
     let opened = run(
         &copy,
         &[
@@ -953,6 +1050,8 @@ fn an_offline_opening_is_made_for_the_hub_and_submitted_later() {
             "open",
             "--actor",
             ACTOR,
+            "--key",
+            &daniel,
             "feat",
             "--remote",
             "origin",
@@ -978,6 +1077,8 @@ fn an_offline_opening_is_made_for_the_hub_and_submitted_later() {
             "record",
             "--actor",
             ACTOR,
+            "--key",
+            &daniel,
             "feat",
             "--result",
             "pass",
@@ -989,6 +1090,42 @@ fn an_offline_opening_is_made_for_the_hub_and_submitted_later() {
     assert_eq!(checked.code, 0, "{}", checked.stderr);
     let shown = ok(&copy, &["pr", "show", &number]).stdout;
     assert!(shown.contains("  check-result "), "{shown}");
+    // Without the remote, the pull request is closed with `--offline`, and refused without it.
+    ok(&copy, &["remote", "remove", "--actor", ACTOR, "origin"]);
+    let before = operations(&copy).len();
+    let closed = run(
+        &copy,
+        &["pr", "close", "--actor", ACTOR, "--key", &daniel, &number],
+    );
+    assert_eq!(closed.code, 1, "{}", closed.stderr);
+    assert!(
+        closed.stderr.contains("no remote has the repository"),
+        "{}",
+        closed.stderr
+    );
+    assert_eq!(operations(&copy).len(), before);
+    let closed = run(
+        &copy,
+        &[
+            "pr",
+            "close",
+            "--actor",
+            ACTOR,
+            "--key",
+            &daniel,
+            &number,
+            "--offline",
+        ],
+    );
+    assert_eq!(closed.code, 0, "{}", closed.stderr);
+    assert!(
+        closed
+            .stdout
+            .contains("sends it to a remote with the repository"),
+        "{}",
+        closed.stdout
+    );
+    assert_eq!(operations(&copy).len(), before + 1);
 }
 
 #[test]
@@ -1039,36 +1176,8 @@ fn the_statements_of_a_pull_request_of_this_clone_only_go_to_no_hub() {
         &["pr", "open", "--actor", ACTOR, "feat", "--offline"],
     );
     assert_eq!(refused.code, 1, "{}", refused.stderr);
-    for name in ["abc", "1a", "zzzzzzzzzz", "99"] {
-        let refused = run(&copy, &["pr", "show", name]);
-        assert_eq!(refused.code, 1, "{name}: {}", refused.stderr);
-    }
-    assert_eq!(operations(&copy).len(), before);
-}
-
-#[test]
-fn after_its_entry_a_busy_hub_keeps_code_6_and_a_missing_key_refuses_before_the_entry() {
-    let hub = Hub::start();
-    let place = Dir::new();
-    let copy = clone_with_feature(&hub, &place);
-    // A remote that asks for a sign-in, without `--key`: nothing is written.
-    let config = copy.join(".stemma/remotes/origin");
-    let text = std::fs::read_to_string(&config).unwrap();
-    std::fs::write(&config, text.replace("sign-in no\n", "sign-in yes\n")).unwrap();
-    let before = operations(&copy).len();
-    let opened = run(
-        &copy,
-        &["pr", "open", "--actor", ACTOR, "feat", "--remote", "origin"],
-    );
-    assert_eq!(opened.code, 1, "{}", opened.stderr);
-    assert!(
-        opened.stderr.contains("--key KEY_FILE") && opened.stderr.contains("nothing is written"),
-        "{}",
-        opened.stderr
-    );
-    assert_eq!(operations(&copy).len(), before);
-    // `--offline` needs no key.
-    let opened = run(
+    // An open repository signs nothing, and a hub takes signed statements only.
+    let refused = run(
         &copy,
         &[
             "pr",
@@ -1081,13 +1190,94 @@ fn after_its_entry_a_busy_hub_keeps_code_6_and_a_missing_key_refuses_before_the_
             "--offline",
         ],
     );
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("signed statements only"),
+        "{}",
+        refused.stderr
+    );
+    // Decimal digits alone are a number, never a prefix of a hash, which takes `b3:`.
+    let refused = run(&copy, &["pr", "show", "12345678"]);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(refused.stderr.contains("takes `b3:`"), "{}", refused.stderr);
+    for name in ["abc", "1a", "zzzzzzzzzz", "99"] {
+        let refused = run(&copy, &["pr", "show", name]);
+        assert_eq!(refused.code, 1, "{name}: {}", refused.stderr);
+    }
+    assert_eq!(operations(&copy).len(), before);
+}
+
+#[test]
+fn before_its_entry_a_hub_key_that_is_not_pinned_refuses_and_after_it_a_busy_hub_is_6() {
+    let hub = Hub::start();
+    let (place, keys) = (Dir::new(), Dir::new());
+    let Some((copy, daniel, mia)) = signed_clone_with_feature(&hub, &place, &keys) else {
+        return;
+    };
+    // A remote without a pinned key of the hub: nothing is written.
+    let config = copy.join(".stemma/remotes/origin");
+    let text = std::fs::read_to_string(&config).unwrap();
+    let unpinned: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("hub-key ") {
+                "hub-key -".to_owned()
+            } else {
+                line.to_owned()
+            }
+        })
+        .map(|line| line + "\n")
+        .collect();
+    std::fs::write(&config, unpinned).unwrap();
+    let before = operations(&copy).len();
+    let opened = run(
+        &copy,
+        &[
+            "pr", "open", "--actor", ACTOR, "--key", &daniel, "feat", "--remote", "origin",
+        ],
+    );
+    assert_eq!(opened.code, 1, "{}", opened.stderr);
+    assert!(
+        opened.stderr.contains("stemma remote pin origin")
+            && opened.stderr.contains("nothing is written"),
+        "{}",
+        opened.stderr
+    );
+    assert_eq!(operations(&copy).len(), before);
+    // `--offline` needs no pinned key.
+    let opened = run(
+        &copy,
+        &[
+            "pr",
+            "open",
+            "--actor",
+            ACTOR,
+            "--key",
+            &daniel,
+            "feat",
+            "--remote",
+            "origin",
+            "--offline",
+        ],
+    );
     assert_eq!(opened.code, 0, "{}", opened.stderr);
     std::fs::write(&config, text).unwrap();
     // A busy hub is no unreachable one: the approval is written, and the command ends with 6.
     hub.set(KEY, Mode::Busy);
     let number = listed_number(&copy);
     let before = operations(&copy).len();
-    let approved = run(&copy, &["pr", "approve", "--actor", "human mia", &number]);
+    let approved = run(
+        &copy,
+        &[
+            "pr",
+            "approve",
+            "--actor",
+            "human mia",
+            "--key",
+            &mia,
+            &number,
+        ],
+    );
     assert_eq!(approved.code, 6, "{}", approved.stderr);
     assert!(
         approved.stderr.contains("counts in this clone")

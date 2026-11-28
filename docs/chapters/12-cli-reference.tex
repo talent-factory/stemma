@@ -3259,12 +3259,14 @@ stemma pr show [-C VERZEICHNIS] [--remote NAME] [--key SCHLÜSSELDATEI] [--json]
 Standard ist das aktuelle.
 \item {\bf BRANCH:} Der Branch, den der Pull Request in \type{main} merged. Seine Spitze ist der
 Head des Pull Requests.
-\item {\bf PULL:} Der Pull Request: seine Nummer in diesem Klon, wie \type{pr list} sie zeigt, oder
-mindestens acht hexadezimale Stellen in Kleinbuchstaben des Hashes seiner Öffnung, mit oder ohne
-\type{b3:}. Die Nummer ist kurz und gilt nur in diesem Klon; der Hash gilt in jedem Klon und auf dem
-Hub, auch offline. Die laufende Nummer des Hubs ist kein Name, denn sie entsteht erst, wenn der Hub
-die Öffnung hält, und jeder Hub zählt anders. Passt ein Text aus Ziffern als Nummer zu einem Pull
-Request und als Präfix zu einem anderen, lehnt der Befehl ihn als mehrdeutig ab.
+\item {\bf PULL:} Der Pull Request: seine Nummer in diesem Klon, wie \type{pr list} sie zeigt,
+oder mindestens acht hexadezimale Stellen in Kleinbuchstaben des Hashes seiner Öffnung, mit oder
+ohne \type{b3:}. Die Nummer ist kurz und gilt nur in diesem Klon; der Hash gilt in jedem Klon
+und auf dem Hub, auch offline. Die laufende Nummer des Hubs ist kein Name, denn sie entsteht
+erst, wenn der Hub die Öffnung hält, und jeder Hub zählt anders. Ein Text nur aus Ziffern ist
+eine Nummer, damit eine Nummer, die es nicht gibt, nicht zufällig einen anderen Pull Request
+trifft; ein Präfix nur aus Ziffern braucht darum \type{b3:}. Ein Präfix, das mehrere Pull
+Requests haben, lehnt der Befehl als mehrdeutig ab.
 \item {\bf \type{--remote} NAME:} Bei \type{open} macht der Befehl die Öffnung für das
 Repository des Hubs dieses Remotes und übermittelt sie sofort. \type{close} und \type{approve}
 folgen der Öffnung: Nennt sie ein Repository eines Hubs, nennen es auch ihre Erklärungen, und der
@@ -3339,9 +3341,13 @@ er hält sie, und der Befehl zählt das nicht als Ablehnung. Der Befehl liest zu
 Referenzliste und prüft, dass die Antwort die gesendete Erklärung ist und der Schlüssel des Hubs
 zu ihrer Zeit sie signierte: der festgehaltene oder ein früherer Schlüssel der Liste für den
 Bereich, in den ihre Zeile \type{record} oder der Eintrag danach fällt (ADR-026).
-Bei einem Remote mit Anmeldung lehnen \type{open}, \type{close}, \type{approve} und
-\type{check record} ohne \type{--key} und ohne \type{--offline} ab, bevor sie den Eintrag
-schreiben.
+Bevor sie den Eintrag schreiben, lehnen \type{open}, \type{close}, \type{approve} und
+\type{check record} ab, was der Hub nie annähme oder keine Übermittlung erreichte: eine
+Erklärung für einen Hub in einem offenen Repository, das nicht signiert, und ohne
+\type{--offline} ein Remote ohne festgehaltenen Schlüssel des Hubs oder ein Remote mit Anmeldung
+ohne \type{--key}. Mit \type{--offline} und ohne \type{--remote} schreiben \type{close} und
+\type{approve} ihre Erklärung auch in einem Klon, in dem kein einzelnes Remote das Repository
+der Öffnung hat; \type{submit} sendet sie, sobald eines es hat.
 \type{submit} und \type{show} schreiben nichts in den Klon.
 \type{show} zeigt den Pull Request und seine Erklärungen in diesem Klon; mit \type{--remote}
 liest er die Referenzliste und die Erklärungen des Hubs, prüft das Repository und den Schlüssel
@@ -3403,8 +3409,10 @@ For the repository 11111111111111111111111111111111 of a hub.
 Das JSON-Objekt von \type{submit} hat die Felder \type{schema}, \type{pull}, \type{id},
 \type{remote}, \type{complete} und \type{statements}; jede Erklärung hat \type{hash},
 \type{kind}, \type{held} (\type{number}, \type{time}, \type{register}, \type{record},
-\type{actor}, sonst \type{null}) und \type{refused} (\type{reason}, \type{facts},
-\type{message}, sonst \type{null}). Das von \type{show} hat \type{schema}, \type{pull},
+\type{actor}, sonst \type{null}), \type{ended} (\type{true} für eine Öffnung, die der Hub
+mit \type{not-open} für einen beendeten Pull Request hält; dann ist \type{refused}
+\type{null}) und \type{refused} (\type{reason}, \type{facts}, \type{message}, sonst
+\type{null}). Das von \type{show} hat \type{schema}, \type{pull},
 \type{id}, \type{branch}, \type{head}, \type{state}, \type{opener}, \type{repository},
 \type{remote} und \type{statements}, deren Einträge \type{hash}, \type{kind},
 \type{in_clone} und \type{held} haben.
@@ -3483,7 +3491,8 @@ eines Proxys oder ein Rumpf in zstd, der sich nicht entpacken lässt, 5 für ein
 Erklärung im Klon und 6 für einen besetzten Hub. Lehnt der Hub die Erklärung des Befehls ab,
 endet er mit Exit-Code 1; die Ablehnung einer älteren Erklärung desselben Pull Requests steht
 nur als Zeile da. Der Eintrag gilt im Klon in jedem Fall weiter. Ohne Eintrag enden mit
-Exit-Code 1 ein unbekanntes Remote, ein Remote mit einem anderen Repository als dem der Öffnung,
+Exit-Code 1 die Fälle des Absatzes {\bf Erklärungen auf dem Hub}, ein unbekanntes Remote, ein
+Remote mit einem anderen Repository als dem der Öffnung,
 \type{--offline} ohne \type{--remote} bei \type{open}, \type{--remote} oder \type{--offline} bei
 einem Pull Request, der nur im Klon gilt, und ein Name, der keinen oder mehr als einen Pull
 Request nennt. \type{submit} schreibt nichts und endet darum nie mit Exit-Code 3: mit 1, wenn

@@ -6,8 +6,9 @@
 //! of its opening. The number is short and holds in this clone only; the hash holds in every
 //! clone and on the hub, offline as well, so two people speak of the same pull request with it.
 //! The running number of the hub is not a name: it exists only once the hub holds the opening,
-//! and it differs between hubs. A text of decimal digits that is also a prefix of another pull
-//! request is refused as ambiguous.
+//! and it differs between hubs. A text of decimal digits alone is a number, so that a number
+//! that does not exist names no other pull request by chance; a prefix of such digits alone
+//! takes `b3:`. A prefix that more than one pull request has is refused as ambiguous.
 //!
 //! **The submission.** A statement reaches a hub only if it names the repository of the hub.
 //! `pr open --remote NAME` and `check record --remote NAME` make it so; the approvals and the
@@ -73,9 +74,12 @@ pub(super) fn resolve_pull(
     text: &str,
 ) -> Result<PullRequest, CliError> {
     let pulls = repository.pull_requests(register).map_err(pull_error)?;
-    let digits = text.strip_prefix("b3:").unwrap_or(text);
+    let prefixed = text.strip_prefix("b3:");
+    let digits = prefixed.unwrap_or(text);
     let decimal = !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
-    let hex = digits.len() >= MIN_PREFIX
+    // Decimal digits alone are a number; a prefix of them takes `b3:`.
+    let hex = (prefixed.is_some() || !decimal)
+        && digits.len() >= MIN_PREFIX
         && digits
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
@@ -83,7 +87,7 @@ pub(super) fn resolve_pull(
         return Err(NetworkError::refused(format!(
             "`{}` names no pull request: give its number in this clone, as `pr list` shows \
              it, or at least {MIN_PREFIX} lowercase hexadecimal digits of the hash of its \
-             opening",
+             opening (with `b3:` before digits that are all decimal)",
             mask_controls(text)
         ))
         .into());
@@ -98,10 +102,16 @@ pub(super) fn resolve_pull(
     match found.as_slice() {
         [pull] => Ok((*pull).clone()),
         [] => Err(NetworkError::refused(format!(
-            "there is no pull request `{}`; `pr list` shows them",
-            mask_controls(text)
+            "there is no pull request `{}`; `pr list` shows them{}",
+            mask_controls(text),
+            if decimal && text.len() >= MIN_PREFIX {
+                ", and a prefix of the hash of only decimal digits takes `b3:`"
+            } else {
+                ""
+            }
         ))
         .into()),
+        // Only prefixes are left to match more than one.
         several => {
             let names: Vec<String> = several
                 .iter()
@@ -233,7 +243,11 @@ fn submission_json(submission: &Submission) -> String {
         Outcome::Held(held) => held_json(held),
         Outcome::Refused(_) => "null".to_owned(),
     };
+    // An opening that the hub holds for a pull request that ended there is no refusal
+    // (`Submission::is_refused`): `ended` says so, and `refused` is null.
+    let ended = matches!(submission.outcome, Outcome::Refused(_)) && !submission.is_refused();
     let refused = match (&submission.outcome, refusal_line(&submission.outcome)) {
+        _ if ended => "null".to_owned(),
         (Outcome::Refused(reason), Some((word, facts))) => format!(
             "{{\"reason\":{},\"facts\":{},\"message\":{}}}",
             quote(&word),
@@ -243,7 +257,7 @@ fn submission_json(submission: &Submission) -> String {
         _ => "null".to_owned(),
     };
     format!(
-        "{{\"hash\":{},\"kind\":{},\"held\":{held},\"refused\":{refused}}}",
+        "{{\"hash\":{},\"kind\":{},\"held\":{held},\"ended\":{ended},\"refused\":{refused}}}",
         quote(&submission.hash.to_string()),
         quote(&kind_name(submission.kind))
     )
@@ -328,11 +342,13 @@ fn submit_kind(error: &SubmitError) -> FailureKind {
     }
 }
 
-/// Where a statement that was just made goes: the remote of its hub, and whether `--offline`
-/// keeps it in the clone for now.
+/// Where a statement that was just made goes: the repository of its hub, the remote of that
+/// hub, and whether `--offline` keeps it in the clone for now. The remote is known unless
+/// `--offline` was given and no single remote has the repository, so that a pull request of a
+/// hub can be approved and closed in a clone without its remote.
 pub(super) struct Destination {
-    remote: RemoteName,
-    config: RemoteConfig,
+    repository: RepositoryId,
+    remote: Option<(RemoteName, RemoteConfig)>,
     offline: bool,
 }
 
@@ -345,14 +361,16 @@ impl Destination {
     ) -> Result<Self, CliError> {
         let config = named_remote(repository, name)?;
         Ok(Self {
-            remote: name.clone(),
-            config,
+            repository: config.repository,
+            remote: Some((name.clone(), config)),
             offline,
         })
     }
 
-    /// The remote of the hub of `pull`, for `pr approve` and `pr close`, or `None` for a pull
-    /// request of this clone only, which takes neither `--remote` nor `--offline`.
+    /// The remote of the hub of `pull`, for `pr approve`, `pr close` and `pr submit`, or `None`
+    /// for a pull request of this clone only, which takes neither `--remote` nor `--offline`.
+    /// With `--offline` and without `--remote`, a clone in which no single remote has the
+    /// repository writes the statement all the same.
     pub(super) fn of_pull(
         repository: &Repository,
         pull: &PullRequest,
@@ -370,31 +388,73 @@ impl Destination {
             }
             return Ok(None);
         };
-        let (remote, config) = remote_for(repository, id, wanted)?;
+        let remote = match remote_for(repository, id, wanted) {
+            Ok(remote) => Some(remote),
+            Err(_) if offline && wanted.is_none() => None,
+            Err(error) => return Err(error.into()),
+        };
         Ok(Some(Self {
+            repository: id,
             remote,
-            config,
             offline,
         }))
     }
 
     /// The repository of the hub, which the statement names.
     pub(super) fn repository(&self) -> RepositoryId {
-        self.config.repository
+        self.repository
     }
 
-    /// Refuses a submission at once to a remote that asks for a sign-in when no key is given,
-    /// before the entry is written; `--offline` needs no key.
-    pub(super) fn check_key(&self, key: Option<&std::path::Path>) -> Result<(), CliError> {
-        if self.offline || !self.config.sign_in || key.is_some() {
+    /// The remote and its configuration, for a submission now.
+    fn remote(&self) -> Result<(&RemoteName, &RemoteConfig), CliError> {
+        self.remote
+            .as_ref()
+            .map(|(name, config)| (name, config))
+            .ok_or_else(|| {
+                NetworkError::refused(format!(
+                    "no single remote has the repository {}; pass `--remote NAME`",
+                    self.repository
+                ))
+                .into()
+            })
+    }
+
+    /// Refuses before the entry is written what the hub could never accept or what no
+    /// submission could reach it with: a statement without a signature (a repository without a
+    /// register), and for a submission at once a hub key that is not pinned or a remote that
+    /// asks for a sign-in when no key is given; `--offline` needs neither.
+    pub(super) fn check_ready(
+        &self,
+        signed: bool,
+        key: Option<&std::path::Path>,
+    ) -> Result<(), CliError> {
+        if !signed {
+            return Err(NetworkError::refused(
+                "a hub accepts signed statements only, and this repository has no register \
+                 that signs them: leave out `--remote` and `--offline`; nothing is written",
+            )
+            .into());
+        }
+        if self.offline {
             return Ok(());
         }
-        Err(NetworkError::refused(format!(
-            "the remote `{}` asks for a sign-in: pass `--key KEY_FILE`, or `--offline` to \
-             submit later; nothing is written",
-            self.remote
-        ))
-        .into())
+        let (remote, config) = self.remote()?;
+        if config.pinned_key().is_err() {
+            return Err(NetworkError::refused(format!(
+                "the remote `{remote}` has no pinned key of the hub: compare the fingerprint on \
+                 a second channel and run `stemma remote pin {remote} --expect-key FINGERPRINT`, \
+                 or pass `--offline`; nothing is written"
+            ))
+            .into());
+        }
+        if config.sign_in && key.is_none() {
+            return Err(NetworkError::refused(format!(
+                "the remote `{remote}` asks for a sign-in: pass `--key KEY_FILE`, or `--offline` \
+                 to submit later; nothing is written"
+            ))
+            .into());
+        }
+        Ok(())
     }
 
     /// Submits `hashes` after `entry` was written, and returns the lines to print after the
@@ -413,29 +473,33 @@ impl Destination {
         who: &Actor,
     ) -> (String, Option<CliError>) {
         if self.offline {
+            let to = self.remote.as_ref().map_or_else(
+                || format!("a remote with the repository {}", self.repository),
+                |(name, _)| format!("`{name}`"),
+            );
             return (
-                format!(
-                    "The statement counts in this clone; {later} sends it to `{}`.\n",
-                    self.remote
-                ),
+                format!("The statement counts in this clone; {later} sends it to {to}.\n"),
                 None,
             );
         }
+        let (remote, config) = match self.remote() {
+            Ok(remote) => remote,
+            Err(error) => return (String::new(), Some(error)),
+        };
         let written = format!(
             "entry {} is written and counts in this clone",
             entry.number()
         );
-        match send(repository, &self.remote, &self.config, hashes, key, who, "") {
+        match send(repository, remote, config, hashes, key, who, "") {
             Ok(submitted) => {
-                let mut text = format!("Submitted to `{}`:\n", self.remote);
+                let mut text = format!("Submitted to `{remote}`:\n");
                 text.push_str(&submissions_text(&submitted));
                 let refused = submitted
                     .iter()
                     .any(|submission| submission.hash == own && submission.is_refused());
                 let error = refused.then(|| {
                     NetworkError::refused(format!(
-                        "the hub of `{}` refused the statement; {written}",
-                        self.remote
+                        "the hub of `{remote}` refused the statement; {written}"
                     ))
                     .into()
                 });
@@ -444,10 +508,9 @@ impl Destination {
             Err(unfinished) => {
                 let mut text = String::new();
                 if !unfinished.submitted.is_empty() {
-                    text = format!("Submitted to `{}`:\n", self.remote);
+                    text = format!("Submitted to `{remote}`:\n");
                     text.push_str(&submissions_text(&unfinished.submitted));
                 }
-                let remote = &self.remote;
                 let message = |inner: &str| {
                     format!(
                         "{written}, but the submission to `{remote}` did not finish: {inner}; \
@@ -547,11 +610,12 @@ pub(super) fn pr_submit(args: PrSubmitArgs, out: &mut dyn Write) -> Result<(), C
                 pull.number()
             ))
         })?;
+    let (remote, config) = destination.remote()?;
     let hashes = hashes_of_pull(&repository, register.as_ref(), &pull)?;
     let result = send(
         &repository,
-        &destination.remote,
-        &destination.config,
+        remote,
+        config,
         &hashes,
         args.hub.key.as_deref(),
         &who,
@@ -568,7 +632,7 @@ pub(super) fn pr_submit(args: PrSubmitArgs, out: &mut dyn Write) -> Result<(), C
              \"complete\":{},\"statements\":[{}]}}\n",
             pull.number(),
             quote(&pull.id().to_string()),
-            quote(destination.remote.as_str()),
+            quote(remote.as_str()),
             failure.is_none(),
             items.join(",")
         )
@@ -577,7 +641,7 @@ pub(super) fn pr_submit(args: PrSubmitArgs, out: &mut dyn Write) -> Result<(), C
             "Pull request {} ({}) to `{}`:\n",
             pull.number(),
             short_name(pull.id()),
-            destination.remote
+            remote
         );
         text.push_str(&submissions_text(&submitted));
         text
@@ -590,11 +654,9 @@ pub(super) fn pr_submit(args: PrSubmitArgs, out: &mut dyn Write) -> Result<(), C
     }
     write_out(out, &text)?;
     if any_refused(&submitted) {
-        return Err(NetworkError::refused(format!(
-            "the hub of `{}` refused a statement",
-            destination.remote
-        ))
-        .into());
+        return Err(
+            NetworkError::refused(format!("the hub of `{remote}` refused a statement",)).into(),
+        );
     }
     Ok(())
 }
