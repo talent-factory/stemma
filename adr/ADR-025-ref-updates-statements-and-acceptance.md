@@ -9,10 +9,12 @@ entries of the log that name them, and the fold (STEMMA-290, see "The statements
 the accepting operation for branches and tags (STEMMA-296, see "The accepting operation as
 built"), and the lines that a hub adds to a statement, the request that submits one, the two
 reading requests and `accept_statement` (STEMMA-299, see "The statements on a hub as built"),
-and the gate on a hub for a move of `main` (STEMMA-303, see "The gate on a hub as built"), and
+and the gate on a hub for a move of `main` (STEMMA-303, see "The gate on a hub as built"),
 the commands that submit and read statements (STEMMA-312, see "The commands of the statements as
-built"). The purge and the owner override on a hub are not built. The names of functions that are
-not built yet are a direction for the slices.
+built"), and the client side of a push and the merge of a pull request with a remote
+(STEMMA-309, see "The push and the merge with a remote as built"). The purge and the owner
+override on a hub are not built. The names of functions that are not built yet are a direction
+for the slices.
 
 ## Context
 
@@ -829,6 +831,54 @@ Built in STEMMA-312, as a proposal that the review confirms: `Repository::open_p
 - **Not yet.** The HTTP mapping of the three requests (STEMMA-326), the statements of other
   clones in the set (STEMMA-325), and the submission of an owner override, which the hub refuses
   as a kind of its own.
+
+### The push and the merge with a remote as built
+
+Built in STEMMA-309: `Repository::push` and `Repository::merge_gate_remote` in `stemma-core`,
+through `Transport`, with the requests `upload` and `anchor` beside the ref update. The command
+surface comes with its slices.
+
+- **The update.** Each move takes `previous` and `old` from the remote reference of its name,
+  the last state of the hub that the clone saw, and the clone signs the payload with the key of
+  its actor. A reference whose remote reference has the new value already is left out, and a
+  push that moves nothing sends no request. A push whose entry `push` would be larger than an
+  entry of the log may be (64 KiB, a few hundred references) is refused before anything is
+  sent (`PushError::TooLarge`), as the clone could not record its receipt. The receipt must
+  hold the update byte for byte and be signed by the pinned key of the hub
+  (`RecordEntry::check_receipt`, ADR-026); otherwise nothing moves in the clone
+  (`PushError::Receipt`). That the number of the receipt grows from
+  receipt to receipt is not checked yet.
+- **The answers.** A refusal whose reference is `incomplete` uploads once more and sends the
+  same update again, once; a second one is reported. `Stale` moves nothing and is reported
+  with the state of each stale reference on the hub (`PushError::Stale`); a push does not
+  repeat on its own, as the actor decides what to sign after a fetch. Every other refusal is
+  reported with its typed reason (`PushError::Refused`). A failure of the carrier on the ref
+  update, or an answer of success whose receipt cannot be read or checked, leaves it unknown
+  whether the hub accepted (`PushError::outcome_unknown`); a fetch says it.
+- **After the receipt.** Under the lock the configuration of the remote is read again, one
+  entry `push` names the remote references and the receipt, and they move to the commit of the
+  move with the hash of the receipt as their record entry (ADR-008, ADR-011). A failure there
+  carries the receipt (`PushError::Unrecorded`): the hub moved, and a fetch brings the remote
+  references along. The anchor of the new tip of the log follows as a request of its own
+  (ADR-026); a failure there leaves the push standing and is named in its result.
+- **The merge with a remote.** `merge_gate_remote` fetches, takes `T` from the remote
+  reference of `main`, judges the pull request with the verdict of the local gate
+  (`judge_main`) by the policy of `T`, the namespace policy that the fetch kept for this remote
+  (ADR-027), and the statements of the clone, writes `M` with the single parent `T` without a
+  move, and sends the move of `main` with the hash of the opening as its evidence through the
+  steps of a push. Only after the receipt does one entry `push` move
+  the local `main` and the remote reference of `main` to `M`, and then `pr-merge` is written.
+  `Stale` starts the loop again with a new fetch and a new signature, at most `MAX_ATTEMPTS`
+  times (`RemoteMergeError::Contended`); a refusal of the hub leaves `M` unnamed and nothing to
+  take back. The local `main` moves only from the value that it had when the attempt began
+  (`RemoteMerge::main_followed` says whether it did), also when another worktree has it checked
+  out, as in the local gate, and one with commits that the hub does not hold is refused before
+  anything is sent. A change that the hub holds already, after a call that stopped after its
+  receipt or lost the answer, is recorded as merged without an update, and the local `main`
+  follows the hub with an entry `gate-merge`. The clone judges by its own statements, so the opening,
+  the approvals and the results must be on the hub as well; binding the statements of a clone
+  to the ID of the repository of a hub belongs to the commands of a pull request with a remote
+  (see the open items).
 
 ### A refusal names its reason, and only the evidence is shared
 

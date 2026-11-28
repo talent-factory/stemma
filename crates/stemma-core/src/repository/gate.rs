@@ -51,7 +51,7 @@ use crate::{Actor, Authorizer};
 /// of the pull request is `pr-merge` (ADR-011); it moves no pointer, so the move has an entry of
 /// its own. The name is not reserved: anyone can write an entry with it through `update_branch`,
 /// so a later slice must not take such an entry as proof that the gate moved `main`.
-const OPERATION: &str = "gate-merge";
+pub(super) const OPERATION: &str = "gate-merge";
 
 /// How often one call of the gate starts again after `Stale`, `Locked`, or a purge. A technical
 /// cap that keeps one call from spinning for ever; it is not the bound of ADR-019 that keeps a
@@ -362,7 +362,12 @@ impl Error for GateError {
 
 impl GateError {
     /// The error of the local gate for a refusal of the verdict about `main`.
-    fn refused(refusal: Refusal, number: u64, tip: CommitId, pull: &PullRequest) -> Self {
+    pub(super) fn refused(
+        refusal: Refusal,
+        number: u64,
+        tip: CommitId,
+        pull: &PullRequest,
+    ) -> Self {
         match refusal {
             Refusal::BranchMoved { head: Some(_) } => Self::BranchMoved { number },
             Refusal::BranchMoved { head: None } => Self::Pull(PullError::NoSuchBranch {

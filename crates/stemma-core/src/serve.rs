@@ -738,6 +738,112 @@ impl Repository {
     }
 }
 
+// The upload of a push (ADR-023, STEMMA-309).
+
+/// The object stream of a push, cut into pieces at commit boundaries: the computation of a
+/// fetch with the roles exchanged. It holds the commits that the new tips reach and the commits
+/// of the remote references do not, in the order of the format, and writes them piece by piece,
+/// so that a push of a large history never lies in memory as a whole and an upload that was
+/// interrupted goes on at the first piece that was not confirmed.
+///
+/// Every piece is a stream of its own, with its first line, and ends with a commit, so it is a
+/// complete state for a receiver that holds the pieces before it. An object is written once
+/// across the pieces: a later piece leaves out a tree or a blob that an earlier one carried,
+/// which the receiver holds once the earlier piece is confirmed.
+pub(crate) struct Upload<'a> {
+    store: &'a FsObjectStore,
+    /// The commits that are not written yet, the next one first.
+    commits: std::collections::VecDeque<CommitId>,
+    /// The trees and the blobs that an earlier piece holds.
+    written: HashSet<ObjectId>,
+}
+
+/// One piece of an [`Upload`]: the bytes of the stream, and what it carries.
+pub(crate) struct Piece {
+    /// The stream, with its first line.
+    pub(crate) bytes: Vec<u8>,
+    /// What the piece carries.
+    pub(crate) sent: Sent,
+}
+
+impl Upload<'_> {
+    /// The number of commits that are not written yet.
+    pub(crate) fn remaining(&self) -> usize {
+        self.commits.len()
+    }
+
+    /// The next piece: whole commits, until the bodies of the piece reach `bound` bytes, and at
+    /// least one commit, so a commit that is larger than the bound is a piece of its own. `None`
+    /// once every commit is written.
+    ///
+    /// # Errors
+    ///
+    /// As the writing of [`Repository::answer_fetch`]: an object that the store does not return
+    /// or cannot read. The piece is then not returned, and the upload must not go on.
+    pub(crate) fn next_piece(&mut self, bound: u64) -> Result<Option<Piece>, AnswerError> {
+        if self.commits.is_empty() {
+            return Ok(None);
+        }
+        let mut sender = Sender {
+            store: self.store,
+            stream: ObjectStreamWriter::new(Vec::new()).map_err(AnswerError::Io)?,
+            written: std::mem::take(&mut self.written),
+            sent: Sent::default(),
+        };
+        let mut result = Ok(());
+        while let Some(&commit) = self.commits.front() {
+            if sender.sent.commits > 0 && sender.sent.bytes >= bound {
+                break;
+            }
+            result = sender.send_commit(commit);
+            if result.is_err() {
+                break;
+            }
+            self.commits.pop_front();
+        }
+        self.written = std::mem::take(&mut sender.written);
+        result?;
+        Ok(Some(Piece {
+            bytes: sender.stream.finish(),
+            sent: sender.sent,
+        }))
+    }
+}
+
+impl Repository {
+    /// The upload of a push (ADR-023): the commits that `tips` reach and that `had` does not,
+    /// with their new trees and blobs, as [`Upload`] writes them. `had` holds the commits of the
+    /// remote references; one that the store does not hold is left out, so the upload may hold
+    /// more and never less. Unlike [`answer_fetch`](Self::answer_fetch), a tip need not be
+    /// reachable from a branch or a tag: the caller names the commits that it pushes.
+    ///
+    /// # Errors
+    ///
+    /// [`AnswerError::History`] if a commit below the tips or below `had` is missing or cannot
+    /// be read, and [`AnswerError::Store`] if the store cannot say whether it holds a commit of
+    /// `had`.
+    pub(crate) fn upload_of(
+        &self,
+        tips: &BTreeSet<CommitId>,
+        had: &BTreeSet<CommitId>,
+    ) -> Result<Upload<'_>, AnswerError> {
+        let mut graph = Graph::new(self.objects());
+        let mut known = Vec::new();
+        for &commit in had {
+            if self.objects().contains(&commit.object_id())? {
+                known.push(commit);
+            }
+        }
+        let had = graph.closure(known)?;
+        let commits = graph.commits_to_send(tips, &had)?;
+        Ok(Upload {
+            store: self.objects(),
+            commits: commits.into(),
+            written: HashSet::new(),
+        })
+    }
+}
+
 /// A repository as the other side of a [`MemoryTransport`](crate::transport::MemoryTransport):
 /// it answers the list of references and a fetch request through
 /// [`Repository::answer_refs`] and [`Repository::answer_fetch`] (ADR-022).

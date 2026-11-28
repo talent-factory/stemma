@@ -128,14 +128,14 @@ fn the_json_form_is_one_object_per_line() {
              \"operation\":\"snapshot\",\"worktree\":\"main\",\"location\":null,\"former_owner\":null,\"head\":null,\
              \"working_copy\":{{\"old\":\"{first}\",\"new\":\"{A}\"}},\
              \"branches\":[{{\"name\":\"main\",\"old\":null,\"new\":\"{A}\"}}],\"tags\":[],\"remotes\":[],\
-             \"purge_pending\":false,\"took_effect\":false}}"
+             \"receipt\":null,\"purge_pending\":false,\"took_effect\":false}}"
         )
     );
     assert!(
         lines[1].starts_with("{\"schema\":1,\"number\":1,")
             && lines[1].contains("\"head\":{\"old\":null,\"new\":\"branch:main\"}")
             && lines[1].ends_with(
-                "\"branches\":[],\"tags\":[],\"remotes\":[],\"purge_pending\":false,\"took_effect\":true}",
+                "\"branches\":[],\"tags\":[],\"remotes\":[],\"receipt\":null,\"purge_pending\":false,\"took_effect\":true}",
             ),
         "{}",
         lines[1]

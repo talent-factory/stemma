@@ -456,6 +456,13 @@ bis dahin muss der Aufrufer des Kerns sie durchsetzen.
 Der Befehl \type{pr merge} ruft das Gate mit der Stufe aus \type{--level} auf (Standard 3),
 denn die Ableitung der Stufe aus der Policy ist in ihm noch nicht angeschlossen;
 mit einer eigenen Stufe fragt das Gate keine Freigaben ab.
+Folgt \type{main} einem Remote, läuft der optimistische Tausch seit Phase 5 über das Netz
+(\in{Abschnitt}[sec:main-moves]): Der Kern baut $M$ auf der Spitze des Hubs, ohne etwas zu
+bewegen, und das lokale \type{main} folgt erst der Quittung des Hubs.
+Ein \type{Stale} des Hubs startet den nächsten Versuch wie ein \type{Stale} der lokalen Sperre,
+mit derselben Obergrenze von acht Versuchen.
+\type{pr merge} ruft diesen Weg noch nicht auf; das kommt mit den Befehlen für Pull Requests mit
+einem Remote.
 
 \subsection[sec:main-verdict]{Das Urteil über main}
 

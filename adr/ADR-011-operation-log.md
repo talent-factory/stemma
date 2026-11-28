@@ -240,7 +240,8 @@ decides them. Implementation: `crates/stemma-core/src/oplog.rs` (the log) and
   with the kind in the stub (below), version 13 with the line `former-owner` (below), and
   version 16 with the entries that name a signed statement (below; the versions 14 and 15
   changed no entry, ADR-009), version 17 with the line `remote` (below), version 18 with the
-  entry `remote-pin` (below), and version 20 with the entries of a remote (below).
+  entry `remote-pin` (below), version 20 with the entries of a remote (below), and version 21
+  with the entry `push` (below).
 - **Each entry names the hash of the entry before it** *(confirmed; STEMMA-41)*. Entry encoding
   `stemma-oplog 3` adds the line `previous <hash>` after the actor, or `previous -` for the entry
   that starts the chain. The writer writes this version for a change and a `purge` entry; a new stub has version 4
@@ -801,7 +802,17 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
     `push` entry is written after the receipt and names the remote references it moved and the
     number and hash of the receipt (ADR-008). `pr-merge` is written after the receipt as well,
     in a repository whose `main` follows a remote. Pinning the key of a hub again writes an
-    entry (ADR-026).
+    entry (ADR-026). *Built in STEMMA-309*: the entry `push` is a change of the operation `push`
+    with the remote references that it moved (old and new state, commit and record entry) and,
+    as its last line, `receipt <number> <hash>`, the number and the hash of the record entry
+    that the hub answered. Only a `push` entry has the line, and every one has it. The merge of
+    a pull request in a repository whose `main` follows a remote writes one `push` entry that
+    moves the local `main` with the remote reference of `main`, then `pr-merge`, both under the
+    lock and both after the receipt; if a fetch brought the remote reference along in between,
+    the entry names the local `main` alone. A restore of a `push`
+    entry is a restore as of a `fetch`: it moves the pointers back and names no receipt. An
+    older program refuses the line as damage, so the repository format rises to 21 with the
+    entry (ADR-009).
   - **The bound of a retired or revoked key** is a number of the local log and counts only in the
     log that wrote it; the register names the ID of that log from now on. In every other log the
     bound is the `fetch` entry that brought the register commit, and across clones the order is
@@ -907,9 +918,10 @@ branch main b3:8cb4…b3e8 b3:b5f2…e662
 - [x] The hash chain (STEMMA-41): entry encoding 3, the hash over an envelope that a stub keeps,
       the tip with the hash, format 4, and `stemma op verify` with `--anchor`.
 - [x] An anchor that the actor cannot change: a hub that confirms the tip. Decided in STEMMA-274
-      (ADR-026, see "The log and a hub"); the core holds it since STEMMA-300, and the sending
-      after a push and the commands come with their slices. Until then, the anchor is a copy
-      that a person keeps. Entries from before the chain (versions 1 and 2) stay uncovered.
+      (ADR-026, see "The log and a hub"); the core holds it since STEMMA-300, and sends it after
+      a push since STEMMA-309; the commands come with their slices. Until then, the anchor is a
+      copy that a person keeps. Entries from before the chain (versions 1 and 2) stay
+      uncovered.
 - [x] Retention (STEMMA-39) needs a checkpoint where the chain starts again, if entries before
       it are ever removed. Not needed: a retention replaces entries by stubs, which keep the
       hash, and removes none.

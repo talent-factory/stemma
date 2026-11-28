@@ -10,7 +10,8 @@ Remote references were decided for Phase 5 on 2026-11-23 (STEMMA-56, see "Remote
 below). Their files, their names, and what reads them were built on 2026-11-24 (STEMMA-285),
 `fetch` and `clone` with the entry `fetch` on 2026-11-25 (STEMMA-295), and the commands
 `remote`, `clone`, and `fetch` with the local branch of a clone on 2026-11-27 (STEMMA-305, see
-"Which local branch follows"); `push` is not built yet.
+"Which local branch follows"), and `push` in the core with the entry `push` on 2026-11-27
+(STEMMA-309).
 Packed references have no phase yet, and
 the rename on Windows waits for the CI run (STEMMA-33).
 
@@ -227,7 +228,7 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 
 - **Remote references** *(decided for Phase 5, STEMMA-56; the layout, the names, and the
   readers are implemented in STEMMA-285, the moves by `fetch` in STEMMA-295, those by `push`
-  are not yet)*. A remote
+  in STEMMA-309)*. A remote
   reference is the state of a branch or a tag on a hub as the clone last saw it.
   - **Layout.** A namespace of their own, one file per reference:
     `<metadata directory>/refs/remotes/<remote>/heads/<name>` and
@@ -261,8 +262,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     system. Entries whose name starts with a dot are skipped. A repository without
     `refs/remotes` has no remote reference. The lookup of one reference agrees with the listing
     about a file in the place of the directory of the remote or of its `heads` or `tags`: it is
-    an error and no missing reference. Only `fetch` and the restore of its entry write one
-    (STEMMA-295); `push` comes with its slice.
+    an error and no missing reference. Only `fetch`, `push`, and the restore of their entries
+    write one (STEMMA-295, STEMMA-309).
   - **Tags stay in the namespace of the remote.** A local tag arises only through `tag` with its
     own log entry, because a tag never moves. A fetch creates no local tag.
   - **Only `fetch` and `push` move a remote reference**, with one log entry each (ADR-011). A
@@ -273,6 +274,13 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
     remote references it moved and the number and hash of the receipt. A stale push (`Stale`)
     moves no remote reference: the clone may not have the new commit (`MissingCommit`), and only
     a fetch moves remote references, after the connectivity check (ADR-023).
+    *Built in STEMMA-309*: `Repository::push` takes `previous` and `old` of each move from the
+    remote reference of the same name, checks the receipt against the update and the pinned key
+    of the hub, and only then, under the lock, writes the entry and moves each remote reference
+    to the commit of the move and the hash of the receipt as its record entry. A remote
+    reference that a fetch moved in between keeps the later state. The merge of a pull request
+    in a repository whose `main` follows a remote moves the local `main` in the same entry
+    `push` (ADR-025).
   - **`remote remove` deletes them** *(STEMMA-305)*. The removal of a remote writes the entry
     `remote-remove` (ADR-011) with the configuration and with every remote reference of the
     remote, its commit and its record entry, and deletes them after it. It moves none: the
@@ -440,8 +448,8 @@ in parallel (ADR-004), so the second case is not rare. The implementation is
 - [x] Remote references and the record of a ref update on a hub (ADR-003, handed to stemma-hub).
       Decided in STEMMA-56: the layout and the moves of a remote reference are in the decision
       above, the signed ref update and the record of a hub in ADR-025. The files, the names,
-      and the readers are built (STEMMA-285), and so are the moves by `fetch` (STEMMA-295);
-      those by `push` are not. Open stay
+      and the readers are built (STEMMA-285), and so are the moves by `fetch` (STEMMA-295)
+      and by `push` (STEMMA-309). Open stay
       how a purge treats remote references in a clone (ADR-014; until then it is refused).
       Which local branch follows which remote reference is decided by the command surface
       (STEMMA-305, "Which local branch follows").

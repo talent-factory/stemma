@@ -251,6 +251,10 @@ pub fn text(entry: &Entry, outcome: Outcome, pending: bool) -> String {
             value(moved.after().map(|reference| &reference.commit)),
         );
     }
+    // The receipt of the hub that the entry `push` names (STEMMA-309).
+    if let Some(receipt) = change.receipt() {
+        let _ = writeln!(out, "    receipt {}  {}", receipt.number, receipt.hash);
+    }
     match outcome {
         Outcome::Took => {}
         Outcome::NotTaken => out.push_str("    ! the move did not take effect\n"),
@@ -298,7 +302,8 @@ fn moved_json<T: Display>(moved: &Moved<T>) -> String {
 /// operation did not change them, and `branches` is a list, empty if no branch changed. A pointer
 /// that did not exist or does not exist any more has `null` as its old or new value. `remotes`
 /// lists the remote references of a `fetch` and of the restore of one, each with `name`, and
-/// `old` and `new` as an object with `commit` and `entry`, or `null`.
+/// `old` and `new` as an object with `commit` and `entry`, or `null`. `receipt` is the receipt
+/// of the hub of an entry `push`, an object with `number` and `hash`, and `null` otherwise.
 ///
 /// Every line starts with `schema` (ADR-018), `number`, and `kind`: `change`, `stub`, `purge`,
 /// `lease`, `pull`, or `check`. A check has `time`, `actor`, `operation` (`check`), `commit`,
@@ -528,12 +533,23 @@ fn change_json(entry: &Entry, change: &Change, outcome: Outcome, pending: bool) 
             )
         })
         .collect();
+    // The receipt of the hub that an entry `push` names (STEMMA-309), `null` for any other.
+    let receipt = change.receipt().map_or_else(
+        || "null".to_owned(),
+        |receipt| {
+            format!(
+                "{{\"number\":{},\"hash\":{}}}",
+                receipt.number,
+                quote(&receipt.hash.to_string())
+            )
+        },
+    );
     format!(
         "{{\"schema\":{JSON_SCHEMA},\"number\":{},\"kind\":\"change\",\"time\":{},\"actor\":{},\"operation\":{},\
          \"worktree\":{},\"location\":{},\"former_owner\":{},\
          \"head\":{head},\
          \"working_copy\":{working_copy},\"branches\":[{}],\"tags\":[{}],\"remotes\":[{}],\
-         \"purge_pending\":{pending},\
+         \"receipt\":{receipt},\"purge_pending\":{pending},\
          \"took_effect\":{took_effect}}}",
         entry.number(),
         change.time(),
@@ -598,6 +614,29 @@ mod tests {
         let line = json(&release, Outcome::Unknown, false);
         assert!(
             line.ends_with("\"branch\":\"main\",\"from\":null,\"expires\":null,\"reason\":null}"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_push_entry_names_its_receipt_in_text_and_json() {
+        let commit = "b3:1d719c9e1d926eb0f33467406bf50911eca1d59f976105abd3eb5ccfaabdeed9";
+        let hash = "b3:5d0e8a1f3c2b4d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c47a21";
+        let text = format!(
+            "stemma-oplog 3\nnumber 4\ntime 1700000000\nactor human daniel\nprevious -\n\
+             operation push\nremote remotes/origin/heads/main - - {commit} {hash}\n\
+             receipt 4 {hash}\n"
+        );
+        let entry = Entry::parse(text.as_bytes()).unwrap();
+        assert!(
+            super::text(&entry, Outcome::Took, false)
+                .ends_with(&format!("    receipt 4  {hash}\n")),
+            "{}",
+            super::text(&entry, Outcome::Took, false)
+        );
+        let line = json(&entry, Outcome::Unknown, false);
+        assert!(
+            line.contains(&format!("\"receipt\":{{\"number\":4,\"hash\":\"{hash}\"}}")),
             "{line}"
         );
     }
