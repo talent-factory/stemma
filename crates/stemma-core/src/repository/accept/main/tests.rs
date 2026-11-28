@@ -504,6 +504,20 @@ impl Gated {
         reviewers: &[Seeded],
         repairs: Option<CommitId>,
     ) -> CommitId {
+        let (landed, answer) = self.try_land_files(branch, files, reviewers, repairs);
+        answer.unwrap();
+        landed
+    }
+
+    /// As [`Self::land_files`], but returns the merge and the answer of the hub to its push
+    /// to `main` instead of requiring an acceptance.
+    fn try_land_files(
+        &mut self,
+        branch: &str,
+        files: &[(&str, &str)],
+        reviewers: &[Seeded],
+        repairs: Option<CommitId>,
+    ) -> (CommitId, Result<RecordEntry, ErrorMessage>) {
         let tip = self.tip();
         let keys = self.wire.side().commit("mia", files, vec![tip]);
         let moved = to(&self.wire, &format!("heads/{branch}"), Some(keys), None);
@@ -535,8 +549,7 @@ impl Gated {
         .unwrap();
         let landed = store.put_commit(&landed).unwrap();
         let moved = to(&self.wire, "heads/main", Some(landed), Some(pull));
-        push(&mut self.wire, &daniel(), vec![moved]).unwrap();
-        landed
+        (landed, push(&mut self.wire, &daniel(), vec![moved]))
     }
 
     /// The merge of the change of `docs/a.md` onto the tip `tip`, whose register is `register`.

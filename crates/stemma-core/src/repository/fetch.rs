@@ -27,7 +27,8 @@
 //!
 //! In step 6, before the remote references move, the namespace policy that the list names is kept
 //! in `namespaces/<remote>`, or the kept one is removed if the list names none (ADR-027,
-//! [`Repository::kept_namespace`]); the local gate evaluates it beside the policy of `main`.
+//! [`Repository::kept_namespace`]); the gate by policy evaluates it beside the policy of `main`
+//! (a gate at a fixed level reads neither).
 //!
 //! A fetch that stops before step 6 leaves the journal, and the next fetch resumes from it. A
 //! fetch whose remote references have their values already writes no entry.

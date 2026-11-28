@@ -776,9 +776,12 @@ impl Classify for crate::repository::RemoteConfigError {
             Self::List(error) => error.kind(),
             Self::Log(error) => error.kind(),
             Self::Update(error) => error.kind(),
-            Self::Denied { .. } | Self::Exists(_) | Self::NoSuchRemote(_) | Self::HubKey(_) => {
-                FailureKind::Other
-            }
+            Self::Namespace(crate::repository::KeepNamespaceError::Format(error)) => error.kind(),
+            Self::Denied { .. }
+            | Self::Exists(_)
+            | Self::NoSuchRemote(_)
+            | Self::HubKey(_)
+            | Self::Namespace(_) => FailureKind::Other,
         }
     }
 }

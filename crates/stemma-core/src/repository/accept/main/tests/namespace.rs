@@ -96,6 +96,39 @@ fn an_update_of_main_whose_register_lacks_a_demanded_owner_is_refused() {
 }
 
 #[test]
+fn an_update_of_main_that_takes_a_demanded_owner_out_of_the_register_is_refused() {
+    // Each register drops what the demand asks for in another way: the entry of the teacher,
+    // its role of owner, or its key.
+    let removed = register_of();
+    let mut demoted = register_of();
+    demoted
+        .add_human(human("teacher"), Role::Member, teacher().public())
+        .unwrap();
+    let mut retired = with_teacher();
+    retired
+        .add_key(&human("teacher"), Seeded::new(9).public())
+        .unwrap();
+    retired
+        .retire(&human("teacher"), &teacher().public(), 1)
+        .unwrap();
+    for register in [removed, demoted, retired] {
+        let mut g = gated();
+        *g.wire.side().namespace.borrow_mut() = Some(course(DEMANDING));
+        let held = g.land_register(&with_teacher(), None);
+        // A change of the register at level 3 with every approval and its check: only the
+        // demand refuses it.
+        let text = register.encode();
+        let (_, answer) = g.try_land_files("keys", &base_files(&text, POLICY), &[daniel()], None);
+        assert_eq!(
+            verdict(answer),
+            Some(RefusalReason::NamespaceOwner(human("teacher"))),
+            "{text}"
+        );
+        assert_eq!(g.tip(), held);
+    }
+}
+
+#[test]
 fn a_first_push_whose_register_lacks_a_demanded_owner_is_refused() {
     let hub = Hub::new();
     *hub.namespace.borrow_mut() = Some(course(DEMANDING));

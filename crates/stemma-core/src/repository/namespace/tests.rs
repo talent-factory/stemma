@@ -184,6 +184,31 @@ fn a_fetch_keeps_the_namespace_policy_of_the_list_and_removes_it_when_the_list_n
     let format = fs::read_to_string(clone.metadata_dir().join("format")).unwrap();
     assert_eq!(format, format!("stemma-repository {FORMAT_VERSION}\n"));
 
+    // The namespace raises a level while no reference of the hub moves: the fetch replaces the
+    // kept policy all the same.
+    let raised = DEMANDING.replace("level 3 grading/\n", "level 3 grading/\nlevel 2 src/\n");
+    let (course, _) = with_main(
+        &dir,
+        "namespace-raised",
+        &[
+            (policy::NAMESPACE_FILE_NAME, raised.as_str()),
+            (register::FILE, &register),
+        ],
+    );
+    let newer = course.namespace().unwrap();
+    assert_ne!(newer.commit(), namespace.commit());
+    let facts = ListFacts::new(id(), keys(), |_| Some(entry())).with_namespace(&newer);
+    let mut transport = MemoryTransport::new(Answering::new(&hub, facts));
+    clone
+        .fetch(&origin(), &mut transport, &teacher(), &AllowAll)
+        .unwrap();
+    let kept = clone.kept_namespace(&origin()).unwrap().unwrap();
+    assert_eq!(kept.commit(), newer.commit());
+    assert_eq!(
+        clone.kept_namespace_policies().unwrap(),
+        [newer.policy().clone()]
+    );
+
     // The hub no longer names a namespace policy: the next fetch removes the kept one.
     let facts = ListFacts::new(id(), keys(), |_| Some(entry()));
     let mut transport = MemoryTransport::new(Answering::new(&hub, facts));
@@ -192,6 +217,55 @@ fn a_fetch_keeps_the_namespace_policy_of_the_list_and_removes_it_when_the_list_n
         .unwrap();
     assert_eq!(clone.kept_namespace(&origin()).unwrap(), None);
     assert!(clone.kept_namespace_policies().unwrap().is_empty());
+}
+
+#[test]
+fn an_added_remote_keeps_the_namespace_policy_of_its_list_and_replaces_an_earlier_one() {
+    let dir = TempDir::new();
+    let register = register_text();
+    let (course, _) = with_main(
+        &dir,
+        "namespace",
+        &[
+            (policy::NAMESPACE_FILE_NAME, DEMANDING),
+            (register::FILE, &register),
+        ],
+    );
+    let namespace = course.namespace().unwrap();
+    let (hub, _) = with_main(&dir, "hub", &[("a.txt", "a\n")]);
+    let local = Repository::init(
+        dir.path().join("local"),
+        &InitOptions::default(),
+        &teacher(),
+        &AllowAll,
+    )
+    .unwrap();
+    let setup =
+        RemoteSetup::new(RemoteAddress::try_new("https://hub.example/course/work").unwrap());
+
+    // Before the first fetch the local gate judges with the namespace policy already.
+    let facts = ListFacts::new(id(), keys(), |_| Some(entry())).with_namespace(&namespace);
+    let mut transport = MemoryTransport::new(Answering::new(&hub, facts));
+    local
+        .add_remote(&origin(), &setup, &mut transport, &teacher(), &AllowAll)
+        .unwrap();
+    assert_eq!(
+        local.kept_namespace_policies().unwrap(),
+        [namespace.policy().clone()]
+    );
+
+    // The remote is removed and added again for a hub outside a namespace: the kept policy of
+    // the earlier hub goes.
+    local
+        .remove_remote(&origin(), &teacher(), &AllowAll)
+        .unwrap();
+    assert!(local.kept_namespace_policies().unwrap().is_empty());
+    let facts = ListFacts::new(id(), keys(), |_| Some(entry()));
+    let mut transport = MemoryTransport::new(Answering::new(&hub, facts));
+    local
+        .add_remote(&origin(), &setup, &mut transport, &teacher(), &AllowAll)
+        .unwrap();
+    assert_eq!(local.kept_namespace(&origin()).unwrap(), None);
 }
 
 #[test]

@@ -3,11 +3,12 @@
 //! last from each remote in `namespaces/<remote>` ([`Repository::kept_namespace`]), which the
 //! local gate evaluates beside the policy of `main`.
 //!
-//! The kept file is replaced as a whole under the lock of the references by the fetch that read
-//! the list, before the remote references move, and removed by a fetch whose list names no
-//! namespace policy. It is the answer of the hub and no history: no entry of the log names it,
+//! The kept file is replaced as a whole under the lock of the references by the fetch or the
+//! `remote add` that read the list, before the remote references move or the configuration is
+//! written, and removed by one whose list names no namespace policy. It is the answer of the hub and no history: no entry of the log names it,
 //! and `op restore` does not bring an older one back. The local gate reads the files of the
-//! remotes that are configured, so the file of a removed remote counts no more.
+//! remotes that are configured, so the file of a removed remote counts no more, and a later
+//! `remote add` of the name replaces or removes it.
 
 use std::error::Error;
 use std::fmt;

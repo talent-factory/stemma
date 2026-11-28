@@ -1774,6 +1774,8 @@ den Commit und die Policy in ihrer kanonischen Form, hexadezimal in einer Zeile,
 abgeschnittene Antwort nie einen Teil von ihr trägt.
 Ein Fetch hält sie unter der Sperre der Referenzen in \type{namespaces/<Remote>} fest, bevor die
 Remote-Referenzen sich bewegen, und entfernt die Datei, wenn die Liste keine nennt.
+\type{remote add} tut dasselbe mit der Liste, die es für den ersten Kontakt liest, bevor es die
+Konfiguration schreibt; so urteilt das Gate schon vor dem ersten Fetch mit der Namespace-Policy.
 Mit dem Verzeichnis \type{namespaces/} steigt das Repository-Format auf Version 22 (ADR-009),
 denn ein Programm, das es nicht kennt, würde ohne die Namespace-Policy mergen.
 Das Gate nach der Policy wertet die festgehaltenen Namespace-Policies aller eingerichteten

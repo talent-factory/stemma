@@ -226,7 +226,8 @@ what a hub keeps of a namespace stays with stemma-hub.
 - **The clone.** The list of references names the namespace policy in the line
   `namespace-policy <commit> <hexadecimal policy>` (ADR-023). A fetch keeps it in
   `namespaces/<remote>` (ADR-009, layout version 22) before the remote references move, and
-  removes the file when the list names none. The local gate combines the kept policies of the
+  removes the file when the list names none; `remote add` does the same with the list of its
+  first contact, before it writes the configuration. The local gate combines the kept policies of the
   configured remotes with the policy of `T`, so a clone and the hub reach the same verdict from
   the same namespace policy. The tests run both on one change and compare.
 - **One human owner.** A level 3 change of a namespace repository whose register has one human
