@@ -1061,6 +1061,7 @@ seinen Zeilen: der laufenden Nummer, der Zeit, dem letzten Eintrag der Aufzeichn
 Identität aus dem Register. Der Befehl prüft, dass der festgehaltene Schlüssel des Hubs sie
 signiert hat.
 \item Ana holt in \type{b} mit \type{fetch} den Branch und die Erklärungen offener Pull Requests
+(sobald STEMMA-325 sie in die Menge bringt; bis dahin kennt \type{b} den Pull Request nicht)
 und gibt mit \type{pr approve 4ab85376} frei, den ersten Stellen des Hashes, die Daniel ihr
 nennt. Die Freigabe nennt dasselbe Repository wie die Eröffnung, und der Befehl reicht sie beim
 Remote mit diesem Repository ein.
@@ -1085,8 +1086,9 @@ Schlüssels zurück; sie gilt, wenn die Referenzliste diesen Schlüssel für ihr
 \startinfobox
 {\bf Was noch fehlt.}
 Über HTTP trägt der Client die drei Anfragen für Erklärungen noch nicht; das bringt
-STEMMA-326. Bis dahin endet jede Einreichung über HTTP mit Exit-Code 3, und die Erklärung zählt
-im Klon. Dass \type{fetch} die
+STEMMA-326. Bis dahin endet die Einreichung nach einem Eintrag über HTTP mit Exit-Code 3, und
+die Erklärung zählt im Klon; \type{pr submit}, das nichts schreibt, endet mit Exit-Code 1.
+Die Schritte 2 und 4 im zweiten Klon setzen zudem STEMMA-325 voraus. Dass \type{fetch} die
 Erklärungen anderer Klone in die Menge bringt, kommt mit STEMMA-325, und der Merge über den Hub
 mit \type{push} und \type{pr merge} mit STEMMA-309 und STEMMA-317. Die Befehle dieses Abschnitts
 prüfen die Tests gegen den Transport im Speicher des Kerns. Einen Owner-Override reicht noch

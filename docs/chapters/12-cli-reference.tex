@@ -3259,12 +3259,12 @@ stemma pr show [-C VERZEICHNIS] [--remote NAME] [--key SCHLÜSSELDATEI] [--json]
 Standard ist das aktuelle.
 \item {\bf BRANCH:} Der Branch, den der Pull Request in \type{main} merged. Seine Spitze ist der
 Head des Pull Requests.
-\item {\bf PULL:} Der Pull Request: seine Nummer in diesem Klon, wie \type{pr list} sie
-zeigt, oder mindestens acht hexadezimale Stellen des Hashes seiner Öffnung, mit oder ohne
-\type{b3:}. Die Nummer ist kurz und gilt nur in diesem Klon; der Hash gilt in jedem Klon und auf
-dem Hub, auch offline. Die laufende Nummer des Hubs ist kein Name, denn sie entsteht erst, wenn
-der Hub die Öffnung hält, und jeder Hub zählt anders. Passt ein Text aus Ziffern als Nummer zu
-einem Pull Request und als Präfix zu einem anderen, lehnt der Befehl ihn als mehrdeutig ab.
+\item {\bf PULL:} Der Pull Request: seine Nummer in diesem Klon, wie \type{pr list} sie zeigt, oder
+mindestens acht hexadezimale Stellen in Kleinbuchstaben des Hashes seiner Öffnung, mit oder ohne
+\type{b3:}. Die Nummer ist kurz und gilt nur in diesem Klon; der Hash gilt in jedem Klon und auf dem
+Hub, auch offline. Die laufende Nummer des Hubs ist kein Name, denn sie entsteht erst, wenn der Hub
+die Öffnung hält, und jeder Hub zählt anders. Passt ein Text aus Ziffern als Nummer zu einem Pull
+Request und als Präfix zu einem anderen, lehnt der Befehl ihn als mehrdeutig ab.
 \item {\bf \type{--remote} NAME:} Bei \type{open} macht der Befehl die Öffnung für das
 Repository des Hubs dieses Remotes und übermittelt sie sofort. \type{close} und \type{approve}
 folgen der Öffnung: Nennt sie ein Repository eines Hubs, nennen es auch ihre Erklärungen, und der
@@ -3338,7 +3338,9 @@ Eröffnung, deren Pull Request auf dem Hub beendet ist, beantwortet der Hub mit 
 er hält sie, und der Befehl zählt das nicht als Ablehnung. Der Befehl liest zuerst die
 Referenzliste und prüft, dass die Antwort die gesendete Erklärung ist und der Schlüssel des Hubs
 zu ihrer Zeit sie signierte: der festgehaltene oder ein früherer Schlüssel der Liste für den
-Bereich, in den ihre Zeile \type{record} fällt (ADR-026).
+Bereich, in den ihre Zeile \type{record} oder der Eintrag danach fällt (ADR-026).
+Bei einem Remote mit Anmeldung lehnen \type{open}, \type{close} und \type{approve} ohne
+\type{--key} und ohne \type{--offline} ab, bevor sie den Eintrag schreiben.
 \type{submit} und \type{show} schreiben nichts in den Klon.
 \type{show} zeigt den Pull Request und seine Erklärungen in diesem Klon; mit \type{--remote}
 liest er die Referenzliste und die Erklärungen des Hubs, prüft das Repository und den Schlüssel
@@ -3372,10 +3374,11 @@ die Öffnung ein Repository eines Hubs nennt.
 
 \starttyping
 8 open feat 08e522cd0b90 by human daniel approvals 1 id 4ab8537678b1 hub
-7 merged fix 5f1d0a3c92ab by human anna id 0c36743d6864
+7 merged fix 5f1d0a3c92ab by human anna id 9e04b7d2a1c5
 \stoptyping
 
-Nach einer Übermittlung nennen \type{open}, \type{close}, \type{approve} und \type{submit} je
+Nach einer Übermittlung nennen \type{open}, \type{close}, \type{approve}, \type{submit} und
+\type{check record} je
 Erklärung ihre Art, ihren Namen und die Antwort des Hubs: die laufende Nummer, den letzten
 Eintrag des Records und die Identität, die das Register nennt, oder den Grund der Ablehnung mit
 seinem Wort aus ADR-025.
@@ -3473,17 +3476,20 @@ Nach einem geschriebenen Eintrag nennt jede Meldung einer Übermittlung, die nic
 den Eintrag und \type{stemma pr submit PULL}; den Befehl selbst wiederholt man nicht. Ist der
 Hub nicht erreichbar oder bricht die Antwort ab, endet der Befehl mit Exit-Code 3. Jeder andere
 Fehler behält seinen Exit-Code, denn ein späterer Aufruf scheitert gleich, bis er behoben ist:
-1 für eine fehlende Anmeldung, einen anderen Schlüssel des Hubs oder eine Antwort ausserhalb des
-Protokolls, 6 für einen besetzten Hub. Lehnt der Hub die Erklärung des Befehls ab, endet er mit
-Exit-Code 1; die Ablehnung einer älteren Erklärung desselben Pull Requests steht nur als Zeile
-da. Der Eintrag gilt im Klon in jedem Fall weiter. Ohne Eintrag enden mit Exit-Code 1 ein
+1 für eine gescheiterte Anmeldung, einen anderen Schlüssel des Hubs (mit dem Befehl
+\type{remote pin}, der ihn festhält) oder eine Antwort ausserhalb des Protokolls, etwa die Seite
+eines Proxys, 5 für eine beschädigte Erklärung im Klon und 6 für einen besetzten Hub.
+Lehnt der Hub die Erklärung des Befehls ab, endet er mit Exit-Code 1; die Ablehnung einer
+älteren Erklärung desselben Pull Requests steht nur als Zeile da. Der Eintrag gilt im Klon in
+jedem Fall weiter. Ohne Eintrag enden mit Exit-Code 1 ein
 unbekanntes Remote, ein Remote mit einem anderen Repository als dem der Öffnung,
 \type{--offline} ohne \type{--remote} bei \type{open}, \type{--remote} oder \type{--offline}
 bei einem Pull Request, der nur im Klon gilt, und ein Name, der keinen oder mehr als einen Pull
-Request nennt. \type{submit} endet mit Exit-Code 1, wenn der Pull Request nur im Klon
-gilt, wenn der Hub eine Erklärung ablehnt oder nicht im Protokoll antwortet, und mit Exit-Code 6
-bei einem besetzten Hub; die Antworten bis dahin stehen auf der Standardausgabe. \type{show}
-endet ebenso, und mit Exit-Code 5 bei einer beschädigten Erklärung.
+Request nennt. \type{submit} schreibt nichts und endet darum nie mit Exit-Code 3: mit 1, wenn
+der Pull Request nur im Klon gilt, wenn der Hub nicht erreichbar ist, eine Erklärung ablehnt oder
+nicht im Protokoll antwortet, mit 5 bei einer beschädigten Erklärung und mit 6 bei einem
+besetzten Hub; die Antworten bis dahin stehen auf der Standardausgabe. \type{show} endet
+ebenso.
 
 {\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
 (Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
@@ -3538,7 +3544,9 @@ andere Spitze ist ein eigener Aufruf.
 durchsetzenden Repository ist die Option Pflicht.
 \item {\bf \type{--remote} NAME, \type{--offline}:} Wie bei \type{pr open}: Das Ergebnis nennt
 das Repository des Hubs und geht sofort hinaus, mit \type{--offline} später mit \type{pr submit}
-eines Pull Requests, dessen Head der Commit ist. Exit-Codes nach dem Eintrag wie bei \type{pr}.
+eines Pull Requests, dessen Head der Commit ist (der Head der Eröffnung oder einer, den eine
+Genehmigung nennt); die Prüfung eines anderen Commits sendet kein Befehl später.
+Exit-Codes nach dem Eintrag wie bei \type{pr}.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 

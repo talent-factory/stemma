@@ -80,6 +80,10 @@ struct Side<'a> {
     fail_after: Cell<Option<usize>>,
     /// The key that the side signs its lines with.
     signer: Seeded,
+    /// The record entry that the lines of a new held statement name.
+    record: Cell<u64>,
+    /// The statement that the side holds in place of the next one it is sent, once.
+    answer_other: RefCell<Option<Statement>>,
     submissions: Cell<usize>,
 }
 
@@ -105,18 +109,23 @@ impl OtherSide for Side<'_> {
         if let Some(reason) = self.refuse.borrow_mut().take() {
             return Err(Refusal::Error(ErrorMessage::StatementRefused(reason)));
         }
+        let statement = self
+            .answer_other
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| statement.clone());
         let mut held = self.held.borrow_mut();
-        if let Some(found) = held.iter().find(|held| held.statement() == statement) {
+        if let Some(found) = held.iter().find(|held| *held.statement() == statement) {
             return Ok(found.clone());
         }
         let lines = HubLines {
             number: held.len() as u64 + 1,
             time: 1_000 + held.len() as i64,
             register: CommitId::new(ObjectId::from_digest(blake3::hash(b"main"))),
-            record: 1,
+            record: self.record.get(),
             actor: Identity::human("daniel").unwrap(),
         };
-        let sealed = HeldStatement::seal(statement.clone(), lines, &self.signer).unwrap();
+        let sealed = HeldStatement::seal(statement, lines, &self.signer).unwrap();
         held.push(sealed.clone());
         Ok(sealed)
     }
@@ -217,15 +226,68 @@ fn side(hub: &Repository) -> Side<'_> {
 
 /// A side with these keys in its list, which signs with `signer`.
 fn side_with<'a>(hub: &'a Repository, keys: &'static HubKeys, signer: Seeded) -> Side<'a> {
-    let facts = ListFacts::new(repository_id(), keys, |_| Some(record()));
+    side_of(hub, repository_id(), keys, signer)
+}
+
+/// A side whose list names the repository `id` and these keys, which signs with `signer`.
+fn side_of<'a>(
+    hub: &'a Repository,
+    id: RepositoryId,
+    keys: &'static HubKeys,
+    signer: Seeded,
+) -> Side<'a> {
+    let facts = ListFacts::new(id, keys, |_| Some(record()));
     Side {
         answering: Answering::new(hub, facts),
         held: RefCell::new(Vec::new()),
         refuse: RefCell::new(None),
         fail_after: Cell::new(None),
         signer,
+        record: Cell::new(1),
+        answer_other: RefCell::new(None),
         submissions: Cell::new(0),
     }
+}
+
+/// The hashes of the statements of the pull request `number`.
+fn hashes_of(clone: &Repository, number: u64) -> Vec<StatementHash> {
+    clone
+        .statements_of_pull(number, None)
+        .unwrap()
+        .iter()
+        .map(Statement::hash)
+        .collect()
+}
+
+/// A side whose hub rotated to [`other_key`], with [`hub_key`] as the former key of the record
+/// entries `first` to `last`, which signs with the former key at `record`; the clone pins the
+/// new key.
+fn rotated<'a>(setup: &'a Setup, first: u64, last: u64, record: u64) -> MemoryTransport<Side<'a>> {
+    let new = other_key();
+    let former = FormerKeys::sign(
+        repository_id(),
+        &new.public(),
+        vec![crate::protocol::FormerKey::try_new(first, last, hub_key().public()).unwrap()],
+        &new,
+    )
+    .unwrap();
+    let keys: &'static HubKeys =
+        Box::leak(Box::new(HubKeys::try_new(new.public(), former).unwrap()));
+    let side = side_with(&setup.hub, keys, hub_key());
+    side.record.set(record);
+    let mut transport = MemoryTransport::new(side);
+    let list = read_ref_list(&mut transport).unwrap();
+    setup
+        .clone
+        .pin_hub_key_again(
+            &origin(),
+            &list,
+            &new.public().fingerprint(),
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap();
+    transport
 }
 
 fn kinds(clone: &Repository, hashes: &[StatementHash]) -> Vec<StatementKind> {
@@ -433,15 +495,20 @@ fn a_hub_that_stops_keeps_the_answers_that_came_before() {
     let error = clone
         .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
         .unwrap_err();
+    // A side that fails before it answers gives no answer of the protocol, which is no
+    // unreachable hub: the status of the answer says more about it.
     assert!(matches!(error, SubmitError::Transport(_)), "{error}");
-    assert!(error.is_unreachable());
+    assert!(!error.is_unreachable());
     let side = self::side(&setup.hub);
     side.fail_after.set(Some(1));
     let mut transport = MemoryTransport::new(side);
     let error = clone
         .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
         .unwrap_err();
-    assert!(error.is_unreachable());
+    assert!(
+        matches!(&error, SubmitError::After { source, .. } if matches!(**source, SubmitError::Transport(_))),
+        "{error}"
+    );
     assert_eq!(error.submitted().len(), 1);
     assert!(error
         .to_string()
@@ -695,4 +762,148 @@ fn a_former_key_does_not_count_outside_its_range() {
         .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
         .unwrap_err();
     assert!(matches!(error, SubmitError::WrongHubKey(_)), "{error}");
+}
+
+#[test]
+fn a_former_key_counts_for_the_record_entry_just_before_its_range_and_no_earlier() {
+    // A held statement names the last record entry before it, and the key that signed it may
+    // already be the key of the next entry: the former key of 2 to 3 counts for record 1.
+    let setup = Setup::new();
+    let hashes = hashes_of(&setup.clone, setup.open());
+    let mut transport = rotated(&setup, 2, 3, 1);
+    let submitted = setup
+        .clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap();
+    assert!(matches!(submitted[0].outcome, Outcome::Held(_)));
+
+    // The former key of 3 to 4 does not count for record 1.
+    let setup = Setup::new();
+    let hashes = hashes_of(&setup.clone, setup.open());
+    let mut transport = rotated(&setup, 3, 4, 1);
+    let error = setup
+        .clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(matches!(error, SubmitError::WrongHubKey(_)), "{error}");
+}
+
+#[test]
+fn a_hub_that_holds_another_statement_than_the_one_it_was_sent_is_refused() {
+    let setup = Setup::new();
+    let number = setup.open();
+    let clone = &setup.clone;
+    clone
+        .approve_pull(number, &mia(), None, None, &AllowAll)
+        .unwrap();
+    let hashes = hashes_of(clone, number);
+    let approval = clone.statement_set().get(&hashes[1]).unwrap().unwrap();
+    let side = side(&setup.hub);
+    *side.answer_other.borrow_mut() = Some(approval.clone());
+    let mut transport = MemoryTransport::new(side);
+    let error = clone
+        .submit_statements(
+            &origin(),
+            &hashes[..1],
+            &mut transport,
+            &daniel(),
+            &AllowAll,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, SubmitError::NotSubmitted(hash) if hash == hashes[0]),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_list_of_another_repository_or_key_refuses_before_anything_is_sent() {
+    let setup = Setup::new();
+    let hashes = hashes_of(&setup.clone, setup.open());
+    let mut transport = MemoryTransport::new(side_of(&setup.hub, other_id(), keys(), hub_key()));
+    let error = setup
+        .clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(matches!(error, SubmitError::HubKey(_)), "{error}");
+    assert_eq!(transport.side().submissions.get(), 0);
+
+    let other: &'static HubKeys = Box::leak(Box::new(
+        HubKeys::try_new(other_key().public(), FormerKeys::none()).unwrap(),
+    ));
+    let mut transport = MemoryTransport::new(side_with(&setup.hub, other, other_key()));
+    let error = setup
+        .clone
+        .submit_statements(&origin(), &hashes, &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(matches!(error, SubmitError::HubKey(_)), "{error}");
+    assert_eq!(transport.side().submissions.get(), 0);
+    let error = setup
+        .clone
+        .held_statements(&origin(), &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(matches!(error, SubmitError::HubKey(_)), "{error}");
+}
+
+#[test]
+fn a_held_statement_of_another_repository_is_refused_when_read() {
+    let setup = Setup::new();
+    let clone = &setup.clone;
+    let other = clone
+        .open_pull_for(
+            other_id(),
+            &topic(),
+            &daniel(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            &AllowAll,
+        )
+        .unwrap()
+        .number();
+    let hash = hashes_of(clone, other)[0];
+    let statement = clone.statement_set().get(&hash).unwrap().unwrap();
+    let lines = HubLines {
+        number: 1,
+        time: 1_000,
+        register: CommitId::new(ObjectId::from_digest(blake3::hash(b"main"))),
+        record: 1,
+        actor: Identity::human("daniel").unwrap(),
+    };
+    let side = side(&setup.hub);
+    side.held
+        .borrow_mut()
+        .push(HeldStatement::seal(statement, lines, &hub_key()).unwrap());
+    let mut transport = MemoryTransport::new(side);
+    let error = clone
+        .held_statements(&origin(), &mut transport, &daniel(), &AllowAll)
+        .unwrap_err();
+    assert!(
+        matches!(error, SubmitError::NotOfRemote(found) if found == hash),
+        "{error}"
+    );
+}
+
+#[test]
+fn only_a_failure_of_the_carrier_or_of_a_body_is_an_unreachable_hub() {
+    let carrier = || TransportError::Carrier(io::Error::other("refused"));
+    let no_answer = || TransportError::NoAnswer {
+        detail: "503, with a body of the media type `text/html`".to_owned(),
+    };
+    assert!(SubmitError::Transport(carrier()).is_unreachable());
+    assert!(SubmitError::Body(io::Error::other("broke off")).is_unreachable());
+    assert!(SubmitError::List(Box::new(FetchError::Transport(carrier()))).is_unreachable());
+    assert!(!SubmitError::Transport(no_answer()).is_unreachable());
+    assert!(!SubmitError::List(Box::new(FetchError::Transport(no_answer()))).is_unreachable());
+    assert!(!SubmitError::NotSubmitted(record_hash()).is_unreachable());
+    let after = SubmitError::After {
+        submitted: Vec::new(),
+        source: Box::new(SubmitError::Transport(carrier())),
+    };
+    assert!(after.is_unreachable());
+}
+
+fn record_hash() -> StatementHash {
+    format!("b3:{}", "b2".repeat(32)).parse().unwrap()
 }

@@ -22,10 +22,12 @@
 //! those of the pull request with the lines of the hub: its running number, its time, the last
 //! record entry, and the identity that the register names.
 //!
-//! Exit codes (chapter 12): after an entry was written, 1 if the hub refused a statement and 3
-//! if the statement could not be submitted (the hub is unreachable, busy, or answers no message
-//! of the protocol); `pr submit` and `pr show` write nothing and end with 1 for a refusal and a
-//! failure of the hub, 5 for damage, and 6 for a hub that is busy or limits the requests.
+//! Exit codes (chapter 12): after an entry was written, 3 if the hub could not be reached or its
+//! answer broke off, 1 if the hub refused the statement of the command (the refusal of an older
+//! statement is a line only), and any other failure keeps its own code: 1, 5 for damage, 6 for
+//! a hub that is busy or limits the requests. `pr submit` and `pr show` write nothing and end
+//! with 1 for a refusal and a failure of the hub, an unreachable one among them, 5 for damage,
+//! and 6 for a hub that is busy or limits the requests.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -45,7 +47,9 @@ use stemma_core::remote::{RemoteConfig, RemoteName};
 use stemma_core::repository::{Outcome, Repository, Submission, SubmitError};
 use stemma_core::{Actor, AllowAll};
 
-use super::network::{connect, connect_noting, parse_remote_name, with_status, NetworkError};
+use super::network::{
+    connect, connect_noting, key_hint, parse_remote_name, with_status, NetworkError,
+};
 use super::review::{pull_error, pull_kind, register_of};
 use super::{actor, mask_controls, open, short_id, CliError, ACTOR_ENV};
 use crate::op_log::{quote, JSON_SCHEMA};
@@ -250,7 +254,7 @@ pub(super) fn hashes_of_pull(
     repository: &Repository,
     register: Option<&Register>,
     pull: &PullRequest,
-) -> Result<Vec<StatementHash>, CliError> {
+) -> Result<Vec<StatementHash>, NetworkError> {
     let statements = repository
         .statements_of_pull(pull.number(), register)
         .map_err(|error| NetworkError::of_kind(error.to_string(), submit_kind(&error)))?;
@@ -282,18 +286,32 @@ fn send(
     who: &Actor,
     note: &str,
 ) -> Result<Vec<Submission>, Unfinished> {
-    let mut transport = connect_noting(config, key, note).map_err(|error| Unfinished {
+    let mut transport = connect_noting(config, key, note).map_err(|unconnected| Unfinished {
         submitted: Vec::new(),
-        error,
-        unreachable: false,
+        error: unconnected.error,
+        unreachable: unconnected.unreachable,
     })?;
     repository
         .submit_statements(remote, hashes, &mut transport, who, &AllowAll)
         .map_err(|error| Unfinished {
             submitted: error.submitted().to_vec(),
             unreachable: error.is_unreachable(),
-            error: with_status(error.to_string(), submit_kind(&error), &transport),
+            error: hub_error(&error, remote, &transport),
         })
+}
+
+/// The error of a request to the hub of `remote`, with what the status of the last answer adds
+/// and, for a key of the hub that is not pinned or changed, the command that pins it.
+fn hub_error(
+    error: &SubmitError,
+    remote: &RemoteName,
+    transport: &stemma_remote::HttpTransport,
+) -> NetworkError {
+    let hint = match error {
+        SubmitError::HubKey(inner) => key_hint(inner, remote),
+        _ => String::new(),
+    };
+    with_status(format!("{error}{hint}"), submit_kind(error), transport)
 }
 
 /// The kind of a failure of a submission: damage of the log, the set, or the configuration of
@@ -363,6 +381,20 @@ impl Destination {
     /// The repository of the hub, which the statement names.
     pub(super) fn repository(&self) -> RepositoryId {
         self.config.repository
+    }
+
+    /// Refuses a submission at once to a remote that asks for a sign-in when no key is given,
+    /// before the entry is written; `--offline` needs no key.
+    pub(super) fn check_key(&self, key: Option<&std::path::Path>) -> Result<(), CliError> {
+        if self.offline || !self.config.sign_in || key.is_some() {
+            return Ok(());
+        }
+        Err(NetworkError::refused(format!(
+            "the remote `{}` asks for a sign-in: pass `--key KEY_FILE`, or `--offline` to \
+             submit later; nothing is written",
+            self.remote
+        ))
+        .into())
     }
 
     /// Submits `hashes` after `entry` was written, and returns the lines to print after the
@@ -620,7 +652,7 @@ pub(super) fn pr_show(args: PrShowArgs, out: &mut dyn Write) -> Result<(), CliEr
             let mut transport = connect(&config, args.hub.key.as_deref())?;
             let all = repository
                 .held_statements(name, &mut transport, &who, &AllowAll)
-                .map_err(|error| with_status(error.to_string(), submit_kind(&error), &transport))?;
+                .map_err(|error| hub_error(&error, name, &transport))?;
             Some(
                 all.into_iter()
                     .filter(|h| of_pull(h, &pull, &heads))

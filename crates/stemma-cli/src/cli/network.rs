@@ -36,7 +36,7 @@ use stemma_core::repository::{
     RemoteConfigError, RemoteSetup, Repository, Revision, SwitchTarget,
 };
 use stemma_core::signature::{KeyFingerprint, PublicKey, SshKeygen};
-use stemma_core::transport::sign_in;
+use stemma_core::transport::{sign_in, SignInError, TransportError};
 use stemma_core::AllowAll;
 use stemma_remote::{HttpTransport, Status, Timeouts};
 
@@ -360,16 +360,33 @@ pub(super) fn connect(
     config: &RemoteConfig,
     key: Option<&Path>,
 ) -> Result<HttpTransport, NetworkError> {
-    connect_noting(config, key, "; nothing was written")
+    connect_noting(config, key, "; nothing was written").map_err(|unconnected| unconnected.error)
 }
 
-/// [`connect`] with `note` after each message of a failure: what the failure leaves behind. A
-/// command that wrote an entry before it connects says so itself (STEMMA-312).
+/// Why [`connect_noting`] did not connect: the error, and whether the hub could not be reached
+/// for the sign-in, or its answer broke off, so that a later call can succeed.
+pub(super) struct Unconnected {
+    pub(super) error: NetworkError,
+    pub(super) unreachable: bool,
+}
+
+impl From<NetworkError> for Unconnected {
+    fn from(error: NetworkError) -> Self {
+        Self {
+            error,
+            unreachable: false,
+        }
+    }
+}
+
+/// [`connect`] with `note` after the message of a failure that the remote or the hub causes:
+/// what the failure leaves behind. A command that wrote an entry before it connects says so
+/// itself (STEMMA-312).
 pub(super) fn connect_noting(
     config: &RemoteConfig,
     key: Option<&Path>,
     note: &str,
-) -> Result<HttpTransport, NetworkError> {
+) -> Result<HttpTransport, Unconnected> {
     let mut transport = HttpTransport::new(config, Timeouts::DEFAULT)
         .map_err(|error| NetworkError::refused(format!("{error}{note}")))?;
     if config.sign_in {
@@ -390,11 +407,18 @@ pub(super) fn connect_noting(
             NetworkError::refused(format!("the address of the hub `{hub}`: {error}"))
         })?;
         if let Err(error) = sign_in(&mut transport, &called, &public, &SshKeygen::new(key)) {
-            return Err(with_status(
-                format!("the sign-in failed: {error}{note}"),
-                FailureKind::Other,
-                &transport,
-            ));
+            let unreachable = matches!(
+                error,
+                SignInError::Transport(TransportError::Carrier(_)) | SignInError::Body(_)
+            );
+            return Err(Unconnected {
+                error: with_status(
+                    format!("the sign-in failed: {error}{note}"),
+                    FailureKind::Other,
+                    &transport,
+                ),
+                unreachable,
+            });
         }
     }
     Ok(transport)
@@ -468,7 +492,7 @@ pub(super) fn with_status(
 }
 
 /// The command that pins the new key of a hub that changed its key.
-fn key_hint(error: &HubKeyError, remote: &RemoteName) -> String {
+pub(super) fn key_hint(error: &HubKeyError, remote: &RemoteName) -> String {
     match error {
         HubKeyError::Changed { offered, .. } => {
             format!("; then run `stemma remote pin {remote} --expect-key {offered}`")

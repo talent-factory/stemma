@@ -297,7 +297,8 @@ pub(super) enum PrCommand {
 #[derive(Debug, Args)]
 pub(super) struct Submitting {
     /// Make the statement for the hub of this remote and submit it at once. `pr approve` and
-    /// `pr close` take the remote whose repository the opening names without it
+    /// `pr close` make it for the repository that the opening names, and take this option only
+    /// to pick among the remotes of that repository
     #[arg(long, value_name = "NAME", value_parser = parse_remote_name)]
     remote: Option<RemoteName>,
 
@@ -720,6 +721,9 @@ fn pr_open(args: PrOpenArgs, out: &mut dyn Write) -> Result<(), CliError> {
         None if args.submitting.offline => return Err(offline_alone()),
         None => None,
     };
+    if let Some(destination) = &destination {
+        destination.check_key(args.signing.key.as_deref())?;
+    }
     let entry = match &destination {
         Some(destination) => repository.open_pull_for(
             destination.repository(),
@@ -783,7 +787,8 @@ fn offline_alone() -> CliError {
 }
 
 /// Writes the line of a command that wrote `entry`, with the lines of its submission, and ends
-/// with the error of the submission if it did not finish.
+/// with the error of the submission if it did not finish or the hub refused the statement of
+/// the command.
 fn finish(
     out: &mut dyn Write,
     mut text: String,
@@ -822,11 +827,16 @@ fn submit_pull_after(
     let hashes = match statements::hashes_of_pull(repository, register, pull) {
         Ok(hashes) => hashes,
         Err(error) => {
-            let error = ReviewError::incomplete(format!(
-                "entry {} is written and counts in this clone, but its statements could not \
-                 be collected for the hub: {error}; {later} sends them later",
-                entry.number()
-            ));
+            // The failure keeps its own code: damage of the log or of the set is 5, as it is
+            // for the `pr submit` that would collect them again.
+            let error = error.reworded(|inner| {
+                format!(
+                    "entry {} is written and counts in this clone, but its statements could \
+                     not be collected for the hub: {inner}; {later} sends them once that is \
+                     fixed",
+                    entry.number()
+                )
+            });
             return Some((String::new(), Some(error.into())));
         }
     };
@@ -854,6 +864,9 @@ fn pr_close(args: PrNumberArgs, out: &mut dyn Write) -> Result<(), CliError> {
         args.submitting.remote.as_ref(),
         args.submitting.offline,
     )?;
+    if let Some(destination) = &destination {
+        destination.check_key(args.signing.key.as_deref())?;
+    }
     let entry = repository
         .close_pull(
             pull.number(),
@@ -892,6 +905,9 @@ fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> 
         args.submitting.remote.as_ref(),
         args.submitting.offline,
     )?;
+    if let Some(destination) = &destination {
+        destination.check_key(args.signing.key.as_deref())?;
+    }
     let entry = repository
         .approve_pull(
             pull.number(),
@@ -1144,6 +1160,9 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
         None if args.submitting.offline => return Err(offline_alone()),
         None => None,
     };
+    if let Some(destination) = &destination {
+        destination.check_key(args.signing.key.as_deref())?;
+    }
     let entry = match &destination {
         Some(destination) => repository.record_check_for(
             destination.repository(),
@@ -1173,8 +1192,10 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
         entry.number()
     );
     // A check belongs to no pull request, so a later submission names it by a pull request
-    // of its commit: `pr submit` sends the checks of the heads of a pull request.
-    let later = "`stemma pr submit PULL` of a pull request whose head is this commit";
+    // of its commit: `pr submit` sends the checks of the heads of a pull request (the head of
+    // its opening or one that an approval names), and no command sends a check of another
+    // commit.
+    let later = "only `stemma pr submit PULL` of a pull request whose head is this commit";
     let submitted = destination.map(|destination| {
         let own = own_statement(&entry);
         destination.submit_after(

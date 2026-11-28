@@ -15,7 +15,7 @@
 //! read the list of references first, so that the repository ID and the key of the hub are
 //! checked as a fetch checks them, and a held statement counts as signed by the hub if its key
 //! is the key of the hub at its time: the pinned key, or a former key that the list names for
-//! the range of record numbers that its `record` line falls in.
+//! the range of record numbers that its `record` line, or the entry after it, falls in.
 //!
 //! Nothing here writes into the clone: neither the log nor the set of statements changes. The
 //! lines of the hub are not kept in the clone; the entry `fetch` that brings statements into the
@@ -98,10 +98,11 @@ impl Submission {
 
 impl Repository {
     /// The statements of the pull request `number` that this clone counts, in the order of
-    /// their entries: the opening, the checks of a head of the pull request (the head of the
-    /// opening or one that an approval names), the approvals, and the closing, as far as they
-    /// name the repository of the hub that the opening names, or none for a pull request of
-    /// this clone only ([`PullRequest::repository`](crate::pull::PullRequest::repository)). They are the statements that
+    /// their entries (so a check recorded before the opening comes first): the opening, the
+    /// checks of a head of the pull request (the head of the opening or one that an approval
+    /// names), the approvals, and the closing. They name the repository that the opening
+    /// names, or no repository for a pull request of this clone only
+    /// ([`PullRequest::repository`](crate::pull::PullRequest::repository)). They are the statements that
     /// [`submit_statements`](Self::submit_statements) sends for the pull request. A closing or
     /// a failing run that stands in for a lost statement is no statement that a hub could check,
     /// and is not among them.
@@ -262,7 +263,8 @@ impl Repository {
     /// [`SubmitError::Refs`] in a bare repository, [`SubmitError::Denied`],
     /// [`SubmitError::Remote`], [`SubmitError::NoSuchRemote`], [`SubmitError::List`] for a
     /// failure of the list of references, [`SubmitError::HubKey`] for a key or a repository of
-    /// the list that is not the one of the configuration, the errors of a request as for
+    /// the list that is not the one of the configuration or a key that is not pinned (checked
+    /// once the list is read), the errors of a request as for
     /// [`submit_statements`](Self::submit_statements), [`SubmitError::Held`] for an answer that
     /// the reader refuses, [`SubmitError::NotOfRemote`] for a held statement of another
     /// repository, and [`SubmitError::WrongHubKey`].
@@ -475,12 +477,19 @@ impl SubmitError {
         }
     }
 
-    /// Whether the hub could not be reached or did not answer whole, so that a later call can
-    /// succeed: the statements still count in the clone.
+    /// Whether the hub could not be reached or its answer broke off, so that a later call can
+    /// succeed: the statements still count in the clone. A failure of the carrier and of the
+    /// body of an answer are such; something that came back but is no answer of the protocol
+    /// ([`TransportError::NoAnswer`], such as the page of a proxy or a busy hub without a body
+    /// of the protocol) is not, as the status of the answer says more about it.
     pub fn is_unreachable(&self) -> bool {
         match self {
-            Self::Transport(_) | Self::Body(_) => true,
-            Self::List(error) => matches!(**error, FetchError::Transport(_) | FetchError::Body(_)),
+            Self::Transport(error) => matches!(error, TransportError::Carrier(_)),
+            Self::Body(_) => true,
+            Self::List(error) => matches!(
+                **error,
+                FetchError::Transport(TransportError::Carrier(_)) | FetchError::Body(_)
+            ),
             Self::After { source, .. } => source.is_unreachable(),
             _ => false,
         }
@@ -533,8 +542,8 @@ impl fmt::Display for SubmitError {
             ),
             Self::WrongHubKey(hash) => write!(
                 f,
-                "statement {hash} carries the signature of another key than the one of the hub \
-                 that the clone pinned"
+                "statement {hash} carries the signature of neither the pinned key of the hub nor \
+                 a former key of the hub for the record entry that it names"
             ),
             Self::NotOfRemote(hash) => write!(
                 f,

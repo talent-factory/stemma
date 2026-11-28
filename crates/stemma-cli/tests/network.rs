@@ -1045,3 +1045,55 @@ fn the_statements_of_a_pull_request_of_this_clone_only_go_to_no_hub() {
     }
     assert_eq!(operations(&copy).len(), before);
 }
+
+#[test]
+fn after_its_entry_a_busy_hub_keeps_code_6_and_a_missing_key_refuses_before_the_entry() {
+    let hub = Hub::start();
+    let place = Dir::new();
+    let copy = clone_with_feature(&hub, &place);
+    // A remote that asks for a sign-in, without `--key`: nothing is written.
+    let config = copy.join(".stemma/remotes/origin");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, text.replace("sign-in no\n", "sign-in yes\n")).unwrap();
+    let before = operations(&copy).len();
+    let opened = run(
+        &copy,
+        &["pr", "open", "--actor", ACTOR, "feat", "--remote", "origin"],
+    );
+    assert_eq!(opened.code, 1, "{}", opened.stderr);
+    assert!(
+        opened.stderr.contains("--key KEY_FILE") && opened.stderr.contains("nothing is written"),
+        "{}",
+        opened.stderr
+    );
+    assert_eq!(operations(&copy).len(), before);
+    // `--offline` needs no key.
+    let opened = run(
+        &copy,
+        &[
+            "pr",
+            "open",
+            "--actor",
+            ACTOR,
+            "feat",
+            "--remote",
+            "origin",
+            "--offline",
+        ],
+    );
+    assert_eq!(opened.code, 0, "{}", opened.stderr);
+    std::fs::write(&config, text).unwrap();
+    // A busy hub is no unreachable one: the approval is written, and the command ends with 6.
+    hub.set(KEY, Mode::Busy);
+    let number = listed_number(&copy);
+    let before = operations(&copy).len();
+    let approved = run(&copy, &["pr", "approve", "--actor", "human mia", &number]);
+    assert_eq!(approved.code, 6, "{}", approved.stderr);
+    assert!(
+        approved.stderr.contains("counts in this clone")
+            && approved.stderr.contains("a later call can succeed"),
+        "{}",
+        approved.stderr
+    );
+    assert_eq!(operations(&copy).len(), before + 1);
+}
