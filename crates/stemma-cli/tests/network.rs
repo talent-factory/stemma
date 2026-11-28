@@ -155,6 +155,16 @@ fn answer(stream: TcpStream, served: &Path, key: &str, mode: Mode) -> std::io::R
         body.resize(length, 0);
         reader.read_exact(&mut body)?;
     }
+    // The fixture answers no request of the statements (STEMMA-326 maps them to HTTP): it
+    // closes the connection, as a hub that cannot be reached, so that a submission does not
+    // finish.
+    if matches!(mode, Mode::Serve)
+        && ["/statements", "/statements/range", "/record/range"]
+            .iter()
+            .any(|endpoint| path.ends_with(endpoint))
+    {
+        return Ok(());
+    }
     let (status, extra, kind, bytes): (&str, String, &str, Vec<u8>) = match mode {
         Mode::Busy => (
             "503 Service Unavailable",
@@ -847,9 +857,9 @@ fn a_configuration_that_cannot_be_written_after_its_entry_is_code_3_and_a_repeat
 }
 
 // The statements of a pull request on a hub (STEMMA-312). The fixture answers no request for
-// statements: the HTTP mapping of those requests comes with STEMMA-326, so a submission here
-// fails as one to a hub that does not take it, and the tests of the submission itself run
-// against the transport in memory in the core.
+// statements: it closes the connection, as a hub that cannot be reached, so a submission here
+// does not finish, and the tests of the submission itself run against the transport in memory
+// in the core.
 
 /// A clone of the hub with the branch `feat` one commit ahead of `main`.
 fn clone_with_feature(hub: &Hub, place: &Dir) -> PathBuf {

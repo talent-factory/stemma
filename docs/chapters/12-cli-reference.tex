@@ -3368,8 +3368,8 @@ der Öffnung hat; \type{submit} sendet sie, sobald eines es hat.
 liest er die Referenzliste und die Erklärungen des Hubs, prüft das Repository und den Schlüssel
 wie \type{fetch} und zeigt zu jeder Erklärung die Zeilen des Hubs. Eine Erklärung, die nur der
 Hub hält, steht am Ende. Dass Erklärungen anderer Klone in den eigenen Klon kommen, bringt
-\type{fetch} (STEMMA-325); die HTTP-Abbildung der Anfragen kommt mit STEMMA-326, bis dahin endet
-jede Übermittlung über HTTP wie eine an einen Hub, der die Anfrage nicht trägt.
+\type{fetch} (STEMMA-325). Der Client trägt die Anfragen über HTTP (STEMMA-326); solange ein Hub
+sie nicht beantwortet, endet eine Übermittlung mit dem Fehler seiner Antwort.
 
 Das Gate bewegt nur den Branch.
 Danach zieht \type{merge} den Worktree nach, der \type{main} ausgecheckt hat,

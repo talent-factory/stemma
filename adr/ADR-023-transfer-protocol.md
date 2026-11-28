@@ -7,7 +7,7 @@ STEMMA-274 and STEMMA-276) and carried into the ADRs by STEMMA-280. The module
 "The first number is 1"), with the ref update and its receipt (STEMMA-291, ADR-025) and with the
 two errors that answer a ref update (STEMMA-296), with the submission of a statement, the
 reading of the statements and of the record by a range, and their two errors (STEMMA-299,
-ADR-025), and the
+ADR-025), and their mapping to HTTP in `stemma-remote` (STEMMA-326), and the
 receiving side of an object stream exists in `stemma_core::receive` (STEMMA-289, see "The
 receiving side"), and the answering side of the list of references and of a fetch exists in
 `stemma_core::serve` (STEMMA-288, see "The answering side"), and the fetch and the clone of a
@@ -458,15 +458,29 @@ The address of a remote is the address of the repository, `<hub>/<namespace>/<re
 | `POST <repo>/fetch` | `want` and `have`; answers the object stream |
 | `POST <repo>/objects` | The object stream; answers 204 once the objects are durable |
 | `POST <repo>/refs` | The ref update; answers the receipt |
-| `<repo>/record` | Reading the record of ref updates, a range by numbers |
-| `<repo>/statements` | Submitting a statement, and reading statements, a range by numbers |
+| `POST <repo>/statements` | A signed statement; answers the statement as the hub holds it |
+| `POST <repo>/statements/range` | A range by numbers; answers the held statements of the range |
+| `POST <repo>/record/range` | A range by numbers; answers the record entries of the range |
 | `POST <repo>/anchors` | Sending an anchor; a further request reads the anchors of a log |
 
 Above the repository lie the requests of a namespace (ADR-027): reserving a namespace, creating a
 repository, submitting and reading the statements of a namespace, the list of the owner overrides
 of a namespace, and the repositories of a namespace that the requester may read. The methods and
-the exact paths of the reading requests and of the requests above the repository belong to the
-slices that build them; the names of the endpoints are reserved (ADR-027).
+the exact paths of the requests above the repository and of the reading of the anchors belong to
+the slices that build them; the names of the endpoints are reserved (ADR-027).
+
+The two reading requests by a range are a `POST` with the range as its body, as
+`Range::encode` writes it, the same message that the in-memory transport carries (STEMMA-326).
+So the client reads no message for them, as for every request but the token answer, and the
+range has one form on the wire, which the hub reads with `Range::parse`. A `POST` is also kept
+by no cache. The paths lie below `statements` and `record`, so that `POST <repo>/statements`
+stays the submission and the names of ADR-027 stay free for later requests of the same
+resource.
+
+Rejected: a `GET` with the range in the query (`?first=1&last=5`), because the client would have
+to read the range from the message and write a second form of it that the hub reads by other
+rules, and because a `GET` invites a cache that the hub has to turn away with
+`Cache-Control: no-store`.
 
 Headers:
 

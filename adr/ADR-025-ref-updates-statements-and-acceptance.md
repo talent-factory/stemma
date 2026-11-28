@@ -828,9 +828,11 @@ Built in STEMMA-312, as a proposal that the review confirms: `Repository::open_p
   Decimal digits alone are a number, so a prefix of only such digits takes `b3:`.
   The hash holds in every clone and on the hub, offline as well. The running number of the hub
   is no name: it exists only once the hub holds the opening, and two hubs count differently.
-- **Not yet.** The HTTP mapping of the three requests (STEMMA-326), the statements of other
-  clones in the set (STEMMA-325), and the submission of an owner override, which the hub refuses
-  as a kind of its own.
+- **HTTP.** `stemma-remote` carries the three requests as `POST <repo>/statements`,
+  `POST <repo>/statements/range` and `POST <repo>/record/range`, the range as the body
+  (STEMMA-326, ADR-023 "Mapping to HTTP"); the hub serves them with STEMMA-315.
+- **Not yet.** The statements of other clones in the set (STEMMA-325), and the submission of
+  an owner override, which the hub refuses as a kind of its own.
 
 ### The push and the merge with a remote as built
 

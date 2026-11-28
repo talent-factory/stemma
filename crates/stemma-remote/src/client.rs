@@ -476,6 +476,21 @@ impl Transport for HttpTransport {
         self.token = Some(answer.into_token());
         Ok(SignedIn::Accepted(lifetime))
     }
+
+    // The statements on a hub (ADR-025, STEMMA-326). The range of a reading request travels as
+    // the body, as `Range::encode` writes it, so the transport reads no message here either.
+
+    fn submit_statement(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        self.request(Endpoint::Statements, Method::Post(request))
+    }
+
+    fn statements(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        self.request(Endpoint::StatementRange, Method::Post(request))
+    }
+
+    fn record(&mut self, request: &mut dyn Read) -> Result<Answer<'_>, TransportError> {
+        self.request(Endpoint::RecordRange, Method::Post(request))
+    }
 }
 
 /// The value of a header as text, if it is there once or more (the first one) and is text.

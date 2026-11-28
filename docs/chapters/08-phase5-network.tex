@@ -36,7 +36,7 @@ die signierten Erklärungen mit ihrer Menge im Klon,
 die annehmende Operation für Branches, Tags und eingereichte Erklärungen,
 das Gate auf dem Hub für die Bewegung von \type{main},
 das Festhalten des Schlüssels des Hubs im Klon,
-der HTTP-Client des Klons,
+der HTTP-Client des Klons, mit den Anfragen der Erklärungen und der Aufzeichnung,
 die Kompression seines Rumpfs mit zstd,
 die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub,
 die Namespace-Policy im Kern, mit dem Maximum über die Policies und den verlangten Ownern,
@@ -565,6 +565,19 @@ reference=tab:hub-requests]
 \startxcell \type{POST refs} \stopxcell
 \startxcell Das Ref-Update; die Antwort ist die Quittung. \stopxcell
 \stopxrow
+\startxrow
+\startxcell \type{POST statements} \stopxcell
+\startxcell Eine signierte Erklärung; die Antwort ist die Erklärung, wie der Hub sie hält.
+\stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST statements/range} \stopxcell
+\startxcell Ein Bereich von Nummern; die Antwort sind die Erklärungen des Bereichs. \stopxcell
+\stopxrow
+\startxrow
+\startxcell \type{POST record/range} \stopxcell
+\startxcell Ein Bereich von Nummern; die Antwort sind die Einträge der Aufzeichnung. \stopxcell
+\stopxrow
 \startxrow[bottomframe=on]
 \startxcell \type{POST anchors} \stopxcell
 \startxcell Ein Anker des Operation Log; die Antwort ist die Bestätigung. \stopxcell
@@ -572,8 +585,10 @@ reference=tab:hub-requests]
 \stopxtable
 \stopplacetable
 
-Weitere Anfragen lesen die Aufzeichnung, die signierten Erklärungen und die Anker und reichen
-Erklärungen ein; ADR-023 führt sie auf.
+Die beiden lesenden Anfragen nach einem Bereich sind ein \type{POST}, kein \type{GET}:
+Der Bereich steht als Nachricht im Rumpf, wie der Kern ihn schreibt, sodass der Client auch hier
+keine Nachricht liest und keine Antwort in einem Cache landet.
+Eine weitere Anfrage liest die Anker eines Log; ADR-023 führt sie auf.
 Der Statuscode nennt nur die grobe Klasse eines Fehlers, der genaue Grund steht als Nachricht im
 Rumpf der Antwort.
 Der Klon folgt keiner Weiterleitung, damit ein Token nie an einen anderen Host geht.
@@ -1137,9 +1152,11 @@ Schlüssels zurück; sie gilt, wenn die Referenzliste diesen Schlüssel für ihr
 
 \startinfobox
 {\bf Was noch fehlt.}
-Über HTTP trägt der Client die drei Anfragen für Erklärungen noch nicht; das bringt
-STEMMA-326. Bis dahin endet die Einreichung nach einem Eintrag über HTTP mit Exit-Code 3, und
-die Erklärung zählt im Klon; \type{pr submit}, das nichts schreibt, endet mit Exit-Code 1.
+Der Client trägt die drei Anfragen für Erklärungen über HTTP (STEMMA-326), der Hub beantwortet
+sie erst mit STEMMA-315.
+Bis dahin endet die Einreichung nach einem Eintrag mit dem Fehler, den der Hub an ihrer Stelle
+gibt, und die Erklärung zählt im Klon; ist der Hub nicht erreichbar, mit Exit-Code 3.
+\type{pr submit}, das nichts schreibt, endet dann mit Exit-Code 1.
 Die Schritte 2 und 4 im zweiten Klon setzen zudem STEMMA-325 voraus. Dass \type{fetch} die
 Erklärungen anderer Klone in die Menge bringt, kommt mit STEMMA-325, und der Merge über den Hub
 mit \type{push} und \type{pr merge} mit STEMMA-309 und STEMMA-317. Die Befehle dieses Abschnitts

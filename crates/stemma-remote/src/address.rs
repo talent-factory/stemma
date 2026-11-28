@@ -24,6 +24,13 @@ pub(crate) enum Endpoint {
     Challenge,
     /// `POST <repo>/token`.
     Token,
+    // The statements on a hub (ADR-025, STEMMA-326).
+    /// `POST <repo>/statements`: submitting a statement.
+    Statements,
+    /// `POST <repo>/statements/range`: reading the statements of a range by their numbers.
+    StatementRange,
+    /// `POST <repo>/record/range`: reading the record of ref updates by a range of numbers.
+    RecordRange,
 }
 
 impl Endpoint {
@@ -33,6 +40,9 @@ impl Endpoint {
             Self::Fetch => "fetch",
             Self::Challenge => "challenge",
             Self::Token => "token",
+            Self::Statements => "statements",
+            Self::StatementRange => "statements/range",
+            Self::RecordRange => "record/range",
         }
     }
 }
@@ -183,6 +193,18 @@ mod tests {
         assert_eq!(
             base.url(Endpoint::Token),
             "https://hub.example/ns/repo/token"
+        );
+        assert_eq!(
+            base.url(Endpoint::Statements),
+            "https://hub.example/ns/repo/statements"
+        );
+        assert_eq!(
+            base.url(Endpoint::StatementRange),
+            "https://hub.example/ns/repo/statements/range"
+        );
+        assert_eq!(
+            base.url(Endpoint::RecordRange),
+            "https://hub.example/ns/repo/record/range"
         );
     }
 }
