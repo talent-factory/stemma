@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use super::*;
-use crate::object::{Commit2, Kind, ObjectId, TreeId};
+use crate::object::{BlobId, Commit2, Kind, ObjectId, Tree, TreeEntry, TreeId};
 use crate::refs::encode_branch;
 use crate::repository::{RemovedObjects, UnreachableError};
 
@@ -208,7 +208,6 @@ fn what_a_young_commit_reaches_is_kept_however_old_its_file() {
     push(&mut wire, &mia(), vec![moved]).unwrap();
     let deleted = to(&mut wire, "heads/y", None);
     push(&mut wire, &mia(), vec![deleted]).unwrap();
-    age(&wire, &old_parts);
     // A new commit on top of it comes in a push: the upload does not write the old one again.
     // Its branch is deleted within the grace period, and the record names it.
     let young = wire
@@ -218,6 +217,8 @@ fn what_a_young_commit_reaches_is_kept_however_old_its_file() {
     push(&mut wire, &mia(), vec![moved]).unwrap();
     let deleted = to(&mut wire, "heads/x", None);
     push(&mut wire, &mia(), vec![deleted]).unwrap();
+    // The files of the old commit are old, whatever the push did with them.
+    age(&wire, &old_parts);
 
     let before = stored(&wire);
     let kept = remove_at(&wire, SystemTime::now()).unwrap();
@@ -232,6 +233,83 @@ fn what_a_young_commit_reaches_is_kept_however_old_its_file() {
     let removed = remove_at(&wire, later()).unwrap();
     assert!(old_parts.is_subset(&removed.removed().iter().copied().collect()));
     assert!(!stored(&wire).contains(&young.object_id()));
+}
+
+#[test]
+fn an_object_below_a_young_tree_is_kept_by_its_own_kind() {
+    let (mut wire, root) = started();
+    // A rewritten branch leaves a commit that the record names, on an old parent.
+    let parent = wire.side().commit(&[("p.txt", "parent\n")], vec![root]);
+    let left = wire.side().commit(&[("l.txt", "left\n")], vec![parent]);
+    let old: BTreeSet<ObjectId> = parts(wire.side(), parent, "parent\n")
+        .union(&parts(wire.side(), left, "left\n"))
+        .copied()
+        .collect();
+    let moved = to(&mut wire, "heads/x", Some(left));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let deleted = to(&mut wire, "heads/x", None);
+    push(&mut wire, &mia(), vec![deleted]).unwrap();
+    age(&wire, &old);
+    // An upload brings a tree that names that commit as a file. Nothing checks an upload
+    // before its ref update, so the tree is stored as it is.
+    let entry = TreeEntry::file("f", FileMode::File, BlobId::new(left.object_id())).unwrap();
+    let tree = Tree::try_new(vec![entry]).unwrap();
+    let tree = wire
+        .side()
+        .repository
+        .objects()
+        .put_raw(Kind::Tree, &tree.encode())
+        .unwrap();
+
+    let before = stored(&wire);
+    let kept = remove_at(&wire, SystemTime::now()).unwrap();
+    assert_eq!(kept.removed(), []);
+    assert_eq!(stored(&wire), before);
+    let hub = wire.side();
+    let record = Record::read(&mut *hub.record.borrow_mut(), repository_id()).unwrap();
+    hub.repository.writers(root, root, &record).unwrap();
+
+    // After the grace period the tree goes, and the commit and its parent with it.
+    let removed: BTreeSet<ObjectId> = remove_at(&wire, later())
+        .unwrap()
+        .removed()
+        .iter()
+        .copied()
+        .collect();
+    assert!(old.is_subset(&removed));
+    assert!(removed.contains(&tree));
+}
+
+#[test]
+fn a_damaged_young_commit_stops_the_removal_before_it_removes_anything() {
+    let (mut wire, root) = started();
+    let gone = wire.side().commit(&[("g.txt", "gone\n")], vec![root]);
+    let moved = to(&mut wire, "heads/gone", Some(gone));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let deleted = to(&mut wire, "heads/gone", None);
+    push(&mut wire, &mia(), vec![deleted]).unwrap();
+    age(&wire, &parts(wire.side(), gone, "gone\n"));
+    // A young commit whose file is damaged: what it reaches cannot be told.
+    let young = Hub::new().commit(&[("y.txt", "young\n")], vec![gone]);
+    let path = wire
+        .side()
+        .repository
+        .objects()
+        .object_path(&young.object_id());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"commit 5\0junk!").unwrap();
+
+    let before = stored(&wire);
+    let error = remove_at(&wire, SystemTime::now()).unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            UnreachableError::Read { source, .. } if source.store_error().is_some()
+        ),
+        "{error}"
+    );
+    assert_eq!(error.kind(), FailureKind::Damaged);
+    assert_eq!(stored(&wire), before);
 }
 
 #[test]
