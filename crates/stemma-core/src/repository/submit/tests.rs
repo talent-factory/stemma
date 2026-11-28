@@ -897,6 +897,10 @@ fn only_a_failure_of_the_carrier_or_of_a_body_is_an_unreachable_hub() {
     assert!(!SubmitError::Transport(no_answer()).is_unreachable());
     assert!(!SubmitError::List(Box::new(FetchError::Transport(no_answer()))).is_unreachable());
     assert!(!SubmitError::NotSubmitted(record_hash()).is_unreachable());
+    // A body of zstd that cannot be decoded came back whole: no unreachable hub.
+    let undecodable = || io::Error::new(io::ErrorKind::InvalidData, "an undecodable frame");
+    assert!(!SubmitError::Body(undecodable()).is_unreachable());
+    assert!(!SubmitError::List(Box::new(FetchError::Body(undecodable()))).is_unreachable());
     let after = SubmitError::After {
         submitted: Vec::new(),
         source: Box::new(SubmitError::Transport(carrier())),

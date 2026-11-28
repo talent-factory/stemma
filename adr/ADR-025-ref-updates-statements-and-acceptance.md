@@ -799,17 +799,17 @@ Built in STEMMA-312, as a proposal that the review confirms: `Repository::open_p
   command says so: `pr open --remote <name>` and `check record --remote <name>` take the ID of
   the remote. The approvals and the closing of a pull request name the repository that its
   opening names, so a pull request is for one hub or for the clone only, and never half of each.
-- **At once, or later.** The command writes its entry first, so the statement counts in the
-  clone at once, and then submits: `pr open` and `check record` their own statement, `pr approve`
-  and `pr close` every statement of the pull request (the opening, the checks of a head of it,
-  the approvals, and the closing, in the order of their entries), as `pr submit` does. A check
-  of a commit that is no head of a pull request is sent by no later command. `--offline`
-  skips the submission; `pr submit` makes it later. A submission is safe to repeat, because the
-  hub answers a statement that it holds with its lines, so the clone keeps no record of what it
-  sent. After the entry, a hub that cannot be reached or whose answer broke off is exit 3, any
-  other failure keeps its code (an answer outside the protocol 1, a busy hub 6, damage 5), and a refusal of the statement of the command is exit 1; the entry stays. An opening
-  that the hub answers with `not-open` is held for a pull request that ended there, and is no
-  refusal for the command.
+- **At once, or later.** The command writes its entry first, so the statement counts in the clone at
+  once, and then submits: `pr open` and `check record` their own statement, `pr approve` and
+  `pr close` every statement of the pull request (the opening, the checks of a head of it, the
+  approvals, and the closing, in the order of their entries), as `pr submit` does. A check of a
+  commit that is no head of a pull request is sent by no later command. `--offline` skips the
+  submission; `pr submit` makes it later. A submission is safe to repeat, because the hub answers a
+  statement that it holds with its lines, so the clone keeps no record of what it sent. After the
+  entry, a hub that cannot be reached or whose answer broke off is exit 3, any other failure keeps
+  its code (an answer outside the protocol 1, a busy hub 6, damage 5), and a refusal of the
+  statement of the command is exit 1; the entry stays. An opening that the hub answers with
+  `not-open` is held for a pull request that ended there, and is no refusal for the command.
 - **The checks of an answer.** Both the submission and the reading take the list of references
   first. A held statement must be the submitted one and carry the signature of the key of the
   hub at its time: the pinned key, or a former key of the list whose range holds the number of

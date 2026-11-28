@@ -481,19 +481,29 @@ impl SubmitError {
     /// succeed: the statements still count in the clone. A failure of the carrier and of the
     /// body of an answer are such; something that came back but is no answer of the protocol
     /// ([`TransportError::NoAnswer`], such as the page of a proxy or a busy hub without a body
-    /// of the protocol) is not, as the status of the answer says more about it.
+    /// of the protocol) is not, as the status of the answer says more about it, and neither is
+    /// a body that came back whole but cannot be decoded (an error of the kind
+    /// [`io::ErrorKind::InvalidData`], as the transport gives it for a body of zstd that
+    /// cannot be decoded).
     pub fn is_unreachable(&self) -> bool {
         match self {
             Self::Transport(error) => matches!(error, TransportError::Carrier(_)),
-            Self::Body(_) => true,
-            Self::List(error) => matches!(
-                **error,
-                FetchError::Transport(TransportError::Carrier(_)) | FetchError::Body(_)
-            ),
+            Self::Body(error) => broke_off(error),
+            Self::List(error) => match &**error {
+                FetchError::Transport(TransportError::Carrier(_)) => true,
+                FetchError::Body(error) => broke_off(error),
+                _ => false,
+            },
             Self::After { source, .. } => source.is_unreachable(),
             _ => false,
         }
     }
+}
+
+/// Whether the error of reading a body is one of a body that broke off, and not of one that
+/// came back but cannot be decoded ([`SubmitError::is_unreachable`]).
+pub fn broke_off(error: &io::Error) -> bool {
+    error.kind() != io::ErrorKind::InvalidData
 }
 
 impl fmt::Display for SubmitError {

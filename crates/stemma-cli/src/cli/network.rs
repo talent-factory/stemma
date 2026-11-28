@@ -32,7 +32,7 @@ use stemma_core::refs::{BranchName, RefKind};
 use stemma_core::remote::{CaFile, HubKeyError, RemoteAddress, RemoteConfig, RemoteName};
 use stemma_core::remote::{RemoteRef, RemoteRefName};
 use stemma_core::repository::{
-    read_ref_list, Changes, CloneError, FetchError, Fetched, InitOptions, PinError,
+    broke_off, read_ref_list, Changes, CloneError, FetchError, Fetched, InitOptions, PinError,
     RemoteConfigError, RemoteSetup, Repository, Revision, SwitchTarget,
 };
 use stemma_core::signature::{KeyFingerprint, PublicKey, SshKeygen};
@@ -407,10 +407,11 @@ pub(super) fn connect_noting(
             NetworkError::refused(format!("the address of the hub `{hub}`: {error}"))
         })?;
         if let Err(error) = sign_in(&mut transport, &called, &public, &SshKeygen::new(key)) {
-            let unreachable = matches!(
-                error,
-                SignInError::Transport(TransportError::Carrier(_)) | SignInError::Body(_)
-            );
+            let unreachable = match &error {
+                SignInError::Transport(TransportError::Carrier(_)) => true,
+                SignInError::Body(body) => broke_off(body),
+                _ => false,
+            };
             return Err(Unconnected {
                 error: with_status(
                     format!("the sign-in failed: {error}{note}"),

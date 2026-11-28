@@ -3339,8 +3339,9 @@ er hält sie, und der Befehl zählt das nicht als Ablehnung. Der Befehl liest zu
 Referenzliste und prüft, dass die Antwort die gesendete Erklärung ist und der Schlüssel des Hubs
 zu ihrer Zeit sie signierte: der festgehaltene oder ein früherer Schlüssel der Liste für den
 Bereich, in den ihre Zeile \type{record} oder der Eintrag danach fällt (ADR-026).
-Bei einem Remote mit Anmeldung lehnen \type{open}, \type{close} und \type{approve} ohne
-\type{--key} und ohne \type{--offline} ab, bevor sie den Eintrag schreiben.
+Bei einem Remote mit Anmeldung lehnen \type{open}, \type{close}, \type{approve} und
+\type{check record} ohne \type{--key} und ohne \type{--offline} ab, bevor sie den Eintrag
+schreiben.
 \type{submit} und \type{show} schreiben nichts in den Klon.
 \type{show} zeigt den Pull Request und seine Erklärungen in diesem Klon; mit \type{--remote}
 liest er die Referenzliste und die Erklärungen des Hubs, prüft das Repository und den Schlüssel
@@ -3475,21 +3476,20 @@ Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen ble
 Nach einem geschriebenen Eintrag nennt jede Meldung einer Übermittlung, die nicht abschliesst,
 den Eintrag und \type{stemma pr submit PULL}; den Befehl selbst wiederholt man nicht. Ist der
 Hub nicht erreichbar oder bricht die Antwort ab, endet der Befehl mit Exit-Code 3. Jeder andere
-Fehler behält seinen Exit-Code, denn ein späterer Aufruf scheitert gleich, bis er behoben ist:
-1 für eine gescheiterte Anmeldung, einen anderen Schlüssel des Hubs (mit dem Befehl
+Fehler behält seinen Exit-Code, denn ein späterer Aufruf scheitert gleich, bis er behoben ist: 1
+für eine gescheiterte Anmeldung, einen anderen Schlüssel des Hubs (mit dem Befehl
 \type{remote pin}, der ihn festhält) oder eine Antwort ausserhalb des Protokolls, etwa die Seite
-eines Proxys, 5 für eine beschädigte Erklärung im Klon und 6 für einen besetzten Hub.
-Lehnt der Hub die Erklärung des Befehls ab, endet er mit Exit-Code 1; die Ablehnung einer
-älteren Erklärung desselben Pull Requests steht nur als Zeile da. Der Eintrag gilt im Klon in
-jedem Fall weiter. Ohne Eintrag enden mit Exit-Code 1 ein
-unbekanntes Remote, ein Remote mit einem anderen Repository als dem der Öffnung,
-\type{--offline} ohne \type{--remote} bei \type{open}, \type{--remote} oder \type{--offline}
-bei einem Pull Request, der nur im Klon gilt, und ein Name, der keinen oder mehr als einen Pull
+eines Proxys oder ein Rumpf in zstd, der sich nicht entpacken lässt, 5 für eine beschädigte
+Erklärung im Klon und 6 für einen besetzten Hub. Lehnt der Hub die Erklärung des Befehls ab,
+endet er mit Exit-Code 1; die Ablehnung einer älteren Erklärung desselben Pull Requests steht
+nur als Zeile da. Der Eintrag gilt im Klon in jedem Fall weiter. Ohne Eintrag enden mit
+Exit-Code 1 ein unbekanntes Remote, ein Remote mit einem anderen Repository als dem der Öffnung,
+\type{--offline} ohne \type{--remote} bei \type{open}, \type{--remote} oder \type{--offline} bei
+einem Pull Request, der nur im Klon gilt, und ein Name, der keinen oder mehr als einen Pull
 Request nennt. \type{submit} schreibt nichts und endet darum nie mit Exit-Code 3: mit 1, wenn
-der Pull Request nur im Klon gilt, wenn der Hub nicht erreichbar ist, eine Erklärung ablehnt oder
-nicht im Protokoll antwortet, mit 5 bei einer beschädigten Erklärung und mit 6 bei einem
-besetzten Hub; die Antworten bis dahin stehen auf der Standardausgabe. \type{show} endet
-ebenso.
+der Pull Request nur im Klon gilt, wenn der Hub nicht erreichbar ist, eine Erklärung ablehnt
+oder nicht im Protokoll antwortet, mit 5 bei einer beschädigten Erklärung und mit 6 bei einem
+besetzten Hub; die Antworten bis dahin stehen auf der Standardausgabe. \type{show} endet ebenso.
 
 {\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
 (Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
