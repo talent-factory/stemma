@@ -93,6 +93,9 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         Action::Respond(message(example("refs"))),
         Action::Respond(message(example("objects"))),
         Action::Respond(message(example("receipt"))),
+        Action::Respond(message(example("held-statement"))),
+        Action::Respond(message(example("held-statement"))),
+        Action::Respond(message(example("receipt"))),
         Action::Respond(message(example("challenge"))),
     ]);
     let mut transport = HttpTransport::new(&responder.remote(), Timeouts::DEFAULT).unwrap();
@@ -132,6 +135,21 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
             .unwrap(),
         Answer::Message(_)
     ));
+    // The requests of the statements on a hub (STEMMA-326).
+    assert!(matches!(
+        transport
+            .submit_statement(&mut &example("statement-pr-opening")[..])
+            .unwrap(),
+        Answer::Message(_)
+    ));
+    assert!(matches!(
+        transport.statements(&mut &example("range")[..]).unwrap(),
+        Answer::Message(_)
+    ));
+    assert!(matches!(
+        transport.record(&mut &example("range")[..]).unwrap(),
+        Answer::Message(_)
+    ));
     // A challenge while a token is held goes without it as well.
     assert!(matches!(transport.challenge().unwrap(), Answer::Message(_)));
     texts.push(format!("{transport:?}"));
@@ -142,13 +160,17 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
     // The methods and the media type of the bodies.
     let content_type = Some(stemma_remote::MESSAGE_MEDIA_TYPE);
     for request in &requests {
-        let endpoint = request.path.rsplit('/').next().unwrap();
+        let endpoint = request
+            .path
+            .strip_prefix(REPOSITORY_PATH)
+            .and_then(|path| path.strip_prefix('/'))
+            .unwrap();
         match endpoint {
             "challenge" => {
                 assert_eq!(request.method, "POST");
                 assert!(request.body.is_empty());
             }
-            "token" | "fetch" => {
+            "token" | "fetch" | "statements" | "statements/range" | "record/range" => {
                 assert_eq!(request.method, "POST");
                 assert_eq!(request.header("content-type"), content_type);
             }
@@ -177,6 +199,9 @@ fn the_token_goes_with_the_requests_and_into_no_error_and_no_log() {
         ("refs", Some(bearer.as_str())),
         ("fetch", Some(bearer.as_str())),
         ("refs", Some(bearer.as_str())),
+        ("statements", Some(bearer.as_str())),
+        ("statements/range", Some(bearer.as_str())),
+        ("record/range", Some(bearer.as_str())),
         ("challenge", None),
     ];
     assert_eq!(authorization.len(), expected.len());

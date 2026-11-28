@@ -11,10 +11,11 @@
 //!
 //! [`HttpTransport`] maps the requests of the trait to the endpoints below the address of the
 //! repository (ADR-023): `GET <repo>/refs`, `POST <repo>/fetch`, `POST <repo>/refs` for the ref
-//! update, and `POST <repo>/challenge` and `POST <repo>/token` for the sign-in. The requests
-//! that submit and read statements and read the record keep the default bodies of the trait,
-//! which fail as not carried, until their mapping comes (STEMMA-326). A body is
-//! streamed in both directions through `Read`; the one body that the transport reads into memory
+//! update, `POST <repo>/challenge` and `POST <repo>/token` for the sign-in, and
+//! `POST <repo>/statements` to submit a statement, `POST <repo>/statements/range` to read the
+//! statements of a range, and `POST <repo>/record/range` to read the record of a range, each
+//! reading request with the range as its body (STEMMA-326). A body is streamed in both
+//! directions through `Read`; the one body that the transport reads into memory
 //! is the token answer of a sign-in, up to its bound. The token of a sign-in travels as
 //! `Authorization: Bearer <token>` with every request but the two of the sign-in.
 //!

@@ -140,9 +140,8 @@ feature `rustls`) and the four exceptions of `deny.toml`.
   raised. No crate of the workspace installs a logger today.
 - **Not yet.** The compression with zstd (ADR-029): the client sends no `Accept-Encoding` and
   treats a body with a content encoding as no answer. The requests that submit and read
-  statements and read the record have their methods on `Transport` (STEMMA-299); `HttpTransport`
-  keeps their default bodies, which fail with a carrier error of the kind `Unsupported`, until
-  STEMMA-326 maps them to HTTP. The upload of objects and the anchors come with the slices that
+  statements and read the record (STEMMA-299) are mapped to HTTP since STEMMA-326 (ADR-023,
+  "Mapping to HTTP"). The upload of objects and the anchors come with the slices that
   add their methods to `Transport`.
 
 How the client is tested without a server: the tests of `stemma-remote` run a scripted responder

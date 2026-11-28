@@ -85,6 +85,138 @@ fn fetch_and_ref_update_stream_their_body_in_a_post() {
     assert_eq!(requests[1].body, update);
 }
 
+/// One of the three requests of the statements on a hub.
+type StatementRequest =
+    for<'t> fn(&'t mut HttpTransport, &mut dyn Read) -> Result<Answer<'t>, TransportError>;
+
+/// The requests that submit a statement, read the statements, and read the record, by name.
+const STATEMENT_REQUESTS: [(&str, StatementRequest); 3] = [
+    ("submit", |transport, body| transport.submit_statement(body)),
+    ("statements", |transport, body| transport.statements(body)),
+    ("record", |transport, body| transport.record(body)),
+];
+
+#[test]
+fn the_statement_requests_stream_their_body_in_a_post_below_their_paths() {
+    let statement = example("statement-pr-opening");
+    let held = example("held-statement");
+    let range = example("range");
+    let to_the_end = example("range-to-the-end");
+    let entries = [example("receipt"), example("receipt")].concat();
+    let responder = Responder::start(vec![
+        Action::Respond(message(held)),
+        Action::Respond(message(held)),
+        Action::Respond(message(&entries)),
+    ]);
+    let mut transport = transport(&responder);
+    let (is_message, body) = read_all(transport.submit_statement(&mut &statement[..]).unwrap());
+    assert!(is_message);
+    assert_eq!(body, held);
+    let (is_message, body) = read_all(transport.statements(&mut &range[..]).unwrap());
+    assert!(is_message);
+    assert_eq!(body, held);
+    let (is_message, body) = read_all(transport.record(&mut &to_the_end[..]).unwrap());
+    assert!(is_message);
+    assert_eq!(body, entries);
+
+    let requests = responder.requests();
+    let expected = [
+        ("statements", statement),
+        ("statements/range", range),
+        ("record/range", to_the_end),
+    ];
+    assert_eq!(requests.len(), expected.len());
+    for (request, (endpoint, body)) in requests.iter().zip(expected) {
+        assert_eq!(request.method, "POST", "{endpoint}");
+        assert_eq!(request.path, format!("{REPOSITORY_PATH}/{endpoint}"));
+        assert_eq!(request.header("content-type"), Some(MESSAGE_MEDIA_TYPE));
+        assert_eq!(request.body, body, "{endpoint}");
+    }
+}
+
+#[test]
+fn the_statement_requests_hand_their_errors_over_and_refuse_what_is_no_answer() {
+    let refused = example("error-statement-refused");
+    let not_readable = example("error-not-readable");
+    let statement = example("statement-pr-opening");
+    let range = example("range");
+    let page = || {
+        Action::Respond(response(
+            502,
+            &[("Content-Type", "text/html")],
+            b"<html>Bad Gateway</html>",
+        ))
+    };
+    let responder = Responder::start(vec![
+        Action::Respond(response(
+            403,
+            &[("Content-Type", ERROR_MEDIA_TYPE)],
+            refused,
+        )),
+        Action::Respond(response(
+            404,
+            &[("Content-Type", ERROR_MEDIA_TYPE)],
+            not_readable,
+        )),
+        Action::Respond(response(
+            404,
+            &[("Content-Type", ERROR_MEDIA_TYPE)],
+            not_readable,
+        )),
+        page(),
+        page(),
+        page(),
+        Action::Close,
+        Action::Close,
+        Action::Close,
+    ]);
+    let mut transport = transport(&responder);
+
+    let (is_message, body) = read_all(transport.submit_statement(&mut &statement[..]).unwrap());
+    assert!(!is_message);
+    assert!(matches!(
+        ErrorMessage::parse(&body).unwrap(),
+        ErrorMessage::StatementRefused(_)
+    ));
+    assert_eq!(transport.last_status(), Some(&Status::Forbidden));
+    for (name, request) in &STATEMENT_REQUESTS[1..] {
+        let (is_message, body) = read_all(request(&mut transport, &mut &range[..]).unwrap());
+        assert!(!is_message, "{name}");
+        assert_eq!(
+            ErrorMessage::parse(&body).unwrap(),
+            ErrorMessage::NotReadable,
+            "{name}"
+        );
+        assert_eq!(transport.last_status(), Some(&Status::NotFound), "{name}");
+    }
+    // The page of a proxy in place of an answer, and a connection closed without one.
+    for (name, request) in STATEMENT_REQUESTS {
+        let detail = no_answer(request(&mut transport, &mut &range[..]));
+        assert!(detail.contains("502"), "{name}: {detail}");
+    }
+    for (name, request) in STATEMENT_REQUESTS {
+        let error = request(&mut transport, &mut &range[..]).unwrap_err();
+        assert!(
+            matches!(error, TransportError::Carrier(_)),
+            "{name}: {error}"
+        );
+        assert_eq!(transport.last_status(), None, "{name}");
+    }
+}
+
+#[test]
+fn a_statement_request_whose_body_cannot_be_read_is_an_error_of_the_request() {
+    let responder = Responder::start(vec![Action::Close, Action::Close, Action::Close]);
+    let mut transport = transport(&responder);
+    for (name, request) in STATEMENT_REQUESTS {
+        let error = request(&mut transport, &mut Failing { sent: 0 }).unwrap_err();
+        assert!(
+            matches!(error, TransportError::Request(_)),
+            "{name}: {error}"
+        );
+    }
+}
+
 #[test]
 fn a_large_body_streams_in_both_directions() {
     // Eight MiB each way: more than any buffer of the client or of the responder.
