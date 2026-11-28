@@ -165,6 +165,96 @@ fn nothing_that_a_branch_or_a_tag_reaches_is_removed() {
 }
 
 #[test]
+fn a_commit_that_only_a_tag_reaches_is_kept() {
+    let (mut wire, root) = started();
+    let hub = wire.side();
+    let tagged = hub.commit(&[("t.txt", "tagged\n")], vec![root]);
+    let tagged_parts = parts(hub, tagged, "tagged\n");
+    let moves = vec![
+        to(&mut wire, "heads/release", Some(tagged)),
+        to(&mut wire, "tags/v1", Some(tagged)),
+    ];
+    push(&mut wire, &mia(), moves).unwrap();
+    // The branch goes; the tag alone names the commit now.
+    let deleted = to(&mut wire, "heads/release", None);
+    push(&mut wire, &mia(), vec![deleted]).unwrap();
+
+    let before = stored(&wire);
+    let removed = remove_at(&wire, later()).unwrap();
+    assert_eq!(removed.removed(), []);
+    assert!(tagged_parts.is_subset(&stored(&wire)));
+    assert_eq!(stored(&wire), before);
+}
+
+/// Sets the time of modification of the files of `ids` to before the grace period.
+fn age(wire: &Wire, ids: &BTreeSet<ObjectId>) {
+    let objects = wire.side().repository.objects();
+    for id in ids {
+        fs::File::open(objects.object_path(id))
+            .unwrap()
+            .set_modified(SystemTime::now() - 2 * GRACE)
+            .unwrap();
+    }
+}
+
+#[test]
+fn what_a_young_commit_reaches_is_kept_however_old_its_file() {
+    let (mut wire, root) = started();
+    // A branch once named an old commit and was deleted: the commit lies unnamed, and its file
+    // is old.
+    let old = wire.side().commit(&[("o.txt", "old\n")], vec![root]);
+    let old_parts = parts(wire.side(), old, "old\n");
+    let moved = to(&mut wire, "heads/y", Some(old));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let deleted = to(&mut wire, "heads/y", None);
+    push(&mut wire, &mia(), vec![deleted]).unwrap();
+    age(&wire, &old_parts);
+    // A new commit on top of it comes in a push: the upload does not write the old one again.
+    // Its branch is deleted within the grace period, and the record names it.
+    let young = wire
+        .side()
+        .commit(&[("o.txt", "old\n"), ("n.txt", "new\n")], vec![old]);
+    let moved = to(&mut wire, "heads/x", Some(young));
+    push(&mut wire, &mia(), vec![moved]).unwrap();
+    let deleted = to(&mut wire, "heads/x", None);
+    push(&mut wire, &mia(), vec![deleted]).unwrap();
+
+    let before = stored(&wire);
+    let kept = remove_at(&wire, SystemTime::now()).unwrap();
+    assert_eq!(kept.removed(), []);
+    assert_eq!(stored(&wire), before);
+    // The young commit has its history, so the walk of the gate over the record still reads.
+    let hub = wire.side();
+    let record = Record::read(&mut *hub.record.borrow_mut(), repository_id()).unwrap();
+    hub.repository.writers(root, root, &record).unwrap();
+
+    // After the grace period both go.
+    let removed = remove_at(&wire, later()).unwrap();
+    assert!(old_parts.is_subset(&removed.removed().iter().copied().collect()));
+    assert!(!stored(&wire).contains(&young.object_id()));
+}
+
+#[test]
+fn a_young_commit_whose_parent_never_arrived_does_not_stop_the_removal() {
+    let (wire, root) = started();
+    // An upload stopped half way: the commit is there, its parent is not.
+    let clone = Hub::new();
+    let parent = clone.commit(&[("p.txt", "parent\n")], vec![root]);
+    let child = clone.commit(&[("c.txt", "child\n")], vec![parent]);
+    let objects = wire.side().repository.objects();
+    for id in parts(&clone, child, "child\n") {
+        let object = clone.repository.objects().get(&id).unwrap().unwrap();
+        objects.put_raw(object.kind(), object.body()).unwrap();
+    }
+
+    let before = stored(&wire);
+    let kept = remove_at(&wire, SystemTime::now()).unwrap();
+    assert_eq!(kept.removed(), []);
+    assert_eq!(kept.young(), 3);
+    assert_eq!(stored(&wire), before);
+}
+
+#[test]
 fn the_moves_of_an_update_that_stopped_after_its_entry_are_kept() {
     let (mut wire, root) = started();
     let feature = wire.side().commit(&[("b.txt", "two\n")], vec![root]);

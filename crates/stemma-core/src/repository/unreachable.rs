@@ -31,8 +31,8 @@ impl RemovedObjects {
         &self.removed
     }
 
-    /// The number of unreachable objects that were kept because their file is younger than the
-    /// grace period.
+    /// The number of unreachable objects that were kept for the grace period: their file is
+    /// younger than it, or a commit or a tree with such a file reaches them.
     pub fn young(&self) -> usize {
         self.young
     }
@@ -61,7 +61,11 @@ impl Repository {
     /// does not reach is unnamed, whatever stored it: a refused upload, an upload whose ref update
     /// has not come yet, or a computation of the hub such as a merge of the gate (ADR-025). It is
     /// removed when its file is at least `grace` old by its time of modification, and kept
-    /// otherwise; a file with a time after the clock of the system is young. The grace period
+    /// otherwise; a file with a time after the clock of the system is young. What a young commit
+    /// or tree reaches is kept with it, so that no commit in the store loses its history. An
+    /// upload does not write an object that the store has, so its new commit may stand on an old
+    /// unnamed parent. The walk below a young object ends at an object that is missing or of
+    /// another kind, since an upload may stop half way. The grace period
     /// spans the time between an upload ([`receive_objects`](Self::receive_objects)), which takes
     /// no lock, and its ref update. One that is too short costs a repeated upload and no data:
     /// the ref update reports the objects as missing, and the client uploads them again.
@@ -130,9 +134,10 @@ impl Repository {
             roots.push(last.register());
         }
 
-        let reachable = self.reachable_from(roots)?;
+        let mut kept = HashSet::new();
+        self.walk(&mut kept, roots, Vec::new(), true)?;
+        let reachable = kept.len();
         let mut removed = Vec::new();
-        let mut young = 0;
         let objects = self.objects();
         let failed = |removed: &Vec<ObjectId>| {
             let removed = removed.len();
@@ -141,14 +146,20 @@ impl Repository {
                 removed,
             }
         };
+
+        // The age of every unreachable object comes first, and nothing is removed before it.
+        let mut old = Vec::new();
+        let mut young = 0;
+        let (mut young_commits, mut young_trees) = (Vec::new(), Vec::new());
         for id in objects.ids().map_err(failed(&removed))? {
-            if reachable.contains(&id) {
+            if kept.contains(&id) {
                 continue;
             }
             let path = objects.object_path(&id);
             let modified = match fs::symlink_metadata(&path).and_then(|data| data.modified()) {
                 Ok(modified) => modified,
-                // Removed since the listing, by nothing in this crate.
+                // Gone since the listing: the lock keeps the purge and a second removal out, so
+                // only something outside this crate took it, and gone is what the removal wants.
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => {
                     return Err(failed(&removed)(StoreError::Io {
@@ -159,8 +170,25 @@ impl Repository {
                 }
             };
             // A time after the clock is young: the age is not known.
-            let old = now.duration_since(modified).is_ok_and(|age| age >= grace);
-            if !old {
+            if now.duration_since(modified).is_ok_and(|age| age >= grace) {
+                old.push(id);
+                continue;
+            }
+            young += 1;
+            match objects.kind_of(&id).map_err(failed(&removed))? {
+                Some(Kind::Commit | Kind::Commit2) => young_commits.push(CommitId::new(id)),
+                Some(Kind::Tree) => young_trees.push(TreeId::new(id)),
+                Some(Kind::Blob) | None => {}
+            }
+        }
+        // What a young commit or tree reaches stays with it, however old its file: an upload
+        // does not write an object that the store has, so a young commit may stand on an old
+        // parent. Removing the parent would leave a commit without its history, which the record
+        // may name, and the walk of the gate over the record would fail on it.
+        self.walk(&mut kept, young_commits, young_trees, false)?;
+
+        for id in old {
+            if kept.contains(&id) {
                 young += 1;
                 continue;
             }
@@ -171,66 +199,83 @@ impl Repository {
         Ok(RemovedObjects {
             removed,
             young,
-            reachable: reachable.len(),
+            reachable,
         })
     }
 
-    /// The commits, the trees, and the IDs of the blobs that the roots reach, through the parents
-    /// and the trees of the commits and the entries of the trees. Blobs are not read.
-    fn reachable_from(&self, roots: Vec<CommitId>) -> Result<HashSet<ObjectId>, UnreachableError> {
+    /// Adds to `seen` the commits, the trees, and the IDs of the blobs that `commits` and `trees`
+    /// reach, through the parents and the trees of the commits and the entries of the trees.
+    /// Blobs are not read. The walk stops at an object in `seen`.
+    ///
+    /// With `strict`, a commit or a tree that is missing or does not read as one is an error:
+    /// the roots are references and the record. Without it, the walk starts from young unnamed
+    /// objects, which an upload may leave half way or which may name anything, and such an
+    /// object ends its path; an error of the store is an error either way.
+    fn walk(
+        &self,
+        seen: &mut HashSet<ObjectId>,
+        commits: Vec<CommitId>,
+        trees: Vec<TreeId>,
+        strict: bool,
+    ) -> Result<(), UnreachableError> {
         let objects = self.objects();
-        let mut seen = HashSet::new();
         let mut commits: Vec<(CommitId, Option<ObjectId>)> =
-            roots.into_iter().map(|root| (root, None)).collect();
-        let mut trees: Vec<(TreeId, ObjectId)> = Vec::new();
-        while let Some((id, needed_by)) = commits.pop() {
-            if !seen.insert(id.object_id()) {
-                continue;
-            }
-            let commit = objects
-                .get_any_commit(&id)
-                .map_err(read(needed_by))?
-                .ok_or(UnreachableError::Missing {
-                    id: id.object_id(),
-                    kind: Kind::Commit,
-                    needed_by,
-                })?;
-            let by = Some(id.object_id());
-            commits.extend(commit.parents().iter().map(|parent| (*parent, by)));
-            trees.extend(
-                commit
-                    .tree_sum()
-                    .terms()
-                    .iter()
-                    .map(|tree| (*tree, id.object_id())),
-            );
-            // The trees of this commit are walked before the next commit, so that the stack of
-            // trees stays small.
-            while let Some((tree_id, needed_by)) = trees.pop() {
+            commits.into_iter().map(|root| (root, None)).collect();
+        let mut trees: Vec<(TreeId, Option<ObjectId>)> =
+            trees.into_iter().map(|root| (root, None)).collect();
+        loop {
+            // The trees go before the next commit, so that the stack of trees stays small.
+            if let Some((tree_id, needed_by)) = trees.pop() {
                 if !seen.insert(tree_id.object_id()) {
                     continue;
                 }
-                let tree = objects
+                let found = objects
                     .get_tree(&tree_id)
-                    .map_err(read(Some(needed_by)))?
-                    .ok_or(UnreachableError::Missing {
-                        id: tree_id.object_id(),
-                        kind: Kind::Tree,
-                        needed_by: Some(needed_by),
-                    })?;
+                    .map_err(read(needed_by))
+                    .and_then(|tree| {
+                        tree.ok_or(UnreachableError::Missing {
+                            id: tree_id.object_id(),
+                            kind: Kind::Tree,
+                            needed_by,
+                        })
+                    })
+                    .map(Some)
+                    .or_else(|error| tolerated(strict, error))?;
+                let Some(tree) = found else { continue };
                 for entry in tree.entries() {
                     match entry.mode() {
                         EntryMode::Directory => {
-                            trees.push((TreeId::new(entry.id()), tree_id.object_id()));
+                            trees.push((TreeId::new(entry.id()), Some(tree_id.object_id())));
                         }
                         EntryMode::File | EntryMode::Executable | EntryMode::Symlink => {
                             seen.insert(entry.id());
                         }
                     }
                 }
+            } else if let Some((id, needed_by)) = commits.pop() {
+                if !seen.insert(id.object_id()) {
+                    continue;
+                }
+                let found = objects
+                    .get_any_commit(&id)
+                    .map_err(read(needed_by))
+                    .and_then(|commit| {
+                        commit.ok_or(UnreachableError::Missing {
+                            id: id.object_id(),
+                            kind: Kind::Commit,
+                            needed_by,
+                        })
+                    })
+                    .map(Some)
+                    .or_else(|error| tolerated(strict, error))?;
+                let Some(commit) = found else { continue };
+                let by = Some(id.object_id());
+                commits.extend(commit.parents().iter().map(|parent| (*parent, by)));
+                trees.extend(commit.tree_sum().terms().iter().map(|tree| (*tree, by)));
+            } else {
+                return Ok(());
             }
         }
-        Ok(seen)
     }
 }
 
@@ -330,9 +375,14 @@ impl fmt::Display for UnreachableError {
                 write!(f, "; nothing was removed")
             }
             Self::Store { source, removed } => {
+                let (objects, were) = if *removed == 1 {
+                    ("object", "was")
+                } else {
+                    ("objects", "were")
+                };
                 write!(
                     f,
-                    "{source}; {removed} unreachable objects were removed before"
+                    "{source}; {removed} unreachable {objects} {were} removed before"
                 )
             }
         }
@@ -347,13 +397,32 @@ impl Error for UnreachableError {
             Self::Refs(source) => source.source(),
             Self::Read { source, .. } => source.source(),
             Self::Store { source, .. } => source.source(),
-            Self::Record(_) | Self::NotBare { .. } | Self::Missing { .. } => None,
+            Self::Record(source) => source.source(),
+            Self::NotBare { .. } | Self::Missing { .. } => None,
         }
     }
 }
 
 fn refs(error: RefError) -> UnreachableError {
     UnreachableError::Refs(Box::new(error))
+}
+
+/// Ends the path of a walk that is not `strict` at an object that is missing or does not read
+/// as the kind that named it; an error of the store stays an error.
+fn tolerated<T>(strict: bool, error: UnreachableError) -> Result<Option<T>, UnreachableError> {
+    let of_object = match &error {
+        UnreachableError::Missing { .. } => true,
+        UnreachableError::Read { source, .. } => matches!(
+            source.store_error(),
+            None | Some(StoreError::KindMismatch { .. })
+        ),
+        _ => false,
+    };
+    if !strict && of_object {
+        Ok(None)
+    } else {
+        Err(error)
+    }
 }
 
 fn read(needed_by: Option<ObjectId>) -> impl FnOnce(ReadError) -> UnreachableError {

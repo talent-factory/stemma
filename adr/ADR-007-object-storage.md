@@ -173,22 +173,28 @@ server will later keep objects elsewhere (API-first). The implementation is
       lock spans an upload and its ref update, and a wrong guess costs a second upload. The clock
       serves the age of files only and occurs in no repository. The operation
       treats objects that a computation stored like every unnamed object (ADR-025).
-      The implementation adds three points (STEMMA-292). The last entry of the record is the
-      one exception to the roots: an update whose entry was written and whose references did
-      not move yet is completed by the next accepting call (ADR-025), so the new commits of
-      that entry and its register are kept; the caller passes the record for that reason. The
-      age is the time of modification of the file, and a time after the clock counts as young.
-      An upload that stores an object that the store has already does not touch its file, so
-      an old unnamed object that a new upload names again can still go before its ref update;
-      that costs a repeated upload as well. The operation refuses a repository with a working
-      copy: there the operation log, the working copies, and the remote references are roots
-      too, and that garbage collection stays with the retention of snapshot entries. It reads
-      every reachable commit and tree with the strict readers, and a reachable commit or tree
-      that is missing or unreadable stops it before the first removal, because what it names
-      cannot be told from what is unreachable. The walk costs one read of each reachable
-      commit and tree, the listing one entry per object, and each unreachable object one
-      inspection of its file. The head of an open pull request is no root either: once its
-      branch moved or was deleted, the head can go, so the gate on a hub refuses such a branch
+      The implementation adds these points (STEMMA-292). The last entry of the record is the one
+      exception to the roots: an update whose entry was written and whose references did not
+      move yet is completed by the next accepting call (ADR-025), so the new commits of that
+      entry and its register are kept; the caller passes the record for that reason. The age is
+      the time of modification of the file, and a time after the clock counts as young. An
+      upload that stores an object that the store has already does not touch its file, so a
+      young commit may stand on an old unnamed parent. What a young commit or tree reaches is
+      therefore kept with it, so that no commit in the store loses its history: the record may
+      name the commit, and the gate walks the history of the commits that the record names.
+      Below a young object the walk ends at an object that is missing or of another kind,
+      because an upload may stop half way. An old object that an upload names again, but that
+      nothing young reaches yet, as in the first request of a split upload, can still go before
+      its ref update; that costs a repeated upload as well. The operation refuses a repository
+      with a working copy: there the operation log, the working copies, and the remote
+      references are roots too, and that garbage collection stays with the retention of snapshot
+      entries. It reads every reachable commit and tree with the strict readers, and a reachable
+      commit or tree that is missing or unreadable stops it before the first removal, because
+      what it names cannot be told from what is unreachable. The walk costs one read of each
+      reachable commit and tree, the listing one entry per object, each unreachable object one
+      inspection of its file, and each young commit or tree a walk below it that stops at what
+      is kept already. The head of an open pull request is no root either: once its branch moved
+      or was deleted, the head can go, so the gate on a hub refuses such a branch
       (`BranchMoved`) before it reads the history of the head.
 - [x] Removal of stale files in `tmp/`: the writer that takes the lock of the references removes
       them (ADR-011, STEMMA-31). A receiving operation, which is the upload on a hub and the
