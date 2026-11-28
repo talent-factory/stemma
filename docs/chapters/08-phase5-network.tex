@@ -40,6 +40,7 @@ der HTTP-Client des Klons,
 die Kompression seines Rumpfs mit zstd,
 die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub,
 die Namespace-Policy im Kern, mit dem Maximum über die Policies und den verlangten Ownern,
+das Entfernen unerreichbarer Objekte auf dem Bare-Repository
 und die Befehle \type{remote}, \type{clone} und \type{fetch}.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
@@ -319,8 +320,23 @@ zusammenhängen, und bewegt die Referenz mit Compare-and-Swap.
 
 Der Upload ist idempotent: Er kann wiederholt und an Commit-Grenzen in mehrere Anfragen geteilt
 werden.
-Ein abgelehnter Push hinterlässt unbenannte Objekte auf dem Hub, die er nie ausliefert und später
-entfernt.
+Ein abgelehnter Push hinterlässt unbenannte Objekte auf dem Hub, die er nie ausliefert.
+Von Zeit zu Zeit entfernt der Hub, was kein Branch und kein Tag erreicht (ADR-007).
+Die Aufzeichnung der Ref-Updates ist keine Wurzel; was ein Rewrite oder das Löschen einer
+Referenz zurücklässt, geht mit.
+Der Hub schont außerdem die neuen Commits und das Register des letzten Eintrags, denn dessen
+Bewegungen sind vielleicht noch nicht ausgeführt.
+Zwischen Upload und Ref-Update hält der Hub keinen Zustand.
+Er schont deshalb jedes Objekt, das jünger ist als eine Frist, die er selbst wählt,
+und alles, was ein solches Objekt erreicht, damit kein Commit seine Geschichte verliert.
+Sind Objekte des Push beim Ref-Update fort, lehnt der Hub es als unvollständig ab
+(\type{Incomplete}).
+Das geschieht, wenn das Ref-Update erst nach der Frist kommt und der Hub dazwischen aufräumt,
+und selten auch innerhalb der Frist:
+Ein Objekt, das der Hub vor dem Upload schon hatte, behält das Alter seiner Datei, und bei einem
+geteilten Upload erreicht es vielleicht noch kein junges Objekt.
+Der Klon lädt sie dann noch einmal hoch und sendet das Ref-Update erneut.
+Eine zu kurze Frist kostet also einen zweiten Upload und nie Daten.
 Ist die Remote-Referenz des Klons veraltet, scheitert das Compare-and-Swap (\type{Stale}), und der
 Klon holt zuerst den neuen Stand.
 
