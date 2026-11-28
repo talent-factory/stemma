@@ -369,6 +369,7 @@ impl Repository {
             return Ok(());
         }
         uploaded.passes += 1;
+        let before = uploaded.pieces;
         while let Some(next) = upload.next_piece(piece).map_err(boxed_objects)? {
             let mut attempt = 1;
             loop {
@@ -382,7 +383,7 @@ impl Repository {
                     }
                     Err(source) if attempt >= PIECE_ATTEMPTS || !transient(&source) => {
                         return Err(PushError::Upload {
-                            confirmed: uploaded.pieces,
+                            confirmed: uploaded.pieces - before,
                             source,
                         })
                     }
@@ -652,7 +653,7 @@ pub enum PushError {
     /// for a failure that no repeat mends. The pieces before it are confirmed; the hub holds
     /// their objects unnamed.
     Upload {
-        /// The pieces that the other side confirmed.
+        /// The pieces of this pass that the other side confirmed before the one that failed.
         confirmed: u32,
         /// The last failure.
         source: TransportError,

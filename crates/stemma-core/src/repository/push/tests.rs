@@ -402,6 +402,25 @@ struct After<'a> {
     wire: &'a mut Wire,
     step: Option<Step<'a>>,
     carries_upload: bool,
+    receipt: Damage,
+}
+
+/// What [`After`] does to the receipt of the hub: nothing, cut it in half (the reader refuses
+/// it), or break its body in the middle (it cannot be read).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Damage {
+    None,
+    Cut,
+    Broken,
+}
+
+/// A body whose read fails, as a connection that breaks in the middle of an answer.
+struct BrokenRead;
+
+impl io::Read for BrokenRead {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::from(io::ErrorKind::ConnectionReset))
+    }
 }
 
 impl<'a> After<'a> {
@@ -410,6 +429,7 @@ impl<'a> After<'a> {
             wire,
             step: Some(Box::new(step)),
             carries_upload: true,
+            receipt: Damage::None,
         }
     }
 }
@@ -436,7 +456,15 @@ impl Transport for After<'_> {
         if let Some(step) = self.step.take() {
             step(self.wire);
         }
-        let body: crate::transport::Body<'_> = Box::new(io::Cursor::new(bytes));
+        let half = bytes.len() / 2;
+        let body: crate::transport::Body<'_> = match self.receipt {
+            Damage::None => Box::new(io::Cursor::new(bytes)),
+            Damage::Cut if message => Box::new(io::Cursor::new(bytes[..half].to_vec())),
+            Damage::Broken if message => Box::new(io::BufReader::new(
+                io::Cursor::new(bytes[..half].to_vec()).chain(BrokenRead),
+            )),
+            Damage::Cut | Damage::Broken => Box::new(io::Cursor::new(bytes)),
+        };
         Ok(if message {
             Answer::Message(body)
         } else {
@@ -1717,6 +1745,11 @@ fn a_merge_from_a_linked_worktree_moves_the_main_that_the_root_has_checked_out()
             )
             .unwrap();
     let worktree = Repository::open(&linked).unwrap();
+    // The root has `main` checked out, so the linked worktree may not take it.
+    assert_eq!(
+        m.f.clone.refs().head().unwrap(),
+        crate::refs::Head::Branch(branch("main"))
+    );
 
     let merged = worktree
         .merge_gate_remote(
@@ -1752,6 +1785,7 @@ fn a_merge_from_a_linked_worktree_moves_the_main_that_the_root_has_checked_out()
 fn a_merge_whose_receipt_cannot_be_checked_is_not_known_and_moves_nothing() {
     let mut m = Merging::new();
     m.approve(true);
+    let pushes = m.f.push_entries().len();
     m.f.hub().rogue.set(true);
 
     let error = m.merge().unwrap_err();
@@ -1766,5 +1800,84 @@ fn a_merge_whose_receipt_cannot_be_checked_is_not_known_and_moves_nothing() {
     ));
     assert!(error.to_string().contains("is not known"), "{error}");
     assert_eq!(m.f.local("main"), Some(m.root));
+    assert_eq!(m.f.remote("heads/main").unwrap().commit, m.root);
+    assert_eq!(m.f.push_entries().len(), pushes);
     assert_eq!(m.pr_merges(), 0);
+}
+
+#[test]
+fn a_receipt_that_breaks_off_leaves_the_outcome_unknown_and_a_fetch_brings_the_move() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    let target = PushTarget::new(name("heads/main"), Some(root));
+    let mut after = After::new(&mut f.wire, |_: &mut Wire| {});
+    after.receipt = Damage::Broken;
+
+    let error = f
+        .clone
+        .push_with(
+            &origin(),
+            &address(),
+            &[target],
+            &mut after,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+            PIECE_BYTES,
+        )
+        .unwrap_err();
+    drop(after);
+
+    assert!(matches!(error, PushError::ReceiptLost(_)), "{error:?}");
+    assert!(error.outcome_unknown());
+    assert!(error.to_string().contains("is not known"), "{error}");
+    // Nothing moved in the clone; the hub did, and a fetch says it.
+    assert_eq!(f.remote("heads/main"), None);
+    assert!(f.push_entries().is_empty());
+    assert_eq!(f.hub().branch("main"), Some(root));
+    f.clone
+        .fetch(&origin(), &mut f.wire, &human("daniel"), &AllowAll)
+        .unwrap();
+    assert_eq!(f.remote("heads/main").unwrap().commit, root);
+}
+
+#[test]
+fn a_merge_whose_receipt_is_cut_is_not_known_and_the_next_call_records_it() {
+    let mut m = Merging::new();
+    m.approve(true);
+    let mode = Mode::Enforcing(register_of());
+    let mut after = After::new(&mut m.f.wire, |_: &mut Wire| {});
+    after.receipt = Damage::Cut;
+
+    let error =
+        m.f.clone
+            .merge_gate_remote(
+                m.number,
+                &mode,
+                &origin(),
+                &address(),
+                &mut after,
+                &daniel(),
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap_err();
+    drop(after);
+
+    let RemoteMergeError::Unknown(source) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(matches!(**source, PushError::Unreadable(_)), "{source:?}");
+    assert_eq!(m.f.local("main"), Some(m.root));
+    assert_eq!(m.pr_merges(), 0);
+    let landed = m.f.hub().branch("main").unwrap();
+    assert_ne!(landed, m.root, "the hub accepted the merge");
+
+    let repaired = m.merge().unwrap();
+
+    assert!(repaired.repaired);
+    assert!(repaired.main_followed);
+    assert_eq!(repaired.commit, landed);
+    assert_eq!(m.f.local("main"), Some(landed));
+    assert_eq!(m.pr_merges(), 1);
 }

@@ -416,9 +416,10 @@ impl Repository {
                 },
             );
             moved = match logged {
-                // Another writer of the clone moved `main`: it keeps its value.
-                Err(RefError::Stale { .. }) => {
-                    main_followed = false;
+                // Another writer of the clone moved `main`: it keeps its value, which may be the
+                // tip of the hub already.
+                Err(RefError::Stale { found, .. }) => {
+                    main_followed = found == Some(tip);
                     None
                 }
                 Err(error) => return Err(gate(GateError::Refs(error))),
@@ -433,7 +434,15 @@ impl Repository {
         }
         let entry = self
             .record_pull_merge_locked(&lock, number, actor, head, register)
-            .map_err(|error| gate(GateError::Pull(error)))?;
+            .map_err(|source| match &moved {
+                // `main` moved, as in the local gate: the entry of the move stands.
+                Some(entry) => gate(GateError::PullNotRecorded {
+                    moved: entry.clone(),
+                    commit: tip,
+                    source: Box::new(source),
+                }),
+                None => gate(GateError::Pull(source)),
+            })?;
         Ok(RemoteMerge {
             commit: tip,
             tip,
@@ -461,12 +470,16 @@ fn denied(error: UpdateError) -> GateError {
 /// [`PullNotRecorded`](Self::PullNotRecorded) come after the receipt. After
 /// [`Unknown`](Self::Unknown) the hub may have moved; every other variant moved nothing on the
 /// hub. No variant moved anything in the clone but objects and the remote references that a
-/// fetch moved, except the ones after the receipt.
+/// fetch moved, except the ones after the receipt and a [`Gate`](Self::Gate) error of a repair
+/// whose entry `gate-merge` was written ([`entry`](Self::entry) names it).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RemoteMergeError {
     /// The authorizer refused, the local verdict refused the change, or the clone failed before
-    /// anything was sent (see [`GateError`]).
+    /// anything was sent (see [`GateError`]). In a repair, where nothing is sent, it is also a
+    /// failure under the lock: the move of the local `main` with its entry `gate-merge` failed
+    /// ([`GateError::Update`]), or `pr-merge` could not be written after it
+    /// ([`GateError::PullNotRecorded`]); the next call records the merge.
     Gate(GateError),
     /// The fetch of an attempt failed.
     Fetch(Box<FetchError>),
@@ -507,8 +520,9 @@ pub enum RemoteMergeError {
         /// What failed.
         source: Box<PushError>,
     },
-    /// The hub accepted the merge and the entry `push` was written, but `pr-merge` could not be
-    /// written. The next call finds the change on the hub and records the merge.
+    /// The hub accepted the merge and the entry `push` was written if anything had to move, but
+    /// `pr-merge` could not be written. The next call finds the change on the hub and records
+    /// the merge.
     PullNotRecorded {
         /// The entry `push`, if it was written.
         pushed: Option<Box<Entry>>,
@@ -524,11 +538,14 @@ pub enum RemoteMergeError {
 }
 
 impl RemoteMergeError {
-    /// The entry `push` that was written after the receipt, if there is one.
+    /// The entry that moved or was to move the local `main` or a remote reference, if one was
+    /// written: `push` after a receipt, `gate-merge` in a repair.
     pub fn entry(&self) -> Option<&Entry> {
         match self {
             Self::Unrecorded { source, .. } => source.entry(),
             Self::PullNotRecorded { pushed, .. } => pushed.as_deref(),
+            Self::Gate(GateError::PullNotRecorded { moved, .. }) => Some(moved),
+            Self::Gate(GateError::Update(error)) => error.entry(),
             _ => None,
         }
     }
@@ -555,7 +572,7 @@ impl fmt::Display for RemoteMergeError {
         match self {
             Self::Gate(error) => error.fmt(f),
             Self::Fetch(error) => write!(f, "the fetch before the merge failed: {error}"),
-            Self::Push(error) => write!(f, "the merge was not accepted: {error}"),
+            Self::Push(error) => write!(f, "the merge did not land: {error}"),
             Self::Diverged { local, tip } => write!(
                 f,
                 "the local `main` at {local} holds commits that `main` on the hub at {tip} does \

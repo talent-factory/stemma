@@ -826,10 +826,9 @@ surface comes with its slices.
   take back. The local `main` moves only from the value that it had when the attempt began
   (`RemoteMerge::main_followed` says whether it did), also when another worktree has it checked
   out, as in the local gate, and one with commits that the hub does not hold is refused before
-  anything is sent. A change that
-  the hub holds already, after a call that stopped after its receipt or lost the answer, is
-  recorded as merged without an update, and the local `main` follows the hub with an entry
-  `gate-merge`. The clone judges by its own statements, so the opening,
+  anything is sent. A change that the hub holds already, after a call that stopped after its
+  receipt or lost the answer, is recorded as merged without an update, and the local `main`
+  follows the hub with an entry `gate-merge`. The clone judges by its own statements, so the opening,
   the approvals and the results must be on the hub as well; binding the statements of a clone
   to the ID of the repository of a hub belongs to the commands of a pull request with a remote
   (see the open items).
