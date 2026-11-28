@@ -31,8 +31,10 @@
 //! 6. The anchor of the new tip of the log is sent (ADR-026) and its confirmation kept. A failure
 //!    there leaves the push as it is: the result names it, and the command warns.
 //!
-//! Every failure before the receipt leaves the clone as it was: the hub keeps unnamed objects at
-//! most, which are never served. A failure after the receipt carries it
+//! Every failure before the receipt leaves the clone as it was. A refusal of the hub leaves the
+//! hub with unnamed objects at most, which are never served. An update that got no answer, or an
+//! answer of success whose receipt cannot be read or checked, may have moved the hub
+//! ([`PushError::outcome_unknown`]); a fetch says it. A failure after the receipt carries it
 //! ([`PushError::Unrecorded`]): the hub moved, and a fetch brings the remote references along.
 //!
 //! The merge of a pull request in a repository whose `main` follows a remote uses steps 3 to 5
@@ -114,8 +116,9 @@ pub struct Uploaded {
     pub pieces: u32,
     /// The requests that failed on the carrier and were sent again.
     pub repeated: u32,
-    /// The passes over the upload: 1, or 2 after a refusal for want of objects; 0 if nothing
-    /// was to upload.
+    /// The passes over the upload that sent at least one request: one per ref update, and
+    /// one more after a refusal for want of objects. A merge with a remote counts them over
+    /// every attempt.
     pub passes: u32,
     /// What the confirmed pieces carried, over every pass.
     pub sent: Sent,
@@ -166,11 +169,16 @@ impl Repository {
     /// Before the receipt, with nothing moved in the clone: [`PushError::Objects`] if the store
     /// cannot give an object of the upload, [`PushError::Upload`] if a piece failed on the
     /// carrier in [`PIECE_ATTEMPTS`] attempts or its request failed otherwise,
-    /// [`PushError::Sign`], [`PushError::Transport`] for the ref update (whether the hub
-    /// accepted it is not known then; a fetch says it),
-    /// [`PushError::Answer`] for an answer that cannot be read, [`PushError::Refused`] for an
-    /// error of the hub, [`PushError::Stale`] for a stale update, and [`PushError::Receipt`]
-    /// for a receipt that is not the one of the update or not signed by the pinned key.
+    /// [`PushError::Sign`], [`PushError::Answer`] for an error of the hub that cannot be read,
+    /// [`PushError::Refused`] for an error of the hub, and [`PushError::Stale`] for a stale
+    /// update.
+    ///
+    /// With the outcome on the hub not known ([`PushError::outcome_unknown`]), nothing moved in
+    /// the clone, and a fetch says whether the hub moved: [`PushError::Transport`] if the ref
+    /// update got no answer, [`PushError::ReceiptLost`] if the answer of success could not be
+    /// read, [`PushError::Unreadable`] if the reader refused the receipt, and
+    /// [`PushError::Receipt`] for a receipt that is not the one of the update or not signed by
+    /// the pinned key.
     ///
     /// After the receipt: [`PushError::Unrecorded`] with the receipt, if the configuration of
     /// the remote changed during the push or the entry or a move failed.
@@ -262,7 +270,7 @@ impl Repository {
             .refs_store()
             .lock_writer(&allowed)
             .map_err(|error| unrecorded(PushError::Refs(error)))?;
-        let entry = self
+        let (entry, _) = self
             .record_push(&lock, remote, &config, &accepted.receipt, None, actor)
             .map_err(unrecorded)?;
         drop(lock);
@@ -397,8 +405,8 @@ impl Repository {
     /// value it had when the attempt began, moves to its new commit, after one entry `push`. A
     /// remote reference that is no longer in the state that the update was signed against is
     /// left as it is: a fetch moved it to a later state of the hub. A branch that no longer has
-    /// its value is left as well: another writer moved it. Returns `None` if nothing had to
-    /// move.
+    /// its value is left as well: another writer moved it. Returns the entry, `None` if nothing
+    /// had to move, and whether `branch` moved.
     pub(super) fn record_push(
         &self,
         lock: &WriteLock,
@@ -407,7 +415,7 @@ impl Repository {
         receipt: &RecordEntry,
         branch: Option<(BranchName, Option<CommitId>, CommitId)>,
         actor: &Actor,
-    ) -> Result<Option<Entry>, PushError> {
+    ) -> Result<(Option<Entry>, bool), PushError> {
         if self.remote(remote).map_err(PushError::Remote)?.as_ref() != Some(config) {
             return Err(PushError::RemoteChanged(remote.clone()));
         }
@@ -445,7 +453,7 @@ impl Repository {
         let number = receipt.number();
         let logged = self
             .refs_store()
-            .restore_after(lock, &targets, self.objects(), |moves| {
+            .push_after(lock, &targets, self.objects(), |moves| {
                 let branches = moves
                     .branches
                     .iter()
@@ -462,7 +470,8 @@ impl Repository {
                 self.append(lock, &change)
             })
             .map_err(PushError::Refs)?;
-        logged.into_result().map_err(PushError::Update)
+        let entry = logged.into_result().map_err(PushError::Update)?;
+        Ok((entry, !branches.is_empty()))
     }
 
     /// Step 6 of a push: the anchor of the tip of the log, sent and its confirmation kept.
@@ -516,7 +525,7 @@ fn send(
     match answer {
         Answer::Message(body) => {
             let bytes = fetch::read_bounded(body, MAX_RECEIPT)
-                .map_err(|error| PushError::Answer(Box::new(error)))?;
+                .map_err(|error| PushError::ReceiptLost(Box::new(error)))?;
             let receipt = RecordEntry::parse(&bytes).map_err(PushError::Unreadable)?;
             receipt
                 .check_receipt(update, hub)
@@ -609,7 +618,8 @@ impl Error for AnchorFailure {
 }
 
 /// Why [`Repository::push`] failed. Every variant but [`Unrecorded`](Self::Unrecorded) moved
-/// nothing in the clone.
+/// nothing in the clone. On the hub nothing moved either, except after the receipt and where
+/// the outcome is not known ([`outcome_unknown`](Self::outcome_unknown)).
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PushError {
@@ -651,12 +661,17 @@ pub enum PushError {
     Sign(SealError),
     /// The ref update got no answer. Whether the hub accepted it is not known; a fetch says it.
     Transport(TransportError),
-    /// An answer could not be read: its body failed, it is too long, or its error message is
-    /// not readable.
+    /// An error of the hub could not be read: its body failed, it is too long, or its message
+    /// is not readable.
     Answer(Box<FetchError>),
-    /// The reader refused the receipt.
+    /// The hub answered success, and the receipt could not be read: its body failed or it is
+    /// too long. Whether the hub accepted the update is not known; a fetch says it.
+    ReceiptLost(Box<FetchError>),
+    /// The reader refused the receipt. Whether the hub accepted the update is not known; a
+    /// fetch says it.
     Unreadable(ParseError),
     /// The receipt is not the one of the update, or another key than the pinned one signed it.
+    /// Whether the hub accepted the update is not known; a fetch says it.
     Receipt(ReceiptError),
     /// The update is stale: a reference on the hub is no longer in the state that the remote
     /// reference names. Carries the state of each stale reference on the hub; a fetch brings
@@ -669,9 +684,10 @@ pub enum PushError {
     /// The configuration of the remote was removed or changed during the push. It comes as the
     /// source of [`Unrecorded`](Self::Unrecorded), as the check runs after the receipt.
     RemoteChanged(RemoteName),
-    /// The hub accepted the update, and the clone did not record it: the configuration of the
-    /// remote changed, or the lock, the entry, or a move failed. The hub moved; a fetch brings
-    /// the remote references along.
+    /// The hub accepted the update, and recording it in the clone failed: the configuration of
+    /// the remote changed, or the lock, the entry, a move, or the flush of a move failed
+    /// ([`entry`](PushError::entry) names the entry if it was written). The hub moved; a fetch
+    /// brings the remote references along.
     Unrecorded {
         /// The receipt of the hub.
         receipt: Box<RecordEntry>,
@@ -681,6 +697,27 @@ pub enum PushError {
 }
 
 impl PushError {
+    /// Whether the update was sent and it is not known whether the hub accepted it: it got no
+    /// answer, or the answer of success could not be read or checked. Nothing moved in the
+    /// clone; a fetch says whether the hub moved.
+    pub fn outcome_unknown(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport(_) | Self::ReceiptLost(_) | Self::Unreadable(_) | Self::Receipt(_)
+        )
+    }
+
+    /// The cause of an error whose outcome is not known, without the words on the outcome.
+    pub(super) fn fmt_cause(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "{error}"),
+            Self::ReceiptLost(error) => write!(f, "the receipt cannot be read: {error}"),
+            Self::Unreadable(error) => write!(f, "the receipt cannot be read: {error}"),
+            Self::Receipt(error) => write!(f, "{error}"),
+            other => write!(f, "{other}"),
+        }
+    }
+
     /// The receipt, if the hub accepted the update.
     pub fn receipt(&self) -> Option<&RecordEntry> {
         match self {
@@ -707,7 +744,7 @@ impl PushError {
             Self::Objects(error) => error.io_error(),
             Self::Upload { source, .. } | Self::Transport(source) => source.io_error(),
             Self::Sign(error) => error.io_error(),
-            Self::Answer(error) => error.io_error(),
+            Self::Answer(error) | Self::ReceiptLost(error) => error.io_error(),
             Self::Unrecorded { source, .. } => source.io_error(),
             Self::NoSuchRemote(_)
             | Self::HubKey(_)
@@ -736,20 +773,18 @@ impl fmt::Display for PushError {
             Self::Upload { confirmed, source } if transient(source) => write!(
                 f,
                 "the upload failed after {confirmed} confirmed pieces: {source}; nothing moved, \
-                 and a push again sends what is missing"
+                 and a push again sends the upload anew"
             ),
             Self::Upload { confirmed, source } => write!(
                 f,
                 "the upload failed after {confirmed} confirmed pieces: {source}; nothing moved"
             ),
             Self::Sign(error) => write!(f, "the ref update cannot be signed: {error}"),
-            Self::Transport(error) => write!(
-                f,
-                "{error}; whether the hub accepted the push is not known, a fetch says it"
-            ),
+            Self::Transport(_) | Self::ReceiptLost(_) | Self::Unreadable(_) | Self::Receipt(_) => {
+                self.fmt_cause(f)?;
+                f.write_str("; whether the hub accepted the push is not known, a fetch says it")
+            }
             Self::Answer(error) => error.fmt(f),
-            Self::Unreadable(error) => write!(f, "the receipt cannot be read: {error}"),
-            Self::Receipt(error) => write!(f, "{error}; nothing moved"),
             Self::Stale(stale) => write!(f, "{stale}; nothing moved, fetch first"),
             Self::Refused(message) => write!(f, "the hub refused: {message}"),
             Self::RemoteChanged(name) => write!(
@@ -758,8 +793,8 @@ impl fmt::Display for PushError {
             ),
             Self::Unrecorded { receipt, source } => write!(
                 f,
-                "the hub accepted the push as record entry {}, but the clone did not record it: \
-                 {source}; a fetch brings the remote references along",
+                "the hub accepted the push as record entry {}, and recording it in the clone \
+                 failed: {source}; a fetch brings the remote references along",
                 receipt.number()
             ),
         }
@@ -777,7 +812,7 @@ impl Error for PushError {
             Self::Objects(error) => error.source(),
             Self::Upload { source, .. } | Self::Transport(source) => source.source(),
             Self::Sign(error) => error.source(),
-            Self::Answer(error) => error.source(),
+            Self::Answer(error) | Self::ReceiptLost(error) => error.source(),
             Self::Unreadable(error) => error.source(),
             Self::Unrecorded { source, .. } => source.source(),
             Self::NoSuchRemote(_)

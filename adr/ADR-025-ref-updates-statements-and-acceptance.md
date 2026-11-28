@@ -807,7 +807,8 @@ surface comes with its slices.
   with the state of each stale reference on the hub (`PushError::Stale`); a push does not
   repeat on its own, as the actor decides what to sign after a fetch. Every other refusal is
   reported with its typed reason (`PushError::Refused`). A failure of the carrier on the ref
-  update leaves it unknown whether the hub accepted; a fetch says it.
+  update, or an answer of success whose receipt cannot be read or checked, leaves it unknown
+  whether the hub accepted (`PushError::outcome_unknown`); a fetch says it.
 - **After the receipt.** Under the lock the configuration of the remote is read again, one
   entry `push` names the remote references and the receipt, and they move to the commit of the
   move with the hash of the receipt as their record entry (ADR-008, ADR-011). A failure there
@@ -822,8 +823,10 @@ surface comes with its slices.
   the local `main` and the remote reference of `main` to `M`, and then `pr-merge` is written.
   `Stale` starts the loop again with a new fetch and a new signature, at most `MAX_ATTEMPTS`
   times (`RemoteMergeError::Contended`); a refusal of the hub leaves `M` unnamed and nothing to
-  take back. The local `main` moves only from the value that it had when the attempt began, and
-  one with commits that the hub does not hold is refused before anything is sent. A change that
+  take back. The local `main` moves only from the value that it had when the attempt began
+  (`RemoteMerge::main_followed` says whether it did), also when another worktree has it checked
+  out, as in the local gate, and one with commits that the hub does not hold is refused before
+  anything is sent. A change that
   the hub holds already, after a call that stopped after its receipt or lost the answer, is
   recorded as merged without an update, and the local `main` follows the hub with an entry
   `gate-merge`. The clone judges by its own statements, so the opening,

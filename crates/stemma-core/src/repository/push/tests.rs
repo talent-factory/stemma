@@ -1595,3 +1595,176 @@ fn a_push_deletes_a_reference_on_the_hub_and_its_remote_reference() {
     };
     assert_eq!(moved.after(), None);
 }
+
+#[test]
+fn a_push_that_names_a_reference_twice_sends_nothing() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    let target = PushTarget::new(name("heads/main"), Some(root));
+
+    let error = f
+        .push_by(&daniel(), &[target.clone(), target], PIECE_BYTES)
+        .unwrap_err();
+
+    assert!(matches!(error, PushError::Duplicate(_)), "{error:?}");
+    assert_eq!(f.hub().updates.get(), 0);
+    assert_eq!(f.remote("heads/main"), None);
+    assert!(f.push_entries().is_empty());
+}
+
+#[test]
+fn a_merge_that_the_authorizer_refuses_sends_nothing() {
+    struct Deny(&'static str);
+    impl Authorizer for Deny {
+        fn authorize(&self, _: &Actor, operation: &OperationName, _: &str) -> crate::Decision {
+            if operation.as_str() == self.0 {
+                crate::Decision::Deny
+            } else {
+                crate::Decision::Allow
+            }
+        }
+    }
+    let mut m = Merging::new();
+    m.approve(true);
+    let updates = m.f.hub().updates.get();
+    let mode = Mode::Enforcing(register_of());
+
+    for operation in [crate::oplog::PR_MERGE, PUSH] {
+        let error =
+            m.f.clone
+                .merge_gate_remote(
+                    m.number,
+                    &mode,
+                    &origin(),
+                    &address(),
+                    &mut m.f.wire,
+                    &daniel(),
+                    &human("daniel"),
+                    &Deny(operation),
+                )
+                .unwrap_err();
+        assert!(
+            matches!(&error, RemoteMergeError::Gate(GateError::Denied { operation: denied, .. }) if denied == operation),
+            "{error:?}"
+        );
+    }
+    assert_eq!(m.f.hub().updates.get(), updates);
+    assert_eq!(m.f.local("main"), Some(m.root));
+    assert_eq!(m.pr_merges(), 0);
+}
+
+#[test]
+fn a_local_main_that_another_writer_moved_keeps_its_value_after_the_receipt() {
+    let mut m = Merging::new();
+    m.approve(true);
+    let register = register_of().encode();
+    let files = m.f.files_with(&register, &[("docs/b.md", "b\n")]);
+    let other = m.f.commit("daniel", &files, vec![m.root]);
+    let mode = Mode::Enforcing(register_of());
+    let clone = &m.f.clone;
+    let root = m.root;
+    let mut after = After::new(&mut m.f.wire, move |_: &mut Wire| {
+        let operation = OperationName::try_new("branch").unwrap();
+        clone
+            .update_branch(
+                &operation,
+                &branch("main"),
+                Some(root),
+                other,
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap();
+    });
+
+    let merged = clone
+        .merge_gate_remote(
+            m.number,
+            &mode,
+            &origin(),
+            &address(),
+            &mut after,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+        )
+        .unwrap();
+    drop(after);
+
+    assert!(!merged.main_followed);
+    assert_eq!(m.f.local("main"), Some(other));
+    assert_eq!(m.f.remote("heads/main").unwrap().commit, merged.commit);
+    let pushed = merged.pushed.unwrap();
+    let change = pushed.change().unwrap();
+    assert!(change.branches().is_empty());
+    assert_eq!(change.remotes().len(), 1);
+    assert_eq!(m.pr_merges(), 1);
+}
+
+#[test]
+fn a_merge_from_a_linked_worktree_moves_the_main_that_the_root_has_checked_out() {
+    let mut m = Merging::new();
+    m.approve(true);
+    let linked = m.f._dir.path().join("linked");
+    let _ =
+        m.f.clone
+            .add_worktree(
+                &linked,
+                &crate::repository::WorktreeBranch::Create(branch("side")),
+                None,
+                &human("daniel"),
+                &AllowAll,
+            )
+            .unwrap();
+    let worktree = Repository::open(&linked).unwrap();
+
+    let merged = worktree
+        .merge_gate_remote(
+            m.number,
+            &Mode::Enforcing(register_of()),
+            &origin(),
+            &address(),
+            &mut m.f.wire,
+            &daniel(),
+            &human("daniel"),
+            &AllowAll,
+        )
+        .unwrap();
+
+    assert!(merged.main_followed);
+    assert!(!merged.repaired);
+    assert_eq!(m.f.local("main"), Some(merged.commit));
+    assert_eq!(m.f.remote("heads/main").unwrap().commit, merged.commit);
+    assert_eq!(
+        merged
+            .pushed
+            .unwrap()
+            .change()
+            .unwrap()
+            .operation()
+            .as_str(),
+        PUSH
+    );
+    assert_eq!(m.pr_merges(), 1);
+}
+
+#[test]
+fn a_merge_whose_receipt_cannot_be_checked_is_not_known_and_moves_nothing() {
+    let mut m = Merging::new();
+    m.approve(true);
+    m.f.hub().rogue.set(true);
+
+    let error = m.merge().unwrap_err();
+
+    let RemoteMergeError::Unknown(source) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(source.outcome_unknown());
+    assert!(matches!(
+        **source,
+        PushError::Receipt(ReceiptError::OtherKey)
+    ));
+    assert!(error.to_string().contains("is not known"), "{error}");
+    assert_eq!(m.f.local("main"), Some(m.root));
+    assert_eq!(m.pr_merges(), 0);
+}

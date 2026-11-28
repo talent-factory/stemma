@@ -58,7 +58,6 @@ use crate::repository::{now, GateError, PullError, Repository, UpdateError};
 use crate::signature::Signer;
 use crate::store::ObjectStore;
 use crate::transport::Transport;
-use crate::transport::TransportError;
 use crate::{Actor, Allowed, Authorizer};
 
 /// A pull request that the hub merged, and whose merge the clone recorded (see
@@ -74,10 +73,13 @@ pub struct RemoteMerge {
     pub tip: CommitId,
     /// How many attempts the call needed: 1 if no other writer moved `main` on the hub.
     pub attempts: u32,
-    /// The entry that moved the local `main` and the remote reference: `push` after a receipt,
-    /// `gate-merge` for a repair. `None` if nothing had to move, or if another writer of the
-    /// clone moved the local `main` in between, which then keeps its value.
+    /// The entry that moved the local `main` or the remote reference: `push` after a receipt,
+    /// `gate-merge` for a repair. `None` if nothing had to move. Whether the local `main` moved
+    /// is [`main_followed`](Self::main_followed).
     pub pushed: Option<Box<Entry>>,
+    /// Whether the local `main` names `commit`: it followed, or it named it already. `false` if
+    /// another writer of the clone moved it in between, which then keeps its value.
+    pub main_followed: bool,
     /// The entry `pr-merge`.
     pub merged: Box<Entry>,
     /// The receipt of the hub, or `None` for a repair.
@@ -117,8 +119,9 @@ impl Repository {
     /// verdict, and a failure of the clone before anything was sent;
     /// [`RemoteMergeError::Diverged`] if the local `main` holds commits that `main` on the hub
     /// does not; [`RemoteMergeError::Fetch`] for a fetch that failed; [`RemoteMergeError::Push`]
-    /// for the update, including a refusal of the hub, after which nothing is to take back;
-    /// [`RemoteMergeError::Unknown`] if the ref update got no answer;
+    /// for a remote without a pinned key and for the update, including a refusal of the hub,
+    /// after which nothing is to take back; [`RemoteMergeError::Unknown`] if the ref update got
+    /// no answer or its receipt could not be read or checked;
     /// [`RemoteMergeError::Contended`] if `main` on the hub moved in every attempt; and
     /// [`RemoteMergeError::Unrecorded`] and [`RemoteMergeError::PullNotRecorded`] if the
     /// receipt came and the entries could not be written. On a bare repository the call is
@@ -304,7 +307,9 @@ impl Repository {
         ) {
             Ok(receipt) => receipt,
             Err(PushError::Stale(_)) => return Ok(None),
-            Err(PushError::Transport(error)) => return Err(RemoteMergeError::Unknown(error)),
+            Err(error) if error.outcome_unknown() => {
+                return Err(RemoteMergeError::Unknown(Box::new(error)))
+            }
             Err(error) => return Err(RemoteMergeError::Push(Box::new(error))),
         };
 
@@ -318,7 +323,7 @@ impl Repository {
             .refs_store()
             .lock_writer(allowed)
             .map_err(|error| unrecorded(PushError::Refs(error)))?;
-        let pushed = self
+        let (pushed, main_followed) = self
             .record_push(
                 &lock,
                 remote,
@@ -332,6 +337,7 @@ impl Repository {
             .record_pull_merge_locked(&lock, number, actor, head, register)
             .map_err(|error| RemoteMergeError::PullNotRecorded {
                 pushed: pushed.clone().map(Box::new),
+                main_followed,
                 receipt: Box::new(receipt.clone()),
                 commit: merged,
                 source: Box::new(error),
@@ -342,6 +348,7 @@ impl Repository {
             tip,
             attempts: 1,
             pushed: pushed.map(Box::new),
+            main_followed,
             merged: Box::new(entry),
             receipt: Some(Box::new(receipt)),
             uploaded: Uploaded::default(),
@@ -385,6 +392,7 @@ impl Repository {
         }
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let mut moved = None;
+        let mut main_followed = true;
         if local != Some(tip) {
             let operation =
                 OperationName::try_new(super::super::gate::OPERATION).expect("an operation name");
@@ -409,7 +417,10 @@ impl Repository {
             );
             moved = match logged {
                 // Another writer of the clone moved `main`: it keeps its value.
-                Err(RefError::Stale { .. }) => None,
+                Err(RefError::Stale { .. }) => {
+                    main_followed = false;
+                    None
+                }
                 Err(error) => return Err(gate(GateError::Refs(error))),
                 Ok(Logged::Moved(entry)) => Some(Box::new(entry)),
                 Ok(Logged::Unchanged) => None,
@@ -428,6 +439,7 @@ impl Repository {
             tip,
             attempts: 1,
             pushed: moved,
+            main_followed,
             merged: Box::new(entry),
             receipt: None,
             uploaded: Uploaded::default(),
@@ -446,9 +458,10 @@ fn denied(error: UpdateError) -> GateError {
 }
 
 /// Why [`Repository::merge_gate_remote`] failed. Only [`Unrecorded`](Self::Unrecorded) and
-/// [`PullNotRecorded`](Self::PullNotRecorded) come after the receipt; every other variant moved
-/// nothing on the hub and nothing in the clone but objects and the remote references that a
-/// fetch moved.
+/// [`PullNotRecorded`](Self::PullNotRecorded) come after the receipt. After
+/// [`Unknown`](Self::Unknown) the hub may have moved; every other variant moved nothing on the
+/// hub. No variant moved anything in the clone but objects and the remote references that a
+/// fetch moved, except the ones after the receipt.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RemoteMergeError {
@@ -457,8 +470,9 @@ pub enum RemoteMergeError {
     Gate(GateError),
     /// The fetch of an attempt failed.
     Fetch(Box<FetchError>),
-    /// The ref update failed, or the hub refused it (see [`PushError`]). Nothing moved, so
-    /// nothing is to take back.
+    /// The remote has no pinned key or cannot be read, the upload or the signature failed, or
+    /// the hub refused the update (see [`PushError`]). Nothing moved, so nothing is to take
+    /// back.
     Push(Box<PushError>),
     /// The local `main` holds commits that `main` on the hub does not: it is neither the tip of
     /// the hub nor an ancestor of it. Nothing was sent.
@@ -468,10 +482,11 @@ pub enum RemoteMergeError {
         /// The tip of `main` on the hub.
         tip: CommitId,
     },
-    /// The ref update got no answer, so whether the hub accepted the merge is not known. Nothing
-    /// moved in the clone; the next call fetches, and finds the change on the hub if it was
-    /// accepted.
-    Unknown(TransportError),
+    /// The ref update got no answer, or the answer of success could not be read or checked
+    /// ([`PushError::outcome_unknown`]), so whether the hub accepted the merge is not known.
+    /// Nothing moved in the clone; the next call fetches, and finds the change on the hub if it
+    /// was accepted.
+    Unknown(Box<PushError>),
     /// `main` on the hub moved in each of the attempts.
     Contended {
         /// The number of the pull request.
@@ -479,10 +494,11 @@ pub enum RemoteMergeError {
         /// The attempts made.
         attempts: u32,
     },
-    /// The hub accepted the merge, and the local `main` did not follow: the lock, the
-    /// configuration of the remote, the entry `push`, or a move failed (see
-    /// [`PushError::Unrecorded`]). The next call fetches, finds the change on the hub, moves the
-    /// local `main` to it, and records the merge.
+    /// The hub accepted the merge, and recording it in the clone failed: the lock, the
+    /// configuration of the remote, the entry `push`, a move, or the flush of a move failed (see
+    /// [`PushError::Unrecorded`]; [`entry`](RemoteMergeError::entry) names the entry `push` if
+    /// it was written). `pr-merge` is not written. The next call fetches, finds the change on
+    /// the hub, moves the local `main` to it if it is not there, and records the merge.
     Unrecorded {
         /// The receipt of the hub.
         receipt: Box<RecordEntry>,
@@ -491,11 +507,13 @@ pub enum RemoteMergeError {
         /// What failed.
         source: Box<PushError>,
     },
-    /// The hub accepted the merge and the local `main` followed, but `pr-merge` could not be
+    /// The hub accepted the merge and the entry `push` was written, but `pr-merge` could not be
     /// written. The next call finds the change on the hub and records the merge.
     PullNotRecorded {
         /// The entry `push`, if it was written.
         pushed: Option<Box<Entry>>,
+        /// Whether the local `main` followed (see [`RemoteMerge::main_followed`]).
+        main_followed: bool,
         /// The receipt of the hub.
         receipt: Box<RecordEntry>,
         /// The merge `M` that `main` names on the hub.
@@ -506,6 +524,15 @@ pub enum RemoteMergeError {
 }
 
 impl RemoteMergeError {
+    /// The entry `push` that was written after the receipt, if there is one.
+    pub fn entry(&self) -> Option<&Entry> {
+        match self {
+            Self::Unrecorded { source, .. } => source.entry(),
+            Self::PullNotRecorded { pushed, .. } => pushed.as_deref(),
+            _ => None,
+        }
+    }
+
     /// The error of the file system under the fetch or the update, if that is what failed (see
     /// the crate documentation). The errors of the gate and of the pull request carry their
     /// own sources.
@@ -534,11 +561,13 @@ impl fmt::Display for RemoteMergeError {
                 "the local `main` at {local} holds commits that `main` on the hub at {tip} does \
                  not; nothing was sent"
             ),
-            Self::Unknown(error) => write!(
-                f,
-                "{error}; whether the hub accepted the merge is not known, and the next merge of \
-                 the pull request fetches and records it"
-            ),
+            Self::Unknown(error) => {
+                error.fmt_cause(f)?;
+                f.write_str(
+                    "; whether the hub accepted the merge is not known, and the next merge of the \
+                     pull request fetches and records it",
+                )
+            }
             Self::Contended { number, attempts } => write!(
                 f,
                 "pull request {number} did not land after {attempts} attempts: `main` on the hub \
@@ -548,8 +577,8 @@ impl fmt::Display for RemoteMergeError {
                 receipt, source, ..
             } => write!(
                 f,
-                "the hub accepted the merge as record entry {}, but the local `main` did not \
-                 follow: {source}; the next merge of the pull request records it",
+                "the hub accepted the merge as record entry {}, and recording it in the clone \
+                 failed: {source}; the next merge of the pull request records it",
                 receipt.number()
             ),
             Self::PullNotRecorded {
