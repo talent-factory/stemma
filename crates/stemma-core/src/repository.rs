@@ -95,6 +95,8 @@ mod statements;
 mod status;
 mod switch;
 mod track;
+// The removal of unreachable objects on a bare repository (STEMMA-292).
+mod unreachable;
 mod verdict;
 mod worktree;
 
@@ -145,6 +147,7 @@ pub use statements::{Disagreement, EvidenceError, StatementCheckError, Statement
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
 pub use switch::{Changes, Handled, Planned, SwitchError, SwitchPlan, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
+pub use unreachable::{RemovedObjects, UnreachableError};
 pub use worktree::{AddedWorktree, RemovedWorktree, WorktreeBranch, WorktreeError, WorktreeInfo};
 
 #[cfg(test)]
@@ -993,14 +996,16 @@ impl Repository {
     /// the branches and the tags ([`refs`](Self::refs)), [`verify_refs`](Self::verify_refs),
     /// [`policy_of`](Self::policy_of), [`level_of_change`](Self::level_of_change), the upload
     /// of objects ([`receive_objects`](Self::receive_objects)) with the cleanup of what it
-    /// leaves ([`remove_receive_leftovers`](Self::remove_receive_leftovers)), and the
-    /// connectivity check ([`check_connectivity`](Self::check_connectivity)), besides
+    /// leaves ([`remove_receive_leftovers`](Self::remove_receive_leftovers)), the
+    /// connectivity check ([`check_connectivity`](Self::check_connectivity)), and the removal
+    /// of unreachable objects
+    /// ([`remove_unreachable_objects`](Self::remove_unreachable_objects)), besides
     /// the functions of the crate that take an object store, such as the tree merge
     /// ([`crate::merge`]), the register of a commit
     /// ([`Register::at_commit`](crate::register::Register::at_commit)), and the verification of
-    /// trees and commits ([`crate::verify`]). None of them takes the lock. The remotes and the
-    /// remote references are read as well ([`remotes`](Self::remotes) and the references of
-    /// [`refs`](Self::refs)); a bare repository has none. The accessors
+    /// trees and commits ([`crate::verify`]). None of them takes the lock but the removal. The
+    /// remotes and the remote references are read as well ([`remotes`](Self::remotes) and the
+    /// references of [`refs`](Self::refs)); a bare repository has none. The accessors
     /// ([`path`](Self::path), [`metadata_dir`](Self::metadata_dir), and
     /// [`worktree_name`](Self::worktree_name)) answer as well.
     ///

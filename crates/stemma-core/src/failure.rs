@@ -440,6 +440,26 @@ impl Classify for crate::repository::AcceptError {
     }
 }
 
+// The removal of unreachable objects on a bare repository (STEMMA-292).
+impl Classify for crate::repository::UnreachableError {
+    fn kind(&self) -> FailureKind {
+        match self {
+            Self::Refs(error) => error.kind(),
+            // A reference or the record reaches an object that is not there, or the record does
+            // not read: no state that a writer left.
+            Self::Record(_) | Self::Missing { .. } => FailureKind::Damaged,
+            // A body that the strict reader refuses has no error of the store, and is damage. So
+            // is an object of another kind: a reference or a tree named it, not a caller.
+            Self::Read { source, .. } => match source.store_error() {
+                None | Some(StoreError::KindMismatch { .. }) => FailureKind::Damaged,
+                Some(error) => error.kind(),
+            },
+            Self::Store { source, .. } => source.kind(),
+            Self::NotBare { .. } | Self::RecordIo(_) => FailureKind::Other,
+        }
+    }
+}
+
 // The anchors of a log (ADR-026, STEMMA-300).
 impl Classify for crate::repository::AnchorError {
     fn kind(&self) -> FailureKind {
