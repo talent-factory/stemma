@@ -370,6 +370,7 @@ repository <32 lower-case hexadecimal digits>
 key ssh-ed25519 <base64>
 former <first> <last> ssh-ed25519 <base64>          zero or more
 former-signature <SSHSIG signature on one line>     once if there is a former key
+namespace-policy <commit> <hexadecimal policy>      once if the repository is in a namespace
 ref heads/<name> <commit> <record entry>            zero or more, then tags/<name>
 
 stemma-protocol 1                                   the fetch request
@@ -514,8 +515,11 @@ token signs in again.
 | Push | 5: sign-in, upload, ref update, and the anchor of the new tip of the log (ADR-026) |
 | Push without new objects | 4: the same without the upload |
 
-A fetch also reads the statements of open pull requests (ADR-025) and the namespace policy
-(ADR-027), which may add a request each.
+A fetch also reads the statements of open pull requests (ADR-025), which may add a request. The
+namespace policy (ADR-027) adds none: the list of references names it in the line
+`namespace-policy`, with the commit of the namespace repository and the policy in its canonical
+form as lowercase hexadecimal digits of its bytes, so that the whole policy stands in one line
+and a cut list never carries a part of it (STEMMA-311).
 
 ### No cache in the first version
 

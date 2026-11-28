@@ -117,6 +117,91 @@ fn example_refs() -> RefList {
     .unwrap()
 }
 
+// The namespace policy in the list of references (ADR-027, STEMMA-311).
+
+/// The example `refs-namespace`: a list that names the namespace policy of the repository.
+fn example_refs_namespace() -> RefList {
+    let policy = crate::policy::Policy::parse(
+        b"stemma-policy 2\ndemand-namespace-owners\nlevel 0 docs/\nlevel 3 grading/\n",
+    )
+    .unwrap();
+    RefList::try_new(
+        repository(),
+        key(0),
+        FormerKeys::none(),
+        vec![Reference::new(
+            name("heads/main"),
+            example_commit(),
+            record(0xa1),
+        )],
+    )
+    .unwrap()
+    .with_namespace(crate::namespace::KeptNamespace::new(commit(0x55), policy))
+}
+
+#[test]
+fn the_namespace_policy_of_a_list_reads_back_and_has_one_spelling() {
+    let list = example_refs_namespace();
+    let bytes = list.encode();
+    let parsed = RefList::parse(&bytes).unwrap();
+    assert_eq!(parsed, list);
+    let namespace = parsed.namespace().unwrap();
+    assert_eq!(namespace.commit(), commit(0x55));
+    assert!(namespace.policy().demands_namespace_owners());
+    let text = String::from_utf8(bytes).unwrap();
+    let line = text
+        .lines()
+        .find(|line| line.starts_with("namespace-policy "))
+        .unwrap()
+        .to_owned();
+    let hex = line.rsplit(' ').next().unwrap().to_owned();
+    // The policy of the example as its hexadecimal bytes.
+    let policy: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+        .collect();
+    assert_eq!(
+        policy,
+        list.namespace().unwrap().policy().encode().as_bytes()
+    );
+    let hex_of = |text: &str| -> String { text.bytes().map(|b| format!("{b:02x}")).collect() };
+    let malformed_at = |bad: String| match RefList::parse(text.replace(&line, &bad).as_bytes()) {
+        Err(ParseError::Malformed { reason, .. }) => reason,
+        other => panic!("{bad}: {other:?}"),
+    };
+    let commit_text = commit(0x55).to_string();
+    for bad in [
+        // Upper-case digits, an odd count, and no policy.
+        format!("namespace-policy {commit_text} {}", hex.to_uppercase()),
+        format!("namespace-policy {commit_text} {}", &hex[1..]),
+        format!("namespace-policy {commit_text} "),
+        // A policy that is not valid, and one that is not in its canonical form.
+        format!(
+            "namespace-policy {commit_text} {}",
+            hex_of("stemma-policy 9\n")
+        ),
+        format!(
+            "namespace-policy {commit_text} {}",
+            hex_of("# a comment\nstemma-policy 1\n")
+        ),
+    ] {
+        assert_eq!(
+            malformed_at(bad.clone()),
+            Malformed::NamespacePolicy,
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        malformed_at(format!("namespace-policy {commit_text}")),
+        Malformed::Fields
+    );
+    // The line stands before the references, once.
+    let moved = text.replace(&format!("{line}\n"), "") + &format!("{line}\n");
+    assert!(RefList::parse(moved.as_bytes()).is_err());
+    let twice = text.replace(&format!("{line}\n"), &format!("{line}\n{line}\n"));
+    assert!(RefList::parse(twice.as_bytes()).is_err());
+}
+
 fn example_fetch() -> FetchRequest {
     FetchRequest::try_new(
         [commit(0x22), example_commit()],
@@ -182,6 +267,11 @@ fn written(example_name: &str) -> Vec<u8> {
         "error-anchor-refused" => anchor::tests::example_refused().encode(),
         // The gate on a hub (STEMMA-303).
         "error-refused-gate" => refusal::tests::example_refused_gate().encode(),
+        // The namespace policy (ADR-027, STEMMA-311).
+        "refs-namespace" => example_refs_namespace().encode(),
+        "error-refused-namespace-owner" => {
+            refusal::tests::example_refused_namespace_owner().encode()
+        }
         other => {
             let kind = statement::StatementKind::ALL
                 .into_iter()

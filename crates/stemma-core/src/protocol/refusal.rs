@@ -40,7 +40,7 @@
 //! no-register -                      not-owner -
 //! bad-register <one line>            conflict <name>
 //! incomplete <one line>              policy <one line>
-//! gate <verdict> <facts>
+//! gate <verdict> <facts>             namespace-owner <human or agent> <id>
 //! ```
 //!
 //! `gate -` refuses a move of `main` that is no move from its tip `T` to a merge `M`, such as
@@ -136,6 +136,11 @@ pub enum RefusalReason {
     /// The gate on a hub refuses the move of `main` from its tip `T` to the merge `M`
     /// (STEMMA-303), with the verdict and its facts.
     Verdict(GateRefusal),
+    // The owners that a namespace demands (ADR-027, STEMMA-311).
+    /// The namespace policy demands the owners of the namespace in the register of every
+    /// repository of the namespace, and the register of the new commit of `main` (of the first
+    /// push or of an update) does not hold this one as an owner with each of its active keys.
+    NamespaceOwner(Identity),
 }
 
 impl fmt::Display for RefusalReason {
@@ -173,6 +178,11 @@ impl fmt::Display for RefusalReason {
                 )
             }
             Self::Verdict(verdict) => write!(f, "the gate refuses the merge: {verdict}"),
+            Self::NamespaceOwner(owner) => write!(
+                f,
+                "the namespace demands its owners in the register, and the register of the new \
+                 commit of `main` does not hold {owner} as an owner with each of its keys"
+            ),
         }
     }
 }
@@ -192,6 +202,7 @@ impl RefusalReason {
             Self::Incomplete(reason) => format!("incomplete {reason}"),
             Self::Policy(reason) => format!("policy {reason}"),
             Self::Verdict(verdict) => format!("gate {}", verdict.encode()),
+            Self::NamespaceOwner(owner) => format!("namespace-owner {owner}"),
         }
     }
 
@@ -242,6 +253,12 @@ impl RefusalReason {
                 .map_err(|_| malformed(line, Malformed::Fields)),
             "incomplete" => text(Self::Incomplete),
             "policy" => text(Self::Policy),
+            "namespace-owner" => facts
+                .parse::<Identity>()
+                .ok()
+                .filter(|identity| identity.to_string() == facts)
+                .map(Self::NamespaceOwner)
+                .ok_or(problem(line, RecordProblem::Actor)),
             _ => Err(malformed(line, Malformed::Fields)),
         }
     }
@@ -267,9 +284,9 @@ impl RefusedReference {
     /// [`RecordProblem::RefusalReason`] if the reason does not fit the reference:
     /// [`Gate`](RefusalReason::Gate), [`Verdict`](RefusalReason::Verdict),
     /// [`NoRegister`](RefusalReason::NoRegister),
-    /// [`BadRegister`](RefusalReason::BadRegister), and [`NotOwner`](RefusalReason::NotOwner)
-    /// are reasons of `heads/main` only; [`Leased`](RefusalReason::Leased) and
-    /// [`Policy`](RefusalReason::Policy) are reasons of a branch other than `main`; and
+    /// [`BadRegister`](RefusalReason::BadRegister), [`NotOwner`](RefusalReason::NotOwner), and
+    /// [`NamespaceOwner`](RefusalReason::NamespaceOwner) are reasons of `heads/main` only;
+    /// [`Leased`](RefusalReason::Leased) and [`Policy`](RefusalReason::Policy) are reasons of a branch other than `main`; and
     /// [`Denied`](RefusalReason::Denied) names `push` for a branch and `tag` or `untag` for a
     /// tag. [`Reserved`](RefusalReason::Reserved), [`Conflict`](RefusalReason::Conflict), and
     /// [`Incomplete`](RefusalReason::Incomplete) fit every reference.
@@ -281,7 +298,8 @@ impl RefusedReference {
             | RefusalReason::Verdict(_)
             | RefusalReason::NoRegister
             | RefusalReason::BadRegister(_)
-            | RefusalReason::NotOwner => main,
+            | RefusalReason::NotOwner
+            | RefusalReason::NamespaceOwner(_) => main,
             RefusalReason::Leased { .. } | RefusalReason::Policy(_) => branch && !main,
             RefusalReason::Denied { operation } => (operation.kind() == RefKind::Branch) == branch,
             RefusalReason::Reserved | RefusalReason::Conflict(_) | RefusalReason::Incomplete(_) => {

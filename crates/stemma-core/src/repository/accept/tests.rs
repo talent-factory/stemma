@@ -1033,7 +1033,7 @@ fn only_a_bare_repository_accepts_a_ref_update() {
         format!("{context:?}"),
         format!(
             "AcceptContext {{ hub: HubAddress({ADDRESS:?}), repository: RepositoryId({REPOSITORY}), \
-             time: {START}, policies: [], .. }}"
+             time: {START}, namespace: None, .. }}"
         )
     );
     let error = repository.accept_ref_update(&update, context).unwrap_err();

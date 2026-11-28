@@ -10,6 +10,7 @@ use std::io::{self, Read};
 
 use crate::change::ChangeId;
 use crate::index::Index;
+use crate::namespace::Namespace;
 use crate::object::{Blob, Commit, CommitId, FileMode};
 use crate::oplog::{CheckResult, OperationName};
 use crate::policy::{Policy, RiskLevel};
@@ -162,8 +163,8 @@ struct Hub {
     record: RefCell<Memory>,
     statements: RefCell<Memory>,
     time: Cell<i64>,
-    /// The policies that the context names beside the policy of `T`.
-    policies: RefCell<Vec<Policy>>,
+    /// The namespace that the context names, whose policy counts beside the policy of `T`.
+    namespace: RefCell<Option<Namespace>>,
     /// Whether the context names no destination of the statements.
     no_statements: Cell<bool>,
     /// An operation that one more authorizer denies.
@@ -181,7 +182,7 @@ impl Hub {
             record: RefCell::default(),
             statements: RefCell::default(),
             time: Cell::new(START),
-            policies: RefCell::default(),
+            namespace: RefCell::default(),
             no_statements: Cell::new(false),
             denied: Cell::new(None),
         }
@@ -246,15 +247,17 @@ impl OtherSide for Hub {
         let signer = hub_key();
         let mut record = self.record.borrow_mut();
         let mut statements = self.statements.borrow_mut();
-        let policies = self.policies.borrow();
+        let namespace = self.namespace.borrow();
         let mut context = AcceptContext::new(
             &hub,
             repository_id(),
             &mut *record,
             self.time.get(),
             &signer,
-        )
-        .with_policies(&policies);
+        );
+        if let Some(namespace) = namespace.as_ref() {
+            context = context.with_namespace(namespace);
+        }
         if !self.no_statements.get() {
             context = context.with_statements(&mut *statements);
         }
@@ -501,6 +504,20 @@ impl Gated {
         reviewers: &[Seeded],
         repairs: Option<CommitId>,
     ) -> CommitId {
+        let (landed, answer) = self.try_land_files(branch, files, reviewers, repairs);
+        answer.unwrap();
+        landed
+    }
+
+    /// As [`Self::land_files`], but returns the merge and the answer of the hub to its push
+    /// to `main` instead of requiring an acceptance.
+    fn try_land_files(
+        &mut self,
+        branch: &str,
+        files: &[(&str, &str)],
+        reviewers: &[Seeded],
+        repairs: Option<CommitId>,
+    ) -> (CommitId, Result<RecordEntry, ErrorMessage>) {
         let tip = self.tip();
         let keys = self.wire.side().commit("mia", files, vec![tip]);
         let moved = to(&self.wire, &format!("heads/{branch}"), Some(keys), None);
@@ -532,8 +549,7 @@ impl Gated {
         .unwrap();
         let landed = store.put_commit(&landed).unwrap();
         let moved = to(&self.wire, "heads/main", Some(landed), Some(pull));
-        push(&mut self.wire, &daniel(), vec![moved]).unwrap();
-        landed
+        (landed, push(&mut self.wire, &daniel(), vec![moved]))
     }
 
     /// The merge of the change of `docs/a.md` onto the tip `tip`, whose register is `register`.
@@ -1023,15 +1039,28 @@ fn a_merge_that_lowers_the_policy_is_judged_by_the_old_one() {
     assert_eq!(verdict(g.land(merged)), None);
 }
 
+/// A namespace whose policy is `policy`, at a commit of the namespace repository whose register
+/// Daniel owns.
+fn namespace_of(policy: &str) -> Namespace {
+    let policy = Policy::parse(policy.as_bytes()).unwrap();
+    let register = Register::with_owner(human("daniel"), daniel().public()).unwrap();
+    let commit = commit_in(
+        Hub::new().repository.objects(),
+        "daniel",
+        &[(policy::NAMESPACE_FILE_NAME, policy.encode().as_str())],
+        vec![],
+    );
+    Namespace::new(commit, policy, &register).unwrap()
+}
+
 #[test]
-fn the_policies_of_the_context_count_beside_the_policy_of_the_tip() {
+fn the_namespace_policy_of_the_context_counts_beside_the_policy_of_the_tip() {
     let mut g = gated();
     g.approve(g.head, &bot());
     g.check(g.head, Some(g.root), CheckResult::Pass);
     let merged = g.merge();
-    // A further policy that raises `docs/` to level 2.
-    let extra = Policy::parse(b"stemma-policy 1\nlevel 2 docs/\n").unwrap();
-    *g.wire.side().policies.borrow_mut() = vec![extra];
+    // A namespace policy that raises `docs/` to level 2.
+    *g.wire.side().namespace.borrow_mut() = Some(namespace_of("stemma-policy 1\nlevel 2 docs/\n"));
     assert!(matches!(
         refused(g.land(merged)),
         GateRefusal::NotApproved {
@@ -1039,16 +1068,25 @@ fn the_policies_of_the_context_count_beside_the_policy_of_the_tip() {
             ..
         }
     ));
-    // A further policy with the stricter bound of the unverified window.
-    let extra = Policy::parse(b"stemma-policy 1\nlevel 0 docs/\nmax-unverified 1\n").unwrap();
-    *g.wire.side().policies.borrow_mut() = vec![extra];
+    // A namespace policy with the stricter bound of the unverified window.
+    *g.wire.side().namespace.borrow_mut() = Some(namespace_of(
+        "stemma-policy 1\nlevel 0 docs/\nlevel 0 tests/\nmax-unverified 1\n",
+    ));
     assert_eq!(
         refused(g.land(merged)),
         GateRefusal::Unverified { count: 1, max: 1 }
     );
-    g.wire.side().policies.borrow_mut().clear();
-    assert_eq!(verdict(g.land(merged)), None);
+    // A namespace policy that names `docs/` at level 0 and asks for nothing more: the receipt
+    // names the commit of `T` and the commit of the namespace policy.
+    let namespace = namespace_of("stemma-policy 1\nlevel 0 docs/\nlevel 0 tests/\n");
+    let commit = namespace.commit();
+    *g.wire.side().namespace.borrow_mut() = Some(namespace);
+    let receipt = g.land(merged).unwrap();
+    assert_eq!(receipt.policies(), [g.root, commit]);
 }
+
+// The namespace policy and the owners that it demands (ADR-027, STEMMA-311).
+mod namespace;
 
 #[test]
 fn the_authorizer_is_asked_for_main_before_the_gate() {
