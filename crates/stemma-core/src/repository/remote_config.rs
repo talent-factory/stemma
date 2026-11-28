@@ -16,7 +16,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 
-use super::{now, Repository, UpdateError};
+use super::{now, KeepNamespaceError, Repository, UpdateError};
 use crate::oplog::{Entry, OpLogError, OperationName, RemoteConfigEntry, RemoteConfigKind};
 use crate::protocol::RefList;
 use crate::refs::{RefError, RefStore};
@@ -117,9 +117,10 @@ impl Repository {
     /// first contact of ADR-026. The authorizer is asked for `remote-add` on the name of the
     /// remote first; a remote of that name is refused before the hub is asked. Then the list of
     /// references is read, the key of the hub is pinned against the expected fingerprint, and
-    /// under the lock of the references the entry `remote-add` is written and the configuration
-    /// after it. No remote reference moves: a fetch brings them. A remote whose hub asks for a
-    /// sign-in is signed in on `transport` by the caller first.
+    /// under the lock of the references the namespace policy that the list names is kept (or a
+    /// kept one of an earlier remote of the name removed), then the entry `remote-add` is written
+    /// and the configuration after it. No remote reference moves: a fetch brings them. A remote
+    /// whose hub asks for a sign-in is signed in on `transport` by the caller first.
     ///
     /// # Errors
     ///
@@ -128,8 +129,12 @@ impl Repository {
     /// be read), [`RemoteConfigError::Exists`], [`RemoteConfigError::List`] (the list of
     /// references, as for a fetch), [`RemoteConfigError::HubKey`] (another key than the
     /// expected one), and [`RemoteConfigError::Log`] unless its error is
-    /// [`OpLogError::NotFlushed`]. [`RemoteConfigError::Written`] means that the entry is in the
-    /// log and the configuration could not be written: `remote add` again writes a second entry.
+    /// [`OpLogError::NotFlushed`]. [`RemoteConfigError::Namespace`] (the kept namespace policy)
+    /// writes no entry and no configuration, but the format may have risen already, and the
+    /// kept file may be in place; it counts only for a configured remote. Before a
+    /// [`RemoteConfigError::Log`] or [`RemoteConfigError::Written`] the namespace policy is kept
+    /// the same way. [`RemoteConfigError::Written`] means that the entry is in the log and the
+    /// configuration could not be written: `remote add` again writes a second entry.
     pub fn add_remote(
         &self,
         remote: &RemoteName,
@@ -172,6 +177,11 @@ impl Repository {
         {
             return Err(RemoteConfigError::Exists(remote.clone()));
         }
+        // The local gate reads the kept policy of every configured remote, so it is in place
+        // before the configuration; without it the gate would judge without the namespace until
+        // the first fetch.
+        self.keep_namespace(remote, list.namespace())
+            .map_err(RemoteConfigError::Namespace)?;
         let record = RemoteConfigEntry::try_new(
             now(),
             actor.clone(),
@@ -328,6 +338,9 @@ pub enum RemoteConfigError {
     List(Box<FetchError>),
     /// The key of the hub does not have the expected fingerprint. Nothing was written.
     HubKey(HubKeyError),
+    /// The namespace policy that the list names could not be kept (ADR-027). No entry and no
+    /// configuration were written; the format of the repository may have risen.
+    Namespace(KeepNamespaceError),
     /// The entry could not be written. With [`OpLogError::NotFlushed`] it is in the log.
     Log(OpLogError),
     /// The entry is written, and the remote references were not all deleted (see
@@ -361,6 +374,8 @@ impl RemoteConfigError {
             Self::List(error) => error.io_error(),
             Self::Log(error) => error.io_error(),
             Self::Update(error) => error.io_error(),
+            Self::Namespace(KeepNamespaceError::Io { source, .. }) => Some(source),
+            Self::Namespace(KeepNamespaceError::Format(error)) => error.io_error(),
             Self::Denied { .. } | Self::Exists(_) | Self::NoSuchRemote(_) | Self::HubKey(_) => None,
         }
     }
@@ -381,6 +396,11 @@ impl fmt::Display for RemoteConfigError {
             Self::NoSuchRemote(name) => write!(f, "there is no remote `{name}`"),
             Self::List(error) => error.fmt(f),
             Self::HubKey(error) => write!(f, "{error}; nothing was written"),
+            Self::Namespace(error) => write!(
+                f,
+                "the namespace policy of the hub could not be kept: {error}; no entry and no \
+                 configuration were written"
+            ),
             Self::Log(error) => error.fmt(f),
             Self::Update(error) => error.fmt(f),
             Self::Written { entry, source } => write!(
@@ -403,6 +423,7 @@ impl Error for RemoteConfigError {
             Self::List(error) => error.source(),
             Self::Log(error) => error.source(),
             Self::Update(error) => error.source(),
+            Self::Namespace(error) => error.source(),
             Self::Denied { .. } | Self::Exists(_) | Self::NoSuchRemote(_) | Self::HubKey(_) => None,
         }
     }

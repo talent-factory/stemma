@@ -4,7 +4,8 @@
 What concerns the hub goes to the private project stemma-hub (hand-over in ADR-003). The
 decisions of phase 5 that touch the rules below (STEMMA-273, STEMMA-275, STEMMA-276) are marked
 with their ADR; they were carried in by STEMMA-280. Of them the signed statements of rules 3 and
-4 are implemented (STEMMA-290); what concerns a hub is not yet.
+4 are implemented (STEMMA-290), and the namespace policy of rule 8 in the core (STEMMA-311);
+the rest of what concerns a hub is not yet.
 
 ## Decision
 
@@ -48,10 +49,12 @@ with their ADR; they were carried in by STEMMA-280. Of them the signed statement
 7. New direct runtime dependencies are level 2. Automated patch updates are level 1 with
    `cargo-audit`, `cargo-deny`, and a lockfile diff. Cryptography crates are level 3.
 8. The policy file and the register files are level 3 and cannot be lowered, not even by the
-   policy itself. The same holds for the file of a namespace policy (working name
-   `.stemma-namespace-policy`), which the core takes into the list that is always level 3. A
-   namespace policy is content of a namespace repository and is combined with the policy of a
-   repository by the maximum, so it can only raise (ADR-027).
+   policy itself. The same holds for the file of a namespace policy, `.stemma-namespace-policy`
+   in the root, which the core takes into the list that is always level 3 in every repository
+   (STEMMA-311): a `level` line below 3 whose pattern matches it makes a policy invalid, and the
+   evaluation raises it to 3 whatever the lines say. A namespace policy is content of a
+   namespace repository and is combined with the policy of a repository by the maximum, so it
+   can only raise (ADR-027).
 9. Owner override in courses only with an audit entry that cannot be purged, is chained and
    signed, and is visible to everyone who reads the log. This is met locally (rule 2). On a hub
    the override is a signed statement that the readers of the repository see and that nobody can
@@ -98,7 +101,10 @@ The level of a change follows from all paths it touches (rule 5); the highest le
 The list below was decided in STEMMA-160 for the code that exists. It is prose in this ADR.
 The machine-readable policy file `.stemma-policy`, which enforces it, is part of phase 4
 (STEMMA-230). It is a line-based file with the header `stemma-policy 1` and the pattern language
-of ADR-012, read in the version of the base commit. Lines such as `level 3 .github/workflows/`
+of ADR-012, read in the version of the base commit. Version 2 of the format (`stemma-policy 2`,
+STEMMA-311) adds the line `demand-namespace-owners` of ADR-027; the reader refuses it in a file
+of version 1, and a program that knows only version 1 refuses the header of version 2, so no
+file with the line is read without it. Lines such as `level 3 .github/workflows/`
 name path lists per level, the level of run-time operations, the bounds of the gate, and the
 lease duration. The number of approvals per level stays in the core, and a policy may only raise
 it.
