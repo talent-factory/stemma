@@ -145,6 +145,9 @@ Implementation: `crates/stemma-core/src/repository.rs` and, for the command,
   (19), or before the entry `push` (20) rises to the current version with its next entry or
   purge (ADR-014, ADR-011, ADR-010). Version 21 changes no file: a program that knows only version 20 would
   refuse the line `receipt` of a `push` entry as damage, so it refuses the repository instead.
+  The operation `push` is reserved for the entry with a receipt from version 21 on, as the
+  operations of the earlier versions were; no command wrote a change named `push` before, so a
+  log of an older version holds none that the reader now refuses.
   Version 22 adds the directory `namespaces/` with the namespace policy that a fetch kept for
   each remote (ADR-027, see "The layout in Phase 5"). A program that knows only version 21
   would merge without the namespace policy, so it has to refuse the repository. The repository

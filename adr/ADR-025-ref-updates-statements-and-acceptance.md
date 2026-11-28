@@ -800,9 +800,12 @@ surface comes with its slices.
 - **The update.** Each move takes `previous` and `old` from the remote reference of its name,
   the last state of the hub that the clone saw, and the clone signs the payload with the key of
   its actor. A reference whose remote reference has the new value already is left out, and a
-  push that moves nothing sends no request. The receipt must hold the update byte for byte and
-  be signed by the pinned key of the hub (`RecordEntry::check_receipt`, ADR-026); otherwise
-  nothing moves in the clone (`PushError::Receipt`). That the number of the receipt grows from
+  push that moves nothing sends no request. A push whose entry `push` would be larger than an
+  entry of the log may be (64 KiB, a few hundred references) is refused before anything is
+  sent (`PushError::TooLarge`), as the clone could not record its receipt. The receipt must
+  hold the update byte for byte and be signed by the pinned key of the hub
+  (`RecordEntry::check_receipt`, ADR-026); otherwise nothing moves in the clone
+  (`PushError::Receipt`). That the number of the receipt grows from
   receipt to receipt is not checked yet.
 - **The answers.** A refusal whose reference is `incomplete` uploads once more and sends the
   same update again, once; a second one is reported. `Stale` moves nothing and is reported

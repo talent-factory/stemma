@@ -331,6 +331,8 @@ Für jede Referenz nimmt der Klon \type{previous} und den alten Commit aus der R
 desselben Namens, also aus dem letzten Stand des Hubs, den er gesehen hat.
 Eine Referenz, deren Remote-Referenz den neuen Commit schon nennt, lässt er weg, und ein Push,
 der nichts bewegt, sendet nichts.
+Mehr Referenzen, als ein Eintrag \type{push} des Log fasst, lehnt er ab, bevor er etwas sendet,
+denn er könnte die Quittung nicht festhalten.
 Den Upload teilt er an Commit-Grenzen in Stücke von etwa 64~MiB, jedes ein eigener Strom, und ein
 Objekt geht über alle Stücke nur einmal.
 Scheitert die Anfrage eines Stücks an der Verbindung, sendet er dieses Stück erneut,

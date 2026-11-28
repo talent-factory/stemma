@@ -724,7 +724,7 @@ fn a_first_push_moves_the_remote_reference_after_the_receipt_and_writes_one_entr
     assert_eq!(f.clone.oplog().read(entry.number()).unwrap(), entry);
     assert_eq!(
         std::fs::read_to_string(f.clone.metadata_dir().join("format")).unwrap(),
-        "stemma-repository 21\n"
+        "stemma-repository 22\n"
     );
     // The upload was one piece, and the anchor of the entry is confirmed and kept.
     assert_eq!(pushed.uploaded.passes, 1);
@@ -1918,4 +1918,29 @@ fn the_namespace_policy_of_the_hub_counts_in_the_local_verdict_of_a_merge() {
     *m.f.hub().namespace.borrow_mut() = None;
     let merged = m.merge().unwrap();
     assert_eq!(m.f.local("main"), Some(merged.commit));
+}
+
+#[test]
+fn a_push_whose_entry_the_log_cannot_hold_sends_nothing() {
+    let mut f = Fixture::new();
+    let root = f.root();
+    let targets: Vec<PushTarget> = (0..600)
+        .map(|n| PushTarget::new(name(&format!("tags/release-{n:04}")), Some(root)))
+        .collect();
+
+    let error = f.push_by(&daniel(), &targets, PIECE_BYTES).unwrap_err();
+
+    assert!(
+        matches!(error, PushError::TooLarge { moves: 600, .. }),
+        "{error:?}"
+    );
+    assert_eq!(f.hub().updates.get(), 0);
+    assert!(f.hub().uploads.borrow().is_empty());
+    assert!(f.push_entries().is_empty());
+    // A push of fewer references at a time fits; the hub takes the tags after `main`.
+    f.push("heads/main", root).unwrap().unwrap();
+    f.push_by(&daniel(), &targets[..100], PIECE_BYTES)
+        .unwrap()
+        .unwrap();
+    assert_eq!(f.push_entries().len(), 2);
 }

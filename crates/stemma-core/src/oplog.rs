@@ -332,7 +332,7 @@ pub const MAX_NUMBER: u64 = 999_999_999_999;
 
 /// The largest size of an entry that is read, in bytes. An entry is a few hundred bytes; a file much
 /// larger is not one.
-const MAX_ENTRY_LEN: u64 = 64 * 1024;
+pub(crate) const MAX_ENTRY_LEN: u64 = 64 * 1024;
 
 /// How many numbers a writer tries before it gives up. A writer tries the next number only because
 /// another writer took the one before, which means that the other one made progress, so the limit is
@@ -1201,6 +1201,18 @@ impl EntryHash {
     fn of(text: &str) -> Self {
         Self(digest(HASH_HEADER, text))
     }
+}
+
+/// The size of the largest entry that `change` can make, at the largest number and after an
+/// entry of the chain. An entry larger than [`MAX_ENTRY_LEN`] is never written, so a caller can
+/// refuse a change before it acts on something outside the clone (the entry `push`).
+pub(crate) fn largest_entry_len(change: Change) -> usize {
+    Entry::linked(
+        MAX_NUMBER,
+        Chain::After(EntryHash::of("")),
+        Record::Change(change),
+    )
+    .map_or(usize::MAX, |entry| entry.encode().len())
 }
 
 impl BodyHash {

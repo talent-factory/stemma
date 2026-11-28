@@ -402,7 +402,14 @@ impl Repository {
         let main = BranchName::try_new(TARGET).expect("`main` is a branch name");
         let mut moved = None;
         let mut main_followed = true;
-        if local != Some(tip) {
+        if local == Some(tip) {
+            // Nothing is to move; another writer may have moved it since the attempt began.
+            main_followed = self
+                .refs()
+                .branch(&main)
+                .map_err(|error| gate(GateError::Refs(error)))?
+                == Some(tip);
+        } else {
             let operation =
                 OperationName::try_new(super::super::gate::OPERATION).expect("an operation name");
             let logged = self.refs_store().update_branch_after(

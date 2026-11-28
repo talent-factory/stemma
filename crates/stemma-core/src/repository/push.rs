@@ -52,13 +52,16 @@ use super::anchor::LogAnchorError;
 use super::fetch::{self, FetchError};
 use super::{now, Repository, UpdateError};
 use crate::object::CommitId;
-use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, Receipt, PUSH};
+use crate::oplog::{
+    largest_entry_len, Change, Entry, Moved, OpLogError, OperationName, Receipt, MAX_ENTRY_LEN,
+    PUSH,
+};
 use crate::protocol::anchor::HeldAnchor;
 use crate::protocol::record::{
     HubAddress, Move, ReceiptError, RecordEntry, RecordProblem, RefUpdate, RefUpdatePayload,
     SealError, Stale, StatementHash,
 };
-use crate::protocol::{ErrorMessage, ParseError, QualifiedName};
+use crate::protocol::{ErrorMessage, ParseError, QualifiedName, RecordHash};
 use crate::refs::{BranchName, RefError, RestoreTargets, WriteLock};
 use crate::remote::{HubKeyError, RemoteConfig, RemoteError, RemoteName, RemoteRef, RemoteRefName};
 use crate::serve::{AnswerError, Sent};
@@ -163,8 +166,9 @@ impl Repository {
     /// Before anything is sent: [`PushError::Refs`] with [`RefError::Bare`] in a bare repository,
     /// [`PushError::Update`] with [`UpdateError::Denied`] for a refusal of the authorizer,
     /// [`PushError::Remote`], [`PushError::NoSuchRemote`], [`PushError::HubKey`] for a remote
-    /// without a pinned key, [`PushError::Move`] for a target that breaks a rule of a move, and
-    /// [`PushError::Duplicate`] for a reference that is named twice.
+    /// without a pinned key, [`PushError::Move`] for a target that breaks a rule of a move,
+    /// [`PushError::Duplicate`] for a reference that is named twice, and
+    /// [`PushError::TooLarge`] for more moves than one entry `push` holds.
     ///
     /// Before the receipt, with nothing moved in the clone: [`PushError::Objects`] if the store
     /// cannot give an object of the upload, [`PushError::Upload`] if a piece failed on the
@@ -250,6 +254,7 @@ impl Repository {
         if moves.is_empty() {
             return Ok(None);
         }
+        self.require_entry_fits(remote, &moves, actor)?;
         let mut uploaded = Uploaded::default();
         let receipt = self.send_update(
             remote,
@@ -397,6 +402,50 @@ impl Repository {
             uploaded.sent.objects += next.sent.objects;
             uploaded.sent.commits += next.sent.commits;
             uploaded.sent.bytes += next.sent.bytes;
+        }
+        Ok(())
+    }
+
+    /// Refuses moves whose entry `push` could not be written ([`MAX_ENTRY_LEN`]), before
+    /// anything is sent: the hub would accept the update, and the clone could not record it.
+    fn require_entry_fits(
+        &self,
+        remote: &RemoteName,
+        moves: &[Move],
+        actor: &Actor,
+    ) -> Result<(), PushError> {
+        // The largest values: a receipt with the most digits, and a record hash in its one form.
+        let hash: RecordHash = format!("b3:{}", "0".repeat(64))
+            .parse()
+            .expect("a record hash in its one form");
+        let remotes = moves
+            .iter()
+            .map(|moved| {
+                let value = |commit: Option<CommitId>, entry| {
+                    commit.map(|commit| RemoteRef { commit, entry })
+                };
+                (
+                    remote_ref_name(remote, moved.name()),
+                    Moved::from_to(
+                        value(moved.old_commit(), moved.previous().unwrap_or(hash)),
+                        value(moved.new_commit(), hash),
+                    ),
+                )
+            })
+            .collect();
+        let receipt = Receipt {
+            number: u64::MAX,
+            hash,
+        };
+        let change = Change::try_new_push(now(), actor.clone(), Vec::new(), remotes, receipt)
+            .and_then(|change| change.in_worktree(self.worktree.clone(), None))
+            .map_err(|error| PushError::Update(UpdateError::Log(OpLogError::Entry(error))))?;
+        let size = largest_entry_len(change);
+        if size as u64 > MAX_ENTRY_LEN {
+            return Err(PushError::TooLarge {
+                moves: moves.len(),
+                size,
+            });
         }
         Ok(())
     }
@@ -647,6 +696,15 @@ pub enum PushError {
     },
     /// A reference is named twice.
     Duplicate(QualifiedName),
+    /// The entry `push` of these moves would be larger than an entry of the log may be (64 KiB),
+    /// so the clone could not record the receipt. Nothing was sent; a push
+    /// of fewer references at a time fits.
+    TooLarge {
+        /// The moves of the push.
+        moves: usize,
+        /// The size of the entry in bytes.
+        size: usize,
+    },
     /// An object of the upload could not be read from the store.
     Objects(Box<AnswerError>),
     /// A piece of the upload failed: on the carrier in [`PIECE_ATTEMPTS`] attempts, or at once
@@ -751,6 +809,7 @@ impl PushError {
             | Self::HubKey(_)
             | Self::Move { .. }
             | Self::Duplicate(_)
+            | Self::TooLarge { .. }
             | Self::Unreadable(_)
             | Self::Receipt(_)
             | Self::Stale(_)
@@ -770,6 +829,11 @@ impl fmt::Display for PushError {
             Self::HubKey(error) => write!(f, "{error}; nothing was pushed"),
             Self::Move { name, problem } => write!(f, "the move of `{name}`: {problem}"),
             Self::Duplicate(name) => write!(f, "the reference `{name}` is named twice"),
+            Self::TooLarge { moves, size } => write!(
+                f,
+                "the entry of a push of {moves} references would be {size} bytes, but an entry \
+                 holds at most {MAX_ENTRY_LEN}; nothing was sent, push fewer references at a time"
+            ),
             Self::Objects(error) => write!(f, "the upload cannot be read from the store: {error}"),
             Self::Upload { confirmed, source } if transient(source) => write!(
                 f,
@@ -820,6 +884,7 @@ impl Error for PushError {
             | Self::HubKey(_)
             | Self::Move { .. }
             | Self::Duplicate(_)
+            | Self::TooLarge { .. }
             | Self::Receipt(_)
             | Self::Stale(_)
             | Self::Refused(_)

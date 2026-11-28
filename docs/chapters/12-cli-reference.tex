@@ -2698,8 +2698,7 @@ Ein Purge ersetzt ein \type{remote-remove} durch einen Stub, wenn er einen der C
 eine Zeile mit dem alten und dem neuen Commit, beim Merge eines Pull Requests über einen Remote
 davor die Zeile des lokalen \type{main}, und zuletzt die Quittung des Hubs: ihre Nummer in der
 Aufzeichnung und ihren Hash.
-Die JSON-Form nennt die Quittung nicht eigens; der Eintrag jeder bewegten Remote-Referenz ist ihr
-Hash.
+Die JSON-Form nennt sie im Feld \type{receipt}.
 Einen Befehl \type{push} gibt es noch nicht; der Kern schreibt den Eintrag.
 
 \starttyping
@@ -2755,7 +2754,9 @@ der Arbeitskopie, die ein Mensch mit \type{worktree remove --take-over} entfernt
 (\type{remotes/<Remote>/heads/<Name>} oder \type{remotes/<Remote>/tags/<Name>}),
 \type{old} und \type{new}, deren Wert ein Objekt mit \type{commit} und \type{entry} ist, dem
 Hash des Eintrags der Aufzeichnung auf dem Hub; leer, wenn der Eintrag keine Remote-Referenz
-nennt. Ein Wert, den es nicht gibt, ist \type{null}.
+nennt. \type{receipt} kam ebenso dazu: beim Eintrag \type{push} die Quittung des Hubs, ein Objekt
+mit \type{number} und \type{hash}, sonst \type{null}. Ein Wert, den es nicht gibt, ist
+\type{null}.
 HEAD ist \type{branch:<name>} oder \type{commit:<id>}.
 
 {\bf Fehler.} Der Befehl liest alle Einträge, die er zeigt, bevor er etwas ausgibt.
