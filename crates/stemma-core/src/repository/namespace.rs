@@ -1,14 +1,16 @@
 //! The namespace policy in a repository (ADR-027, STEMMA-311): a hub reads it from the
-//! namespace repository ([`Repository::namespace`]), and a clone keeps the one that it fetched
-//! last from each remote in `namespaces/<remote>` ([`Repository::kept_namespace`]), which the
-//! local gate evaluates beside the policy of `main`.
+//! namespace repository ([`Repository::namespace`]), and a clone keeps the one that the list of
+//! references of each remote named last in `namespaces/<remote>`
+//! ([`Repository::kept_namespace`]), which the gate by policy evaluates beside the policy of
+//! `main`.
 //!
 //! The kept file is replaced as a whole under the lock of the references by the fetch or the
 //! `remote add` that read the list, before the remote references move or the configuration is
-//! written, and removed by one whose list names no namespace policy. It is the answer of the hub and no history: no entry of the log names it,
-//! and `op restore` does not bring an older one back. The local gate reads the files of the
-//! remotes that are configured, so the file of a removed remote counts no more, and a later
-//! `remote add` of the name replaces or removes it.
+//! written, and removed by one whose list names no namespace policy. It is the answer of the
+//! hub and no history: no entry of the log names it, and `op restore` does not bring an older
+//! one back. The local gate reads the files of the remotes that are configured, so the file of
+//! a removed remote, or of a `remote add` that failed after it kept the file, counts no more,
+//! and a later `remote add` of the name replaces or removes it.
 
 use std::error::Error;
 use std::fmt;
@@ -70,8 +72,8 @@ impl Repository {
         Namespace::new(tip, policy, &register).map_err(|_| NamespaceError::NoOwner)
     }
 
-    /// The namespace policy that the last fetch from `remote` brought, or `None` if it named
-    /// none or no fetch ran.
+    /// The namespace policy that the last fetch from `remote`, or the `remote add` of it,
+    /// brought, or `None` if the list named none or neither ran.
     ///
     /// # Errors
     ///
@@ -336,7 +338,7 @@ impl Error for KeptNamespaceReadError {
     }
 }
 
-/// Why a fetch cannot keep the namespace policy of its list.
+/// Why a fetch or a `remote add` cannot keep the namespace policy of its list.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum KeepNamespaceError {

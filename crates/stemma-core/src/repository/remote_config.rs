@@ -119,8 +119,8 @@ impl Repository {
     /// references is read, the key of the hub is pinned against the expected fingerprint, and
     /// under the lock of the references the namespace policy that the list names is kept (or a
     /// kept one of an earlier remote of the name removed), then the entry `remote-add` is written
-    /// and the configuration after it. No remote reference moves: a fetch brings them. A remote whose hub asks for a
-    /// sign-in is signed in on `transport` by the caller first.
+    /// and the configuration after it. No remote reference moves: a fetch brings them. A remote
+    /// whose hub asks for a sign-in is signed in on `transport` by the caller first.
     ///
     /// # Errors
     ///
@@ -128,10 +128,13 @@ impl Repository {
     /// [`RemoteConfigError::Denied`], [`RemoteConfigError::Remote`] (a configuration that cannot
     /// be read), [`RemoteConfigError::Exists`], [`RemoteConfigError::List`] (the list of
     /// references, as for a fetch), [`RemoteConfigError::HubKey`] (another key than the
-    /// expected one), [`RemoteConfigError::Namespace`] (the kept namespace policy), and
-    /// [`RemoteConfigError::Log`] unless its error is [`OpLogError::NotFlushed`].
-    /// [`RemoteConfigError::Written`] means that the entry is in the
-    /// log and the configuration could not be written: `remote add` again writes a second entry.
+    /// expected one), and [`RemoteConfigError::Log`] unless its error is
+    /// [`OpLogError::NotFlushed`]. [`RemoteConfigError::Namespace`] (the kept namespace policy)
+    /// writes no entry and no configuration, but the format may have risen already, and the
+    /// kept file may be in place; it counts only for a configured remote. Before a
+    /// [`RemoteConfigError::Log`] or [`RemoteConfigError::Written`] the namespace policy is kept
+    /// the same way. [`RemoteConfigError::Written`] means that the entry is in the log and the
+    /// configuration could not be written: `remote add` again writes a second entry.
     pub fn add_remote(
         &self,
         remote: &RemoteName,
@@ -336,7 +339,7 @@ pub enum RemoteConfigError {
     /// The key of the hub does not have the expected fingerprint. Nothing was written.
     HubKey(HubKeyError),
     /// The namespace policy that the list names could not be kept (ADR-027). No entry and no
-    /// configuration were written.
+    /// configuration were written; the format of the repository may have risen.
     Namespace(KeepNamespaceError),
     /// The entry could not be written. With [`OpLogError::NotFlushed`] it is in the log.
     Log(OpLogError),
@@ -395,7 +398,8 @@ impl fmt::Display for RemoteConfigError {
             Self::HubKey(error) => write!(f, "{error}; nothing was written"),
             Self::Namespace(error) => write!(
                 f,
-                "the namespace policy of the hub could not be kept: {error}; nothing was written"
+                "the namespace policy of the hub could not be kept: {error}; no entry and no \
+                 configuration were written"
             ),
             Self::Log(error) => error.fmt(f),
             Self::Update(error) => error.fmt(f),

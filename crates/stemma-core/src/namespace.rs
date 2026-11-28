@@ -19,9 +19,9 @@
 //!   policies.
 //!
 //! The list of references names the namespace policy ([`RefList`](crate::protocol::RefList)),
-//! and a fetch keeps it in the clone ([`KeptNamespace`]), so the local gate evaluates the
-//! namespace policy that it last fetched. The demanded owners are enforced by the hub alone; a
-//! clone sees them in its register, where `op verify` finds them without the hub.
+//! and a fetch or a `remote add` keeps it in the clone ([`KeptNamespace`]), so the local gate
+//! evaluates the namespace policy that the hub named last. The demanded owners are enforced by
+//! the hub alone; a clone sees them in its register, where `op verify` finds them without the hub.
 
 use std::error::Error;
 use std::fmt;
@@ -159,8 +159,8 @@ impl fmt::Display for NoDemandedOwner {
 
 impl Error for NoDemandedOwner {}
 
-/// The namespace policy that a clone fetched last from a remote: its commit and the policy.
-/// The list of references carries it, and a fetch keeps it in `namespaces/<remote>` (ADR-009).
+/// The namespace policy that the list of references of a remote named last: its commit and the
+/// policy. A fetch or a `remote add` keeps it in `namespaces/<remote>` (ADR-009).
 ///
 /// The file is strict text, in this form:
 ///

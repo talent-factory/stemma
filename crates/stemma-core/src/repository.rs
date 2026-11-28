@@ -242,10 +242,11 @@ const FORMAT_VERSION: u32 = 22;
 /// entry as a change without a pointer, which is damage, so the repository rises with its next
 /// entry or purge. Version 21 belongs to STEMMA-309, which adds it here; until then this code
 /// refuses it, as it does not know what it adds. Version 22 adds the directory
-/// `namespaces/` (STEMMA-311, ADR-027): a fetch keeps there the namespace policy that the list
-/// of references names, and the local gate evaluates it beside the policy of `main`. A program
-/// that knows only version 21 would merge without the namespace policy, so the repository rises
-/// to 22 before a fetch writes the first file, and with its next entry or purge.
+/// `namespaces/` (STEMMA-311, ADR-027): a fetch or a `remote add` keeps there the namespace
+/// policy that the list of references names, and the local gate evaluates it beside the policy
+/// of `main`. A program that knows only version 21 would merge without the namespace policy, so
+/// the repository rises to 22 before a fetch or a `remote add` writes the first file, and with
+/// its next entry or purge.
 const READ_VERSIONS: [u32; 20] = [
     2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22,
 ];
