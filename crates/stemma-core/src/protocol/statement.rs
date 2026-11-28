@@ -296,6 +296,12 @@ impl Opening {
     pub fn repairs(&self) -> Option<CommitId> {
         self.repairs
     }
+
+    /// The repository of a hub that the opening is about, or `None` for one that counts
+    /// locally only (STEMMA-312).
+    pub fn repository(&self) -> Option<RepositoryId> {
+        self.repository
+    }
 }
 
 /// The approval of a pull request (ADR-025, ADR-004 rule 4): the key approves `head` as the

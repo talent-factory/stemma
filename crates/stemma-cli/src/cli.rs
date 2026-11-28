@@ -85,6 +85,8 @@ use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand};
 
 mod network;
 mod review;
+// The statements of a pull request on a hub (STEMMA-312).
+mod statements;
 
 use crate::op_log::{self, JSON_SCHEMA};
 use stemma_core::conflict::AnyCommit;

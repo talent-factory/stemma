@@ -191,6 +191,12 @@ Erklärung gibt.
 Der Hash der signierten Eröffnung ist der Name des Pull Requests, in jedem Klon und auf einem Hub.
 In einem Log heisst er nach der Nummer seines Eintrags \type{pr-open}, und diese Nummer zeigen
 die Befehle.
+Für Menschen, die über zwei Klone hinweg vom selben Pull Request sprechen, nehmen die Befehle
+auch die ersten Stellen dieses Hashes, mindestens acht, und vor Stellen nur aus Ziffern
+\type{b3:}; \type{pr list} zeigt zwölf davon (STEMMA-312). Die Nummer bleibt der kurze Name im
+eigenen Klon, der Hash der gemeinsame.
+Wie die Erklärungen eines Pull Requests den Hub erreichen und ein zweiter Klon ihn weiterführt,
+zeigt \in{Abschnitt}[sec:pr-two-clones].
 Der Zustand folgt aus den Erklärungen und dem Eintrag des Merges; gespeichert ist er nirgends.
 Ein Pull Request ist \type{open}, solange er weder geschlossen noch gemergt ist,
 \type{closed}, wenn er ohne Merge endete, und \type{merged}, wenn er gemergt wurde.
@@ -1489,6 +1495,9 @@ ein neuer Lauf erzeugt andere Hashes, weil die Zeit zum Commit gehört.
 Der Lauf stammt aus der Zeit vor den signierten Erklärungen.
 Die Aufrufe von \type{pr open} stehen hier mit der Option \type{--key}, die sie seither in einem
 durchsetzenden Repository verlangen; ihre Ausgabe und die Nummern der Einträge sind dieselben.
+Seit STEMMA-312 nennen \type{pr open}, \type{pr approve}, \type{pr close} und \type{pr list}
+zusätzlich die
+ersten zwölf Stellen des Hashes der Eröffnung; der Lauf zeigt sie noch nicht.
 Der Text nennt die Nummern der Einträge im Operation Log.
 \in{Abbildung}[fig:phase4-session] zeigt die Sitzung als Folge der Einträge, getrennt nach dem
 Akteur, dessen Befehl sie schreibt.

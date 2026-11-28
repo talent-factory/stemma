@@ -9,11 +9,12 @@ entries of the log that name them, and the fold (STEMMA-290, see "The statements
 the accepting operation for branches and tags (STEMMA-296, see "The accepting operation as
 built"), and the lines that a hub adds to a statement, the request that submits one, the two
 reading requests and `accept_statement` (STEMMA-299, see "The statements on a hub as built"),
-and the gate on a hub for a move of `main` (STEMMA-303, see "The gate on a hub as built"), and
-the client side of a push and the merge of a pull request with a remote (STEMMA-309, see "The
-push and the merge with a remote as built"). The purge and the owner override on a hub are not
-built. The names of functions that are not built
-yet are a direction for the slices.
+and the gate on a hub for a move of `main` (STEMMA-303, see "The gate on a hub as built"),
+the commands that submit and read statements (STEMMA-312, see "The commands of the statements as
+built"), and the client side of a push and the merge of a pull request with a remote
+(STEMMA-309, see "The push and the merge with a remote as built"). The purge and the owner
+override on a hub are not built. The names of functions that are not built yet are a direction
+for the slices.
 
 ## Context
 
@@ -790,6 +791,46 @@ reserved <pull> <end>              the pull request that holds the reservation
 refusal carries the facts that the sender acts on; the statements that do not count, each with
 its reason, are not listed in it, because every reader sees them and recomputes the recount.
 The example `error-refused-gate` is checked in beside the others.
+
+### The commands of the statements as built
+
+Built in STEMMA-312, as a proposal that the review confirms: `Repository::open_pull_for` and
+`record_check_for`, `statements_of_pull`, `submit_statements` and `held_statements` in
+`stemma-core`, and the commands `pr submit` and `pr show` with the options `--remote` and
+`--offline` (chapter 12).
+
+- **The repository of a statement.** A statement names the repository of a hub only if the
+  command says so: `pr open --remote <name>` and `check record --remote <name>` take the ID of
+  the remote. The approvals and the closing of a pull request name the repository that its
+  opening names, so a pull request is for one hub or for the clone only, and never half of each.
+- **At once, or later.** The command writes its entry first, so the statement counts in the clone at
+  once, and then submits: `pr open` and `check record` their own statement, `pr approve` and
+  `pr close` every statement of the pull request (the opening, the checks of a head of it, the
+  approvals, and the closing, in the order of their entries), as `pr submit` does. A check of a
+  commit that is no head of a pull request is sent by no later command. `--offline` skips the
+  submission; `pr submit` makes it later. A submission is safe to repeat, because the hub answers a
+  statement that it holds with its lines, so the clone keeps no record of what it sent. After the
+  entry, a hub that cannot be reached or whose answer broke off is exit 3, any other failure keeps
+  its code (an answer outside the protocol 1, a busy hub 6, damage 5), and a refusal of the
+  statement of the command is exit 1; the entry stays. An opening that the hub answers with
+  `not-open` is held for a pull request that ended there, and is no refusal for the command.
+- **Refused before the entry.** A statement for a hub in an open repository (it would be
+  unsigned), and without `--offline` a remote without a pinned hub key or a sign-in remote
+  without a key, are refused before the entry is written. With `--offline` and without
+  `--remote`, `pr approve` and `pr close` write their statement in a clone where no single
+  remote has the repository of the opening.
+- **The checks of an answer.** Both the submission and the reading take the list of references
+  first. A held statement must be the submitted one and carry the signature of the key of the
+  hub at its time: the pinned key, or a former key of the list whose range holds the number of
+  its `record` line or the next one, as the hub accepted it between the two.
+- **The name of a pull request for people.** A pull request is named by its number in the clone
+  or by a prefix of at least 8 hexadecimal digits of the hash of its opening; `pr list` shows 12.
+  Decimal digits alone are a number, so a prefix of only such digits takes `b3:`.
+  The hash holds in every clone and on the hub, offline as well. The running number of the hub
+  is no name: it exists only once the hub holds the opening, and two hubs count differently.
+- **Not yet.** The HTTP mapping of the three requests (STEMMA-326), the statements of other
+  clones in the set (STEMMA-325), and the submission of an owner override, which the hub refuses
+  as a kind of its own.
 
 ### The push and the merge with a remote as built
 

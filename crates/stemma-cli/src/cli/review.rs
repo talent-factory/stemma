@@ -42,10 +42,13 @@ use stemma_core::statements::SetError;
 use stemma_core::store::{ObjectStore, StoreError};
 use stemma_core::{Actor, AllowAll};
 
+use super::network::parse_remote_name;
+use super::statements::{self, resolve_pull, short_name, Destination, PrShowArgs, PrSubmitArgs};
 use super::{
     actor, handled_text, mask_controls, open, parse_revision, saved_text, short_id, CliError,
     ACTOR_ENV,
 };
+use stemma_core::remote::RemoteName;
 
 /// Why a command of the review path fails: the message, and the exit code that it ends with.
 #[derive(Debug)]
@@ -107,7 +110,7 @@ fn not_flushed(error: &OpLogError) -> bool {
 // wrap them. These functions look through the wrapping, so that damage ends with 5 and a held lock
 // with 6 wherever it surfaces.
 
-fn pull_kind(error: &PullError) -> FailureKind {
+pub(super) fn pull_kind(error: &PullError) -> FailureKind {
     match error {
         PullError::Refs(inner) => inner.kind(),
         PullError::Log(inner) => inner.kind(),
@@ -165,7 +168,7 @@ fn gate_kind(error: &GateError) -> FailureKind {
     }
 }
 
-fn pull_error(error: PullError) -> ReviewError {
+pub(super) fn pull_error(error: PullError) -> ReviewError {
     if matches!(&error, PullError::Log(inner) if not_flushed(inner)) {
         return ReviewError::incomplete(error.to_string());
     }
@@ -284,6 +287,33 @@ pub(super) enum PrCommand {
     Merge(PrMergeArgs),
     /// List the pull requests, in the order of their openings
     List(PrListArgs),
+    /// Submit the statements of a pull request to its hub
+    Submit(PrSubmitArgs),
+    /// Show a pull request and its statements, with the lines of the hub
+    Show(PrShowArgs),
+}
+
+/// Where the statement of a command goes besides this clone (STEMMA-312).
+#[derive(Debug, Args)]
+pub(super) struct Submitting {
+    /// Make the statement for the hub of this remote and submit it at once. `pr approve` and
+    /// `pr close` make it for the repository that the opening names, and take this option only
+    /// to pick among the remotes of that repository
+    #[arg(long, value_name = "NAME", value_parser = parse_remote_name)]
+    remote: Option<RemoteName>,
+
+    /// Make the statement for the hub, but do not submit it now; `pr submit` sends it later
+    #[arg(long)]
+    offline: bool,
+}
+
+/// The pull request that a command acts on.
+#[derive(Debug, Args)]
+pub(super) struct PullArg {
+    /// The pull request: its number in this clone, as `pr list` shows it, or at least 8
+    /// hexadecimal digits of the hash of its opening
+    #[arg(value_name = "PULL")]
+    pull: String,
 }
 
 #[derive(Debug, Args)]
@@ -306,6 +336,9 @@ pub(super) struct PrOpenArgs {
     /// remote reference `remotes/REMOTE/heads/NAME` or `remotes/REMOTE/tags/NAME`)
     #[arg(long, value_name = "COMMIT", value_parser = parse_revision)]
     repairs: Option<Revision>,
+
+    #[command(flatten)]
+    submitting: Submitting,
 }
 
 #[derive(Debug, Args)]
@@ -316,9 +349,11 @@ pub(super) struct PrNumberArgs {
     #[command(flatten)]
     signing: Signing,
 
-    /// The number of the pull request, as `pr list` shows it
-    #[arg(value_name = "NUMBER")]
-    number: u64,
+    #[command(flatten)]
+    pull: PullArg,
+
+    #[command(flatten)]
+    submitting: Submitting,
 }
 
 #[derive(Debug, Args)]
@@ -329,9 +364,11 @@ pub(super) struct PrApproveArgs {
     #[command(flatten)]
     signing: Signing,
 
-    /// The number of the pull request, as `pr list` shows it
-    #[arg(value_name = "NUMBER")]
-    number: u64,
+    #[command(flatten)]
+    pull: PullArg,
+
+    #[command(flatten)]
+    submitting: Submitting,
 }
 
 #[derive(Debug, Args)]
@@ -339,9 +376,8 @@ pub(super) struct PrMergeArgs {
     #[command(flatten)]
     common: Common,
 
-    /// The number of the pull request, as `pr list` shows it
-    #[arg(value_name = "NUMBER")]
-    number: u64,
+    #[command(flatten)]
+    pull: PullArg,
 
     /// The risk level of the change, from 0 to 3. The rule table of the gate asks for the checks
     /// that this level needs. The policy file does not derive the level yet, so the default is the
@@ -385,6 +421,9 @@ pub(super) struct CheckRecordArgs {
     /// tested as it is
     #[arg(long, value_name = "COMMIT", value_parser = parse_revision)]
     base: Option<Revision>,
+
+    #[command(flatten)]
+    submitting: Submitting,
 }
 
 #[derive(Debug, Args)]
@@ -456,7 +495,7 @@ fn branch_name(text: &str) -> Result<BranchName, ReviewError> {
 }
 
 /// The mode of the repository: the register of an enforcing one, `None` for an open one.
-fn register_of(repository: &Repository) -> Result<Option<Register>, ReviewError> {
+pub(super) fn register_of(repository: &Repository) -> Result<Option<Register>, ReviewError> {
     match Mode::of(repository) {
         Ok(Mode::Open) => Ok(None),
         Ok(Mode::Enforcing(register)) => Ok(Some(register)),
@@ -650,6 +689,8 @@ pub(super) fn pr(command: PrCommand, out: &mut dyn Write) -> Result<(), CliError
         PrCommand::Approve(args) => pr_approve(args, out),
         PrCommand::Merge(args) => pr_merge(args, out),
         PrCommand::List(args) => pr_list(args, out),
+        PrCommand::Submit(args) => statements::pr_submit(args, out),
+        PrCommand::Show(args) => statements::pr_show(args, out),
     }
 }
 
@@ -671,8 +712,21 @@ fn pr_open(args: PrOpenArgs, out: &mut dyn Write) -> Result<(), CliError> {
         .as_ref()
         .map(|revision| commit_of(&repository, revision))
         .transpose()?;
-    let entry = repository
-        .open_pull(
+    let destination = match &args.submitting.remote {
+        Some(name) => Some(Destination::named(
+            &repository,
+            name,
+            args.submitting.offline,
+        )?),
+        None if args.submitting.offline => return Err(offline_alone()),
+        None => None,
+    };
+    if let Some(destination) = &destination {
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
+    }
+    let entry = match &destination {
+        Some(destination) => repository.open_pull_for(
+            destination.repository(),
             &branch,
             &who,
             reviewers,
@@ -680,13 +734,121 @@ fn pr_open(args: PrOpenArgs, out: &mut dyn Write) -> Result<(), CliError> {
             register.as_ref(),
             as_signer(&signer),
             &AllowAll,
-        )
-        .map_err(pull_error)?;
+        ),
+        None => repository.open_pull(
+            &branch,
+            &who,
+            reviewers,
+            repairs,
+            register.as_ref(),
+            as_signer(&signer),
+            &AllowAll,
+        ),
+    }
+    .map_err(pull_error)?;
+    let id = entry
+        .statement()
+        .map_or_else(String::new, |hash| format!(" ({})", short_name(hash)));
     let text = format!(
-        "Opened pull request {} for branch {branch}.\n",
+        "Opened pull request {}{id} for branch {branch}.\n",
         entry.number()
     );
-    write_out(out, &text, Some(entry.number()))
+    let later = format!("`stemma pr submit {}`", entry.number());
+    let submitted = destination.map(|destination| {
+        let own = own_statement(&entry);
+        destination.submit_after(
+            &repository,
+            &entry,
+            own,
+            &[own],
+            &later,
+            args.signing.key.as_deref(),
+            &who,
+        )
+    });
+    finish(out, text, &entry, submitted)
+}
+
+/// The statement that an entry of `pr open`, `pr close`, `pr approve`, or `check record` names:
+/// each of them makes one before its entry.
+fn own_statement(entry: &Entry) -> stemma_core::protocol::statement::StatementHash {
+    entry
+        .statement()
+        .expect("the entry of a command that makes a statement names it")
+}
+
+/// `--offline` says only where a statement for a hub goes, so it needs the hub.
+fn offline_alone() -> CliError {
+    ReviewError::refused(
+        "`--offline` makes the statement for a hub without submitting it: pass `--remote NAME` \
+         as well; nothing is written",
+    )
+    .into()
+}
+
+/// Writes the line of a command that wrote `entry`, with the lines of its submission, and ends
+/// with the error of the submission if it did not finish or the hub refused the statement of
+/// the command.
+fn finish(
+    out: &mut dyn Write,
+    mut text: String,
+    entry: &Entry,
+    submitted: Option<(String, Option<CliError>)>,
+) -> Result<(), CliError> {
+    let error = submitted.and_then(|(lines, error)| {
+        text.push_str(&lines);
+        error
+    });
+    match error {
+        Some(error) => {
+            // The error names the entry, and is what the command ends with; a failed write of
+            // the lines before it does not replace it.
+            let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+            Err(error)
+        }
+        None => write_out(out, &text, Some(entry.number())),
+    }
+}
+
+/// Submits the statements of `pull` to `destination` after a command wrote `entry`: every
+/// statement of the pull request, so that what an offline clone made before goes along. A
+/// failure to collect them names the entry, which is written.
+fn submit_pull_after(
+    repository: &Repository,
+    register: Option<&Register>,
+    pull: &stemma_core::pull::PullRequest,
+    destination: Option<&Destination>,
+    signing: &Signing,
+    who: &Actor,
+    entry: &Entry,
+) -> Option<(String, Option<CliError>)> {
+    let destination = destination?;
+    let later = format!("`stemma pr submit {}`", pull.number());
+    let hashes = match statements::hashes_of_pull(repository, register, pull) {
+        Ok(hashes) => hashes,
+        Err(error) => {
+            // The failure keeps its own code: damage of the log or of the set is 5, as it is
+            // for the `pr submit` that would collect them again.
+            let error = error.reworded(|inner| {
+                format!(
+                    "entry {} is written and counts in this clone, but its statements could \
+                     not be collected for the hub: {inner}; {later} sends them once that is \
+                     fixed",
+                    entry.number()
+                )
+            });
+            return Some((String::new(), Some(error.into())));
+        }
+    };
+    Some(destination.submit_after(
+        repository,
+        entry,
+        own_statement(entry),
+        &hashes,
+        &later,
+        signing.key.as_deref(),
+        who,
+    ))
 }
 
 fn pr_close(args: PrNumberArgs, out: &mut dyn Write) -> Result<(), CliError> {
@@ -694,17 +856,41 @@ fn pr_close(args: PrNumberArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
     let signer = signer_of(register.as_ref(), &args.signing)?;
+    let pull = resolve_pull(&repository, register.as_ref(), &args.pull.pull)?;
+    // The destination is known before the entry, so a remote that is missing refuses first.
+    let destination = Destination::of_pull(
+        &repository,
+        &pull,
+        args.submitting.remote.as_ref(),
+        args.submitting.offline,
+    )?;
+    if let Some(destination) = &destination {
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
+    }
     let entry = repository
         .close_pull(
-            args.number,
+            pull.number(),
             &who,
             register.as_ref(),
             as_signer(&signer),
             &AllowAll,
         )
         .map_err(pull_error)?;
-    let text = format!("Closed pull request {}.\n", args.number);
-    write_out(out, &text, Some(entry.number()))
+    let text = format!(
+        "Closed pull request {} ({}).\n",
+        pull.number(),
+        short_name(pull.id())
+    );
+    let submitted = submit_pull_after(
+        &repository,
+        register.as_ref(),
+        &pull,
+        destination.as_ref(),
+        &args.signing,
+        &who,
+        &entry,
+    );
+    finish(out, text, &entry, submitted)
 }
 
 fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> {
@@ -712,17 +898,40 @@ fn pr_approve(args: PrApproveArgs, out: &mut dyn Write) -> Result<(), CliError> 
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
     let signer = signer_of(register.as_ref(), &args.signing)?;
+    let pull = resolve_pull(&repository, register.as_ref(), &args.pull.pull)?;
+    let destination = Destination::of_pull(
+        &repository,
+        &pull,
+        args.submitting.remote.as_ref(),
+        args.submitting.offline,
+    )?;
+    if let Some(destination) = &destination {
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
+    }
     let entry = repository
         .approve_pull(
-            args.number,
+            pull.number(),
             &who,
             register.as_ref(),
             as_signer(&signer),
             &AllowAll,
         )
         .map_err(pull_error)?;
-    let text = format!("Approved the head of pull request {}.\n", args.number);
-    write_out(out, &text, Some(entry.number()))
+    let text = format!(
+        "Approved the head of pull request {} ({}).\n",
+        pull.number(),
+        short_name(pull.id())
+    );
+    let submitted = submit_pull_after(
+        &repository,
+        register.as_ref(),
+        &pull,
+        destination.as_ref(),
+        &args.signing,
+        &who,
+        &entry,
+    );
+    finish(out, text, &entry, submitted)
 }
 
 /// Merges a pull request through the gate, and then brings the worktree that has `main` checked
@@ -739,19 +948,20 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let level = RiskLevel::from_number(args.level).expect("the parser limits the level to 0..=3");
     let repository = open(&args.common.repository)?;
     let register = register_of(&repository)?;
+    let number = resolve_pull(&repository, register.as_ref(), &args.pull.pull)?.number();
     let merged = repository
-        .merge_gate(args.number, level, register.as_ref(), &who, &AllowAll)
+        .merge_gate(number, level, register.as_ref(), &who, &AllowAll)
         .map_err(gate_error)?;
     let mut text = if merged.repaired {
         format!(
             "Recorded the merge of pull request {}: main held the change already, at {}.\n",
-            args.number,
+            number,
             short_id(merged.commit)
         )
     } else {
         format!(
             "Merged pull request {} into main: {} on top of {}.\n",
-            args.number,
+            number,
             short_id(merged.commit),
             short_id(merged.tip)
         )
@@ -760,7 +970,7 @@ fn pr_merge(args: PrMergeArgs, out: &mut dyn Write) -> Result<(), CliError> {
     let failed = |message: String| {
         ReviewError::incomplete(format!(
             "pull request {} is merged (entry {}), but {message}",
-            args.number,
+            number,
             merged.merged.number()
         ))
     };
@@ -901,12 +1111,18 @@ fn pr_list(args: PrListArgs, out: &mut dyn Write) -> Result<(), CliError> {
         } else {
             String::new()
         };
+        let hub = if pull.repository().is_some() {
+            " hub"
+        } else {
+            ""
+        };
         text.push_str(&format!(
-            "{} {state} {} {} by {}{approvals}\n",
+            "{} {state} {} {} by {}{approvals} id {}{hub}\n",
             pull.number(),
             mask_controls(pull.branch().as_str()),
             short_id(*pull.head()),
             mask_controls(&pull.opener().to_string()),
+            short_name(pull.id()),
         ));
     }
     write_out(out, &text, None)
@@ -935,8 +1151,21 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
     } else {
         CheckResult::Fail
     };
-    let entry = repository
-        .record_check(
+    let destination = match &args.submitting.remote {
+        Some(name) => Some(Destination::named(
+            &repository,
+            name,
+            args.submitting.offline,
+        )?),
+        None if args.submitting.offline => return Err(offline_alone()),
+        None => None,
+    };
+    if let Some(destination) = &destination {
+        destination.check_ready(signer.is_some(), args.signing.key.as_deref())?;
+    }
+    let entry = match &destination {
+        Some(destination) => repository.record_check_for(
+            destination.repository(),
             commit,
             base,
             result,
@@ -944,15 +1173,42 @@ fn check_record(args: CheckRecordArgs, out: &mut dyn Write) -> Result<(), CliErr
             register.as_ref(),
             as_signer(&signer),
             &AllowAll,
-        )
-        .map_err(check_error)?;
+        ),
+        None => repository.record_check(
+            commit,
+            base,
+            result,
+            &who,
+            register.as_ref(),
+            as_signer(&signer),
+            &AllowAll,
+        ),
+    }
+    .map_err(check_error)?;
     let text = format!(
         "Recorded {} for {} in entry {}.\n",
         result.name(),
         short_id(commit),
         entry.number()
     );
-    write_out(out, &text, Some(entry.number()))
+    // A check belongs to no pull request, so a later submission names it by a pull request
+    // of its commit: `pr submit` sends the checks of the heads of a pull request (the head of
+    // its opening or one that an approval names), and no command sends a check of another
+    // commit.
+    let later = "only `stemma pr submit PULL` of a pull request whose head is this commit";
+    let submitted = destination.map(|destination| {
+        let own = own_statement(&entry);
+        destination.submit_after(
+            &repository,
+            &entry,
+            own,
+            &[own],
+            later,
+            args.signing.key.as_deref(),
+            &who,
+        )
+    });
+    finish(out, text, &entry, submitted)
 }
 
 fn check_list(args: CheckListArgs, out: &mut dyn Write) -> Result<(), CliError> {

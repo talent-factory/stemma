@@ -30,6 +30,7 @@ use crate::allowed::{self_approval, SelfApproval};
 use crate::evidence::Placed;
 use crate::object::CommitId;
 use crate::protocol::statement::{self, Opening, Statement, StatementHash};
+use crate::protocol::RepositoryId;
 use crate::refs::BranchName;
 use crate::register::Identity;
 use crate::Actor;
@@ -77,6 +78,7 @@ pub struct PullRequest {
     head: CommitId,
     reviewers: Vec<Identity>,
     repairs: Option<CommitId>,
+    repository: Option<RepositoryId>,
     state: PullState,
     pub(crate) ended_without_proof: bool,
 }
@@ -93,6 +95,7 @@ impl PullRequest {
             head: opening.head(),
             reviewers: opening.reviewers().to_vec(),
             repairs: opening.repairs(),
+            repository: opening.repository(),
             state: PullState::Open,
             ended_without_proof: false,
         }
@@ -153,6 +156,13 @@ impl PullRequest {
     /// The red commit that the opener declared to repair (ADR-019).
     pub fn repairs(&self) -> Option<&CommitId> {
         self.repairs.as_ref()
+    }
+
+    /// The repository of the hub that the opening names (STEMMA-312), or `None` for a pull
+    /// request that counts in this clone only. The approvals and the closing of the pull
+    /// request name the same repository, so that the hub can hold all of them.
+    pub fn repository(&self) -> Option<RepositoryId> {
+        self.repository
     }
 
     /// The state.

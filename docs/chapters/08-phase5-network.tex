@@ -42,7 +42,8 @@ die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen
 die Namespace-Policy im Kern, mit dem Maximum über die Policies und den verlangten Ownern,
 das Entfernen unerreichbarer Objekte auf dem Bare-Repository,
 die Befehle \type{remote}, \type{clone} und \type{fetch},
-und der Push im Kern mit dem Merge eines Pull Requests über einen Remote.
+der Push im Kern mit dem Merge eines Pull Requests über einen Remote,
+und die Befehle, die die Erklärungen eines Pull Requests einreichen und lesen.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -1083,6 +1084,69 @@ Exit-Code 6: Ein späterer Aufruf kann gelingen.
 In jedem dieser Fälle schreibt der Befehl nichts.
 \stopinfobox
 
+\section[sec:pr-two-clones]{Ein Pull Request über zwei Klone}
+
+Ein Pull Request entsteht in einem Klon und wird in einem anderen freigegeben.
+Die Befehle von \in{Kapitel}[chap:phase4] bleiben dieselben; zwei Dinge kommen hinzu: Die
+Erklärungen nennen das Repository des Hubs und gehen an ihn, und der Pull Request hat einen
+Namen, der in beiden Klonen gilt (STEMMA-312, ADR-025).
+Synopsis, Ausgabe und Exit-Codes stehen in \in{Kapitel}[chap:cli].
+
+{\bf Der Name.}
+Die Nummer eines Pull Requests ist die Nummer seines Eintrags \type{pr-open} und gilt nur im
+eigenen Log; der zweite Klon hat für denselben Pull Request eine andere.
+Die Befehle nehmen deshalb auch die ersten Stellen des Hashes der Eröffnung, mindestens acht;
+ein Text nur aus Ziffern bleibt eine Nummer, und ein solches Präfix trägt \type{b3:}.
+Der Hash entsteht mit der Erklärung, also auch offline, und ist in jedem Klon und auf dem Hub
+derselbe.
+Die laufende Nummer des Hubs wäre kürzer, gibt es aber erst, wenn der Hub die Eröffnung hält,
+und zwei Hubs zählen verschieden; sie bleibt eine Zeile des Hubs und kein Name.
+
+{\bf Der Ablauf.}
+Daniel arbeitet im Klon \type{a}, Ana im Klon \type{b}; beide haben das Remote \type{origin}.
+
+\startitemize[n]
+\item Daniel eröffnet in \type{a} mit \type{pr open feat --remote origin}. Der Kern schreibt die
+Eröffnung mit der Repository-ID des Remotes und den Eintrag \type{pr-open}; der Pull Request
+zählt im Klon sofort. Danach reicht der Befehl die Eröffnung ein, und der Hub antwortet mit
+seinen Zeilen: der laufenden Nummer, der Zeit, dem letzten Eintrag der Aufzeichnung und der
+Identität aus dem Register. Der Befehl prüft, dass der festgehaltene Schlüssel des Hubs sie
+signiert hat.
+\item Ana holt in \type{b} mit \type{fetch} den Branch und die Erklärungen offener Pull Requests
+(sobald STEMMA-325 sie in die Menge bringt; bis dahin kennt \type{b} den Pull Request nicht)
+und gibt mit \type{pr approve 4ab85376} frei, den ersten Stellen des Hashes, die Daniel ihr
+nennt. Die Freigabe nennt dasselbe Repository wie die Eröffnung, und der Befehl reicht sie beim
+Remote mit diesem Repository ein.
+\item Ein Prüflauf schreibt sein Ergebnis mit \type{check record --remote origin}.
+\item \type{pr show 4ab85376 --remote origin} zeigt in jedem der beiden Klone, welche Erklärungen
+der Hub hält und mit welchen Zeilen; eine Erklärung, die nur der Klon hat, heisst
+\type{not on the hub}.
+\stopitemize
+
+{\bf Offline.}
+Ist der Hub nicht erreichbar, bleibt der Eintrag, und die Erklärung zählt im Klon; der Befehl
+endet mit Exit-Code 3 und nennt \type{stemma pr submit}. Wer weiss, dass er offline ist, sagt es
+mit \type{--offline}, und der Befehl versucht es gar nicht.
+\type{pr submit} reicht später alle Erklärungen des Pull Requests ein, in der Reihenfolge ihrer
+Einträge. Eine Erklärung, die der Hub schon hält, beantwortet er mit ihren alten Zeilen; darum
+darf ein Klon immer alles noch einmal senden und muss sich nicht merken, was schon draussen ist.
+Eine Ablehnung nennt ihren Grund mit dem Wort aus ADR-025, etwa \type{self-approval}; die
+Erklärung zählt im Klon weiter, und das Gate des Hubs zählt sie nicht.
+Nach einer Rotation des Schlüssels kommt eine alte Erklärung mit der Signatur des früheren
+Schlüssels zurück; sie gilt, wenn die Referenzliste diesen Schlüssel für ihre Zeit nennt.
+
+\startinfobox
+{\bf Was noch fehlt.}
+Über HTTP trägt der Client die drei Anfragen für Erklärungen noch nicht; das bringt
+STEMMA-326. Bis dahin endet die Einreichung nach einem Eintrag über HTTP mit Exit-Code 3, und
+die Erklärung zählt im Klon; \type{pr submit}, das nichts schreibt, endet mit Exit-Code 1.
+Die Schritte 2 und 4 im zweiten Klon setzen zudem STEMMA-325 voraus. Dass \type{fetch} die
+Erklärungen anderer Klone in die Menge bringt, kommt mit STEMMA-325, und der Merge über den Hub
+mit \type{push} und \type{pr merge} mit STEMMA-309 und STEMMA-317. Die Befehle dieses Abschnitts
+prüfen die Tests gegen den Transport im Speicher des Kerns. Einen Owner-Override reicht noch
+kein Befehl ein; der Hub nimmt ihn noch nicht an.
+\stopinfobox
+
 \section[sec:hub-enforcement]{Durchsetzung auf dem Hub}
 
 Die lokale Durchsetzung hält einen Prozess nicht auf, der am Kern vorbei schreibt.
@@ -1131,11 +1195,13 @@ Das Einreichen einer Erklärung und die Zeilen des Hubs sind gebaut
 folgt mit dem Fetch im Kern.
 
 \startinfobox
-{\bf Was eine lokale Erklärung noch nicht kann.}
-Ein Klon schreibt heute \type{repository -}: Die Erklärung nennt kein Repository eines Hubs und
-zählt nur lokal.
-Welches Remote einer Erklärung seine ID gibt, entscheidet der Befehl, der sie einreicht;
-ein Hub lehnt eine Erklärung ohne die ID seines Repositorys ab.
+{\bf Lokale Erklärungen und Erklärungen für einen Hub.}
+Ohne Remote schreibt ein Klon \type{repository -}: Die Erklärung nennt kein Repository eines
+Hubs und zählt nur lokal.
+Welches Remote einer Erklärung seine ID gibt, entscheidet der Befehl, der sie macht:
+\type{pr open --remote} und \type{check record --remote} nennen das Repository des Remotes, und
+die Freigaben und das Schliessen folgen der Eröffnung (\in{Abschnitt}[sec:pr-two-clones]).
+Ein Hub lehnt eine Erklärung ohne die ID seines Repositorys ab.
 Im offenen Modus trägt eine Erklärung weder Schlüssel noch Signatur; sie zählt nur ohne
 Register,
 und ein Hub nimmt sie nie an.

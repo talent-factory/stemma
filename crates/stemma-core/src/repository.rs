@@ -93,6 +93,8 @@ mod rules;
 mod snapshot;
 mod statements;
 mod status;
+// The submission of statements to a hub and their reading (STEMMA-312).
+mod submit;
 mod switch;
 mod track;
 // The removal of unreachable objects on a bare repository (STEMMA-292).
@@ -145,6 +147,7 @@ pub use rules::{LevelError, PolicyError};
 pub use snapshot::{SnapshotError, TakeOverAdvice, Unsupported};
 pub use statements::{Disagreement, EvidenceError, StatementCheckError, StatementsVerified};
 pub use status::{FileChange, FileChangeKind, Saved, Status, StatusError};
+pub use submit::{broke_off, Outcome, Submission, SubmitError, MAX_HELD_LIST, SUBMIT};
 pub use switch::{Changes, Handled, Planned, SwitchError, SwitchPlan, SwitchTarget, Switched};
 pub use track::{normalize_path, normalize_path_in, TrackError, Tracking};
 pub use unreachable::{RemovedObjects, UnreachableError};

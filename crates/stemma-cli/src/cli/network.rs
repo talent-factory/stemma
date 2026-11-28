@@ -32,11 +32,11 @@ use stemma_core::refs::{BranchName, RefKind};
 use stemma_core::remote::{CaFile, HubKeyError, RemoteAddress, RemoteConfig, RemoteName};
 use stemma_core::remote::{RemoteRef, RemoteRefName};
 use stemma_core::repository::{
-    read_ref_list, Changes, CloneError, FetchError, Fetched, InitOptions, PinError,
+    broke_off, read_ref_list, Changes, CloneError, FetchError, Fetched, InitOptions, PinError,
     RemoteConfigError, RemoteSetup, Repository, Revision, SwitchTarget,
 };
 use stemma_core::signature::{KeyFingerprint, PublicKey, SshKeygen};
-use stemma_core::transport::sign_in;
+use stemma_core::transport::{sign_in, SignInError, TransportError};
 use stemma_core::AllowAll;
 use stemma_remote::{HttpTransport, Status, Timeouts};
 
@@ -54,14 +54,14 @@ pub(super) struct NetworkError {
 }
 
 impl NetworkError {
-    fn refused(message: impl Into<String>) -> Self {
+    pub(super) fn refused(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: 1,
         }
     }
 
-    fn of_kind(message: impl Into<String>, kind: FailureKind) -> Self {
+    pub(super) fn of_kind(message: impl Into<String>, kind: FailureKind) -> Self {
         let code = match kind {
             FailureKind::Damaged => 5,
             FailureKind::Locked => 6,
@@ -73,7 +73,7 @@ impl NetworkError {
         }
     }
 
-    fn incomplete(message: impl Into<String>) -> Self {
+    pub(super) fn incomplete(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             code: 3,
@@ -82,6 +82,15 @@ impl NetworkError {
 
     pub(super) fn exit_code(&self) -> ExitCode {
         ExitCode::from(self.code)
+    }
+
+    /// The same failure with another message and the same exit code, for a command that
+    /// reports it as part of another one (STEMMA-312).
+    pub(super) fn reworded(self, message: impl FnOnce(&str) -> String) -> Self {
+        Self {
+            message: message(&self.message),
+            code: self.code,
+        }
     }
 }
 
@@ -294,7 +303,7 @@ pub(super) struct FetchArgs {
     remote: RemoteName,
 }
 
-fn parse_remote_name(text: &str) -> Result<RemoteName, String> {
+pub(super) fn parse_remote_name(text: &str) -> Result<RemoteName, String> {
     RemoteName::try_new(text).map_err(|error| error.to_string())
 }
 
@@ -347,20 +356,50 @@ fn hub_of(address: &RemoteAddress) -> Option<String> {
 // The connection.
 
 /// A transport to the repository of `config`, signed in if the configuration asks for it.
-fn connect(config: &RemoteConfig, key: Option<&Path>) -> Result<HttpTransport, NetworkError> {
+pub(super) fn connect(
+    config: &RemoteConfig,
+    key: Option<&Path>,
+) -> Result<HttpTransport, NetworkError> {
+    connect_noting(config, key, "; nothing was written").map_err(|unconnected| unconnected.error)
+}
+
+/// Why [`connect_noting`] did not connect: the error, and whether the hub could not be reached
+/// for the sign-in, or its answer broke off, so that a later call can succeed.
+pub(super) struct Unconnected {
+    pub(super) error: NetworkError,
+    pub(super) unreachable: bool,
+}
+
+impl From<NetworkError> for Unconnected {
+    fn from(error: NetworkError) -> Self {
+        Self {
+            error,
+            unreachable: false,
+        }
+    }
+}
+
+/// [`connect`] with `note` after the message of a failure that the remote or the hub causes:
+/// what the failure leaves behind. A command that wrote an entry before it connects says so
+/// itself (STEMMA-312).
+pub(super) fn connect_noting(
+    config: &RemoteConfig,
+    key: Option<&Path>,
+    note: &str,
+) -> Result<HttpTransport, Unconnected> {
     let mut transport = HttpTransport::new(config, Timeouts::DEFAULT)
-        .map_err(|error| NetworkError::refused(format!("{error}; nothing was written")))?;
+        .map_err(|error| NetworkError::refused(format!("{error}{note}")))?;
     if config.sign_in {
         let key = key.ok_or_else(|| {
-            NetworkError::refused(
-                "the remote asks for a sign-in: pass `--key KEY_FILE`; nothing was written",
-            )
+            NetworkError::refused(format!(
+                "the remote asks for a sign-in: pass `--key KEY_FILE`{note}"
+            ))
         })?;
         let public = read_public_key(key)?;
         let hub = hub_of(&config.address).ok_or_else(|| {
             NetworkError::refused(format!(
                 "the address `{}` of the remote names no namespace and repository, so the hub \
-                 to sign in to is not known; nothing was written",
+                 to sign in to is not known{note}",
                 config.address
             ))
         })?;
@@ -368,11 +407,19 @@ fn connect(config: &RemoteConfig, key: Option<&Path>) -> Result<HttpTransport, N
             NetworkError::refused(format!("the address of the hub `{hub}`: {error}"))
         })?;
         if let Err(error) = sign_in(&mut transport, &called, &public, &SshKeygen::new(key)) {
-            return Err(with_status(
-                format!("the sign-in failed: {error}; nothing was written"),
-                FailureKind::Other,
-                &transport,
-            ));
+            let unreachable = match &error {
+                SignInError::Transport(TransportError::Carrier(_)) => true,
+                SignInError::Body(body) => broke_off(body),
+                _ => false,
+            };
+            return Err(Unconnected {
+                error: with_status(
+                    format!("the sign-in failed: {error}{note}"),
+                    FailureKind::Other,
+                    &transport,
+                ),
+                unreachable,
+            });
         }
     }
     Ok(transport)
@@ -417,7 +464,11 @@ fn read_public_key(key: &Path) -> Result<PublicKey, NetworkError> {
 /// The error of a command that spoke to a hub, with what the status of the last answer adds: a
 /// busy hub and a limit on requests are code 6, a redirect is named with its new address, and a
 /// repository that the hub does not serve and a missing sign-in are said as such (ADR-023).
-fn with_status(message: String, kind: FailureKind, transport: &HttpTransport) -> NetworkError {
+pub(super) fn with_status(
+    message: String,
+    kind: FailureKind,
+    transport: &HttpTransport,
+) -> NetworkError {
     // The message of the transport names the status, the wait, and the new address already.
     match transport.last_status() {
         Some(Status::Busy(_)) | Some(Status::RateLimited(_)) if kind == FailureKind::Other => {
@@ -442,7 +493,7 @@ fn with_status(message: String, kind: FailureKind, transport: &HttpTransport) ->
 }
 
 /// The command that pins the new key of a hub that changed its key.
-fn key_hint(error: &HubKeyError, remote: &RemoteName) -> String {
+pub(super) fn key_hint(error: &HubKeyError, remote: &RemoteName) -> String {
     match error {
         HubKeyError::Changed { offered, .. } => {
             format!("; then run `stemma remote pin {remote} --expect-key {offered}`")

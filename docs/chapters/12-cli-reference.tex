@@ -3251,14 +3251,22 @@ stemma register add-agent bot.pub --agent bot --sponsor mia --cosign bot.sig --a
 Öffnet, schliesst, genehmigt und merged einen Pull Request und listet die Pull Requests
 (ADR-004, ADR-019). Die Belege eines Pull Requests sind signierte Erklärungen, die das Operation
 Log nennt (ADR-025); seine Nummer ist die Nummer des Eintrags, der ihn öffnet.
+Mit einem Remote erreichen die Erklärungen den Hub, und \type{pr show} liest sie dort mit den
+Zeilen des Hubs (STEMMA-312).
 
 \starttyping
 stemma pr open [-C VERZEICHNIS] [--reviewer AKTEUR]... [--repairs COMMIT]
-        [--key SCHLÜSSELDATEI] --actor AKTEUR BRANCH
-stemma pr close [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] --actor AKTEUR NUMMER
-stemma pr approve [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] --actor AKTEUR NUMMER
-stemma pr merge [-C VERZEICHNIS] [--level STUFE] --actor AKTEUR NUMMER
+        [--key SCHLÜSSELDATEI] [--remote NAME [--offline]] --actor AKTEUR BRANCH
+stemma pr close [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] [--remote NAME] [--offline]
+        --actor AKTEUR PULL
+stemma pr approve [-C VERZEICHNIS] [--key SCHLÜSSELDATEI] [--remote NAME] [--offline]
+        --actor AKTEUR PULL
+stemma pr merge [-C VERZEICHNIS] [--level STUFE] --actor AKTEUR PULL
 stemma pr list [-C VERZEICHNIS]
+stemma pr submit [-C VERZEICHNIS] [--remote NAME] [--key SCHLÜSSELDATEI] [--json]
+        --actor AKTEUR PULL
+stemma pr show [-C VERZEICHNIS] [--remote NAME] [--key SCHLÜSSELDATEI] [--json]
+        [--actor AKTEUR] PULL
 \stoptyping
 
 \startitemize
@@ -3266,7 +3274,24 @@ stemma pr list [-C VERZEICHNIS]
 Standard ist das aktuelle.
 \item {\bf BRANCH:} Der Branch, den der Pull Request in \type{main} merged. Seine Spitze ist der
 Head des Pull Requests.
-\item {\bf NUMMER:} Die Nummer des Pull Requests, wie \type{pr list} sie zeigt.
+\item {\bf PULL:} Der Pull Request: seine Nummer in diesem Klon, wie \type{pr list} sie zeigt,
+oder mindestens acht hexadezimale Stellen in Kleinbuchstaben des Hashes seiner Öffnung, mit oder
+ohne \type{b3:}. Die Nummer ist kurz und gilt nur in diesem Klon; der Hash gilt in jedem Klon
+und auf dem Hub, auch offline. Die laufende Nummer des Hubs ist kein Name, denn sie entsteht
+erst, wenn der Hub die Öffnung hält, und jeder Hub zählt anders. Ein Text nur aus Ziffern ist
+eine Nummer, damit eine Nummer, die es nicht gibt, nicht zufällig einen anderen Pull Request
+trifft; ein Präfix nur aus Ziffern braucht darum \type{b3:}. Ein Präfix, das mehrere Pull
+Requests haben, lehnt der Befehl als mehrdeutig ab.
+\item {\bf \type{--remote} NAME:} Bei \type{open} macht der Befehl die Öffnung für das
+Repository des Hubs dieses Remotes und übermittelt sie sofort. \type{close} und \type{approve}
+folgen der Öffnung: Nennt sie ein Repository eines Hubs, nennen es auch ihre Erklärungen, und der
+Befehl übermittelt sie an das Remote mit diesem Repository; die Option wählt es, wenn mehrere
+Remotes es haben. Bei \type{submit} wählt sie das Remote ebenso, bei \type{show} liest der
+Befehl mit ihr die Erklärungen, die der Hub hält.
+\item {\bf \type{--offline}:} Die Erklärung entsteht für den Hub, geht aber jetzt nicht hinaus;
+\type{pr submit} übermittelt sie später. Bei \type{open} braucht die Option \type{--remote}.
+\item {\bf \type{--json}:} Gibt das Ergebnis von \type{submit} und \type{show} als ein
+JSON-Objekt aus (ADR-018).
 \item {\bf \type{--reviewer} AKTEUR:} Ein Reviewer, als Akteurszeile; die Option darf mehrfach
 stehen. Ein Reviewer ist eine Identität des Registers und nicht der Öffner.
 \item {\bf \type{--repairs} COMMIT:} Der Commit, den der Pull Request repariert: eine
@@ -3314,6 +3339,38 @@ In einem durchsetzenden Repository gilt eine Öffnung nur mit einer Signatur, di
 für ihren Öffner annimmt; ein Pull Request, der im offenen Modus geöffnet wurde, erscheint dort
 nicht mehr und wird neu geöffnet.
 
+{\bf Erklärungen auf dem Hub.} Eine Erklärung erreicht einen Hub nur, wenn sie das Repository
+des Hubs nennt (\type{repository ID}); eine Erklärung ohne Repository gilt nur im Klon, und der
+Hub lehnt sie ab. \type{open --remote} nennt das Repository des Remotes, und die Genehmigungen und
+die Schliessung des Pull Requests nennen dasselbe. Der Befehl schreibt zuerst den Eintrag wie
+ohne Remote, und die Erklärung gilt im Klon sofort; danach übermittelt er die Erklärungen des
+Pull Requests an den Hub. Gelingt das nicht, weil der Hub nicht erreichbar ist, besetzt ist oder
+die Anfrage nicht trägt, bleibt der Eintrag, und \type{pr submit} holt die Übermittlung nach.
+\type{submit} sendet alle Erklärungen des Pull Requests, die der Klon zählt, in der Reihenfolge
+ihrer Einträge: die Öffnung, die Prüfungen eines Heads, die Genehmigungen und die Schliessung.
+Eine Erklärung, die der Hub schon hält, beantwortet er mit den Zeilen, mit denen er sie hält;
+darum ist die Wiederholung sicher, und was ein Klon offline machte, kommt in seiner Reihenfolge
+an. Eine Ablehnung des Hubs ist eine Antwort und hält die nächste Erklärung nicht auf. Eine
+Eröffnung, deren Pull Request auf dem Hub beendet ist, beantwortet der Hub mit \type{not-open};
+er hält sie, und der Befehl zählt das nicht als Ablehnung. Der Befehl liest zuerst die
+Referenzliste und prüft, dass die Antwort die gesendete Erklärung ist und der Schlüssel des Hubs
+zu ihrer Zeit sie signierte: der festgehaltene oder ein früherer Schlüssel der Liste für den
+Bereich, in den ihre Zeile \type{record} oder der Eintrag danach fällt (ADR-026).
+Bevor sie den Eintrag schreiben, lehnen \type{open}, \type{close}, \type{approve} und
+\type{check record} ab, was der Hub nie annähme oder keine Übermittlung erreichte: eine
+Erklärung für einen Hub in einem offenen Repository, das nicht signiert, und ohne
+\type{--offline} ein Remote ohne festgehaltenen Schlüssel des Hubs oder ein Remote mit Anmeldung
+ohne \type{--key}. Mit \type{--offline} und ohne \type{--remote} schreiben \type{close} und
+\type{approve} ihre Erklärung auch in einem Klon, in dem kein einzelnes Remote das Repository
+der Öffnung hat; \type{submit} sendet sie, sobald eines es hat.
+\type{submit} und \type{show} schreiben nichts in den Klon.
+\type{show} zeigt den Pull Request und seine Erklärungen in diesem Klon; mit \type{--remote}
+liest er die Referenzliste und die Erklärungen des Hubs, prüft das Repository und den Schlüssel
+wie \type{fetch} und zeigt zu jeder Erklärung die Zeilen des Hubs. Eine Erklärung, die nur der
+Hub hält, steht am Ende. Dass Erklärungen anderer Klone in den eigenen Klon kommen, bringt
+\type{fetch} (STEMMA-325); die HTTP-Abbildung der Anfragen kommt mit STEMMA-326, bis dahin endet
+jede Übermittlung über HTTP wie eine an einen Hub, der die Anfrage nicht trägt.
+
 Das Gate bewegt nur den Branch.
 Danach zieht \type{merge} den Worktree nach, der \type{main} ausgecheckt hat,
 mit einem \type{switch} auf \type{main} in diesem Worktree (Abschnitt \type{switch}):
@@ -3334,11 +3391,46 @@ was sie taten. \type{list} schreibt je Pull Request eine Zeile in der Reihenfolg
 Öffnungen: die Nummer, den Zustand (\type{open}, \type{closed} oder \type{merged}), den Branch,
 die ersten zwölf Stellen des Heads und den Öffner. Bei einem offenen Pull Request folgt die Zahl
 der Genehmigungen, die für den Head zählen; ungültige nennt die Zeile mit ihrer Zahl.
+Am Ende stehen die ersten zwölf Stellen des Hashes der Öffnung (\type{id}) und \type{hub}, wenn
+die Öffnung ein Repository eines Hubs nennt.
 
 \starttyping
-8 open feat 08e522cd0b90 by human daniel approvals 1
-7 merged fix 5f1d0a3c92ab by human anna
+8 open feat 08e522cd0b90 by human daniel approvals 1 id 4ab8537678b1 hub
+7 merged fix 5f1d0a3c92ab by human anna id 9e04b7d2a1c5
 \stoptyping
+
+Nach einer Übermittlung nennen \type{open}, \type{close}, \type{approve}, \type{submit} und
+\type{check record} je
+Erklärung ihre Art, ihren Namen und die Antwort des Hubs: die laufende Nummer, den letzten
+Eintrag des Records und die Identität, die das Register nennt, oder den Grund der Ablehnung mit
+seinem Wort aus ADR-025.
+
+\starttyping
+Opened pull request 8 (4ab8537678b1) for branch feat.
+Submitted to `origin`:
+  pr-opening 4ab8537678b1: held as 3 (record 12, human daniel)
+\stoptyping
+
+\type{show} nennt den Pull Request, ob er für einen Hub ist, und je Erklärung eine Zeile; mit
+\type{--remote} folgen die Zeilen des Hubs oder \type{not on the hub}.
+
+\starttyping
+Pull request 8 (4ab8537678b1), open: feat at 08e522cd0b90 by human daniel
+For the repository 11111111111111111111111111111111 of a hub.
+  pr-opening 4ab8537678b1: held as 3 at 1764240000 (record 12, human daniel)
+  pr-approval 0c36743d6864: not on the hub
+\stoptyping
+
+Das JSON-Objekt von \type{submit} hat die Felder \type{schema}, \type{pull}, \type{id},
+\type{remote}, \type{complete} und \type{statements}; jede Erklärung hat \type{hash},
+\type{kind}, \type{held} (\type{number}, \type{time}, \type{register}, \type{record},
+\type{actor}, sonst \type{null}), \type{ended} (\type{true} für eine Öffnung, die der Hub
+mit \type{not-open} für einen beendeten Pull Request hält; dann ist \type{refused}
+\type{null}) und \type{refused} (\type{reason}, \type{facts}, \type{message}, sonst
+\type{null}). Das von \type{show} hat \type{schema}, \type{pull},
+\type{id}, \type{branch}, \type{head}, \type{state}, \type{opener}, \type{repository},
+\type{remote} und \type{statements}, deren Einträge \type{hash}, \type{kind},
+\type{in_clone} und \type{held} haben.
 
 Nach der Zeile von \type{merge} stehen die Zeilen des Nachziehens:
 
@@ -3404,6 +3496,25 @@ nach einem gescheiterten Wechsel schliesst \type{switch main} im Worktree ihn ab
 Kann \type{pr list} die Genehmigungen eines Pull Requests nicht zählen (der Branch fehlt zum
 Beispiel), nennt die Zeile den Grund statt der Zahl, und die übrigen Zeilen bleiben.
 
+Nach einem geschriebenen Eintrag nennt jede Meldung einer Übermittlung, die nicht abschliesst,
+den Eintrag und \type{stemma pr submit PULL}; den Befehl selbst wiederholt man nicht. Ist der
+Hub nicht erreichbar oder bricht die Antwort ab, endet der Befehl mit Exit-Code 3. Jeder andere
+Fehler behält seinen Exit-Code, denn ein späterer Aufruf scheitert gleich, bis er behoben ist: 1
+für eine gescheiterte Anmeldung, einen anderen Schlüssel des Hubs (mit dem Befehl
+\type{remote pin}, der ihn festhält) oder eine Antwort ausserhalb des Protokolls, etwa die Seite
+eines Proxys oder ein Rumpf in zstd, der sich nicht entpacken lässt, 5 für eine beschädigte
+Erklärung im Klon und 6 für einen besetzten Hub. Lehnt der Hub die Erklärung des Befehls ab,
+endet er mit Exit-Code 1; die Ablehnung einer älteren Erklärung desselben Pull Requests steht
+nur als Zeile da. Der Eintrag gilt im Klon in jedem Fall weiter. Ohne Eintrag enden mit
+Exit-Code 1 die Fälle des Absatzes {\bf Erklärungen auf dem Hub}, ein unbekanntes Remote, ein
+Remote mit einem anderen Repository als dem der Öffnung,
+\type{--offline} ohne \type{--remote} bei \type{open}, \type{--remote} oder \type{--offline} bei
+einem Pull Request, der nur im Klon gilt, und ein Name, der keinen oder mehr als einen Pull
+Request nennt. \type{submit} schreibt nichts und endet darum nie mit Exit-Code 3: mit 1, wenn
+der Pull Request nur im Klon gilt, wenn der Hub nicht erreichbar ist, eine Erklärung ablehnt
+oder nicht im Protokoll antwortet, mit 5 bei einer beschädigten Erklärung und mit 6 bei einem
+besetzten Hub; die Antworten bis dahin stehen auf der Standardausgabe. \type{show} endet ebenso.
+
 {\bf Wiederholung.} \type{open} und \type{close} lassen sich nach einem Erfolg nicht wiederholen
 (Exit-Code 1: der Pull Request ist offen oder nicht mehr offen), nach einem Fehler schon.
 Nach \type{close} öffnet \type{open} dieselbe Öffnung nicht noch einmal.
@@ -3414,6 +3525,7 @@ endet der Aufruf mit Exit-Code 1, weil der Pull Request nicht mehr offen ist.
 Fehlt nach \type{pr-merge} nur das Nachziehen des Worktrees, nach Exit-Code 3 oder nach einem
 Absturz, holt \type{switch main} im Worktree es nach.
 \type{list} liest nur.
+\type{submit} lässt sich jederzeit wiederholen, und \type{show} liest nur.
 
 {\bf Beispiele.}
 
@@ -3422,6 +3534,10 @@ stemma pr open feat --reviewer "human anna" --actor "human daniel"
 stemma pr approve 8 --key ~/.ssh/anna --actor "human anna"
 stemma pr merge 8 --level 2 --actor "human daniel"
 stemma pr list
+stemma pr open feat --remote origin --key ~/.ssh/daniel --actor "human daniel"
+stemma pr approve 4ab85376 --offline --key ~/.ssh/anna --actor "human anna"
+stemma pr submit 4ab85376 --key ~/.ssh/anna --actor "human anna"
+stemma pr show 4ab85376 --remote origin --actor "human anna"
 \stoptyping
 
 \section{check}
@@ -3432,7 +3548,7 @@ denn es hängt vom Pull Request, seinen Autoren und der Stufe ab.
 
 \starttyping
 stemma check record [-C VERZEICHNIS] --result ERGEBNIS [--base COMMIT] [--key SCHLÜSSELDATEI]
-        --actor AKTEUR COMMIT
+        [--remote NAME [--offline]] --actor AKTEUR COMMIT
 stemma check list [-C VERZEICHNIS]
 \stoptyping
 
@@ -3450,6 +3566,11 @@ gemerged wurde. Ohne die Option lief der Test auf dem Commit, wie er ist. Ein La
 andere Spitze ist ein eigener Aufruf.
 \item {\bf \type{--key} SCHLÜSSELDATEI:} Der Schlüssel des Akteurs, wie bei \type{pr}. In einem
 durchsetzenden Repository ist die Option Pflicht.
+\item {\bf \type{--remote} NAME, \type{--offline}:} Wie bei \type{pr open}: Das Ergebnis nennt
+das Repository des Hubs und geht sofort hinaus, mit \type{--offline} später mit \type{pr submit}
+eines Pull Requests, dessen Head der Commit ist (der Head der Eröffnung oder einer, den eine
+Genehmigung nennt); die Prüfung eines anderen Commits sendet kein Befehl später.
+Exit-Codes nach dem Eintrag wie bei \type{pr}.
 \item {\bf \type{--actor} AKTEUR:} Siehe oben.
 \stopitemize
 
@@ -3477,6 +3598,7 @@ Wiederholung. \type{list} liest nur.
 \starttyping
 stemma check record feat --base main --result pass --actor "human anna"
 stemma check record feat --result fail --key ~/.ssh/anna --actor "human anna"
+stemma check record feat --result pass --remote origin --actor "human anna"
 stemma check list
 \stoptyping
 
