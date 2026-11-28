@@ -82,6 +82,8 @@ mod purge;
 #[cfg(any(fuzzing, test))]
 pub(crate) use purge::fuzz_journal;
 mod rebase;
+// The push and the merge with a remote (STEMMA-309).
+mod push;
 // Adding and removing a remote (STEMMA-305).
 mod remote_config;
 mod restore;
@@ -126,6 +128,10 @@ pub use pull::PullError;
 pub use purge::{
     Aborted, ApplyPurgeError, JournalError, PurgeError, PurgeFailure, PurgePlan, PurgeStep, Purged,
     TagPolicy,
+};
+pub use push::{
+    AnchorFailure, PushError, PushTarget, Pushed, RemoteMerge, RemoteMergeError, Uploaded,
+    PIECE_ATTEMPTS, PIECE_BYTES,
 };
 pub use rebase::{RebaseError, Rebased, Replayed};
 pub use remote_config::{AddedRemote, RemoteConfigError, RemoteSetup, RemovedRemote};
@@ -172,7 +178,8 @@ use worktree::POINTER_PREFIX;
 /// The version of the repository format that `init` and `init_bare` write, and that a purge and
 /// every new entry of the log move a repository to: version 22, the directory `namespaces/` with
 /// the namespace policy that a fetch brought from each remote (STEMMA-311, ADR-027, ADR-009).
-/// Version 21 belongs to STEMMA-309. Version 20 was the entries `remote-add` and
+/// Version 21 was the entry `push` with the line `receipt` (STEMMA-309, ADR-008, ADR-009,
+/// ADR-011). Version 20 was the entries `remote-add` and
 /// `remote-remove`, which add and remove a remote (STEMMA-305, ADR-009, ADR-011). Version 19
 /// was the file `log-id` with the ID of the log and the directory `anchors/` with the last
 /// confirmation of an anchor per remote (STEMMA-300, ADR-026, ADR-009). Version 18 was the
@@ -243,15 +250,16 @@ const FORMAT_VERSION: u32 = 22;
 /// Version 20 adds the entries `remote-add` and `remote-remove` (STEMMA-305, ADR-011), which add
 /// and remove a remote with its configuration. A program that knows only version 19 reads such an
 /// entry as a change without a pointer, which is damage, so the repository rises with its next
-/// entry or purge. Version 21 belongs to STEMMA-309, which adds it here; until then this code
-/// refuses it, as it does not know what it adds. Version 22 adds the directory
+/// entry or purge. Version 21 adds the entry `push` (STEMMA-309, ADR-011), a change with the line
+/// `receipt` of the hub. A program that knows only version 20 refuses the line as damage, so the
+/// repository rises with its next entry or purge. Version 22 adds the directory
 /// `namespaces/` (STEMMA-311, ADR-027): a fetch or a `remote add` keeps there the namespace
 /// policy that the list of references names, and the local gate evaluates it beside the policy
 /// of `main`. A program that knows only version 21 would merge without the namespace policy, so
 /// the repository rises to 22 before a fetch or a `remote add` writes the first file, and with
 /// its next entry or purge.
-const READ_VERSIONS: [u32; 20] = [
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22,
+const READ_VERSIONS: [u32; 21] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
 ];
 
 /// The name that the temporary directory of `init_bare` starts with. It differs from
@@ -4891,7 +4899,6 @@ mod tests {
         for version in [
             "0",
             "1",
-            "21",
             "23",
             "99",
             "4294967295",
@@ -5391,6 +5398,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 19\n");
         raise_format(&meta, 20).unwrap();
         assert_eq!(read(), "stemma-repository 20\n");
+        raise_format(&meta, 21).unwrap();
+        assert_eq!(read(), "stemma-repository 21\n");
         raise_format(&meta, 22).unwrap();
         assert_eq!(read(), "stemma-repository 22\n");
     }
@@ -5616,7 +5625,7 @@ mod tests {
                     path: path.clone(),
                     found: "23".to_string(),
                 },
-                "version 23, but this code supports versions 2 to 20 and 22",
+                "version 23, but this code supports versions 2 to 22",
             ),
         ];
         for (error, text) in cases {

@@ -3292,6 +3292,17 @@ impl FsRefStore {
         targets: &RestoreTargets<'_>,
         objects: &dyn ObjectStore,
     ) -> Result<(RestoreMoves, Vec<PathBuf>), RefError> {
+        self.plan_moves(targets, objects, true)
+    }
+
+    /// [`plan_restore`](Self::plan_restore), and a branch that another worktree has checked out
+    /// is refused only if `refuse_checked_out`.
+    fn plan_moves(
+        &self,
+        targets: &RestoreTargets<'_>,
+        objects: &dyn ObjectStore,
+        refuse_checked_out: bool,
+    ) -> Result<(RestoreMoves, Vec<PathBuf>), RefError> {
         self.require_root()?;
         if let Some(Head::Detached(commit)) = targets.head {
             Self::require_commit(commit, objects)?;
@@ -3350,7 +3361,9 @@ impl FsRefStore {
             }
             if current.commit != *target {
                 // A branch that another worktree has checked out neither moves nor goes.
-                self.require_not_checked_out_elsewhere(name)?;
+                if refuse_checked_out {
+                    self.require_not_checked_out_elsewhere(name)?;
+                }
                 moves.branches.push((name.clone(), current.commit, *target));
                 empty_directories.extend(current.empty_directory);
             }
@@ -3405,13 +3418,37 @@ impl FsRefStore {
     /// [`update_branch_after`](Self::update_branch_after).
     pub(crate) fn restore_after<T, E>(
         &self,
-        _lock: &WriteLock,
+        lock: &WriteLock,
         targets: &RestoreTargets<'_>,
         objects: &dyn ObjectStore,
         step: impl FnOnce(&RestoreMoves) -> Result<T, E>,
     ) -> Result<Logged<T, E>, RefError> {
+        self.moves_after(lock, targets, objects, true, step)
+    }
+
+    /// [`restore_after`](Self::restore_after) for a push, which moves a branch that another
+    /// worktree has checked out as the merge gate does: the local `main` follows the receipt of
+    /// a merge, and the worktree that has it checked out keeps its working-copy commit.
+    pub(crate) fn push_after<T, E>(
+        &self,
+        lock: &WriteLock,
+        targets: &RestoreTargets<'_>,
+        objects: &dyn ObjectStore,
+        step: impl FnOnce(&RestoreMoves) -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
+        self.moves_after(lock, targets, objects, false, step)
+    }
+
+    fn moves_after<T, E>(
+        &self,
+        _lock: &WriteLock,
+        targets: &RestoreTargets<'_>,
+        objects: &dyn ObjectStore,
+        refuse_checked_out: bool,
+        step: impl FnOnce(&RestoreMoves) -> Result<T, E>,
+    ) -> Result<Logged<T, E>, RefError> {
         self.require_root()?;
-        let (moves, empty_directories) = self.plan_restore(targets, objects)?;
+        let (moves, empty_directories) = self.plan_moves(targets, objects, refuse_checked_out)?;
         if moves.is_empty() {
             return Ok(Logged::Unchanged);
         }

@@ -40,8 +40,9 @@ der HTTP-Client des Klons,
 die Kompression seines Rumpfs mit zstd,
 die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub,
 die Namespace-Policy im Kern, mit dem Maximum über die Policies und den verlangten Ownern,
-das Entfernen unerreichbarer Objekte auf dem Bare-Repository
-und die Befehle \type{remote}, \type{clone} und \type{fetch}.
+das Entfernen unerreichbarer Objekte auf dem Bare-Repository,
+die Befehle \type{remote}, \type{clone} und \type{fetch},
+und der Push im Kern mit dem Merge eines Pull Requests über einen Remote.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
 gebaut wird, und die Befehle kommen mit ihrer Umsetzung in \in{Kapitel}[chap:cli].
 Der Hub selbst gehört zum getrennten Projekt stemma-hub (ADR-003).
@@ -62,9 +63,10 @@ Berechnung der fehlenden Objekte, die Prüfung empfangener Objekte und die Eintr
 \type{fetch} und \type{push} im Operation Log.
 Der Kern spricht mit der Gegenseite über eine Schnittstelle (\type{Transport}), die nur Nachrichten
 überträgt und nichts über HTTP annimmt.
-Sie hat eine Methode pro Anfrage des Protokolls, vorerst für die Liste der Referenzen, für
-\type{fetch} und für die zwei Anfragen der Anmeldung, und sie überträgt Bytes: Eine Nachricht
-schreibt und liest der Kern, nicht der Transport.
+Sie hat eine Methode pro Anfrage des Protokolls, unter anderem für die Liste der Referenzen,
+für \type{fetch}, für den Upload, für das Ref-Update, für den Anker und für die zwei Anfragen
+der Anmeldung, und sie überträgt Bytes: Eine Nachricht schreibt und liest der Kern, nicht der
+Transport.
 Die eine Ausnahme ist die Nachricht mit dem Token (\in{Abschnitt}[sec:hub-auth]).
 Jeder Body ist ein Strom, sodass ein Objektstrom nie als Ganzes im Speicher liegen muss.
 Der Transport sagt zu einer Antwort nur, ob sie die verlangte Nachricht ist oder ein Fehler an
@@ -339,6 +341,38 @@ Der Klon lädt sie dann noch einmal hoch und sendet das Ref-Update erneut.
 Eine zu kurze Frist kostet also einen zweiten Upload und nie Daten.
 Ist die Remote-Referenz des Klons veraltet, scheitert das Compare-and-Swap (\type{Stale}), und der
 Klon holt zuerst den neuen Stand.
+
+Gebaut ist der Push im Kern (\type{Repository::push}); der Befehl kommt mit seinem Teil.
+Für jede Referenz nimmt der Klon \type{previous} und den alten Commit aus der Remote-Referenz
+desselben Namens, also aus dem letzten Stand des Hubs, den er gesehen hat.
+Eine Referenz, deren Remote-Referenz den neuen Commit schon nennt, lässt er weg, und ein Push,
+der nichts bewegt, sendet nichts.
+Mehr Referenzen, als ein Eintrag \type{push} des Logs fasst, lehnt er ab, bevor er etwas sendet,
+denn er könnte die Quittung nicht festhalten.
+Den Upload teilt er an Commit-Grenzen in Stücke von etwa 64~MiB, jedes ein eigener Strom, und ein
+Objekt geht über alle Stücke nur einmal.
+Scheitert die Anfrage eines Stücks an der Verbindung, sendet er dieses Stück erneut,
+in höchstens drei Versuchen; innerhalb eines Durchgangs sendet er ein bestätigtes Stück nicht
+wieder.
+Ein Fehler, den keine Wiederholung behebt, beendet den Push sofort.
+Ohne neue Objekte entfällt der Upload.
+
+Die Quittung muss das gesendete Update Byte für Byte enthalten und mit dem festgehaltenen
+Schlüssel des Hubs signiert sein (\in{Abschnitt}[sec:anchor-confirm]); sonst bewegt sich im Klon
+nichts.
+Ob der Hub das Update angenommen hat, ist dann offen, wie nach einem Ref-Update ohne Antwort;
+ein \type{fetch} zeigt es.
+Lehnt der Hub ab, weil die Objekte eines neuen Commits nicht zusammenhängen (422), lädt der Klon
+einmal neu hoch, diesmal alles, was die neuen Commits erreichen, und sendet dasselbe Update
+noch einmal.
+Bei \type{Stale} bewegt er nichts und nennt den Stand jeder veralteten Referenz auf dem Hub.
+Erst nach der Quittung schreibt er unter der Sperre einen Eintrag \type{push} mit den
+Remote-Referenzen und der Nummer und dem Hash der Quittung, und erst dann bewegen sie sich, auf
+den neuen Commit und den Hash der Quittung als ihren Eintrag der Aufzeichnung.
+Danach sendet er den Anker der neuen Spitze des Log; scheitert das, hat der Push trotzdem
+stattgefunden.
+Der Eintrag \type{push} kam mit Version 21 des Repository-Formats; ein Repository, das ihn
+schreibt, steigt auf die aktuelle Version (ADR-009).
 
 \subsection{Was der Empfänger prüft}
 
@@ -903,7 +937,7 @@ Die Tags eines Remote bleiben in dessen Namensraum, denn ein lokaler Tag entsteh
 \type{tag} mit eigenem Eintrag.
 Remote-Referenzen sind Wurzeln der Erreichbarkeit.
 
-Gebaut ist davon, was ein Klon ablegt und liest, und \type{fetch}; \type{push} folgt.
+Gebaut ist davon, was ein Klon ablegt und liest, \type{fetch} und \type{push}.
 Die Konfiguration eines Remote ist eine Datei \type{.stemma/remotes/<Remote>} mit sechs Zeilen in
 fester Reihenfolge: der Kopfzeile \type{stemma-remote 1}, der Adresse, der ID des Repositorys,
 dem festgehaltenen Schlüssel des Hubs, einer eigenen CA-Datei und der Angabe, ob der Hub
@@ -1170,7 +1204,7 @@ Eine Ablehnung nennt einen Grund, etwa \type{head} mit dem Stand des Branch auf 
 \type{self-approval}; die Liste steht in ADR-025.
 \stopinfobox
 
-\subsection{Wie sich main bewegt}
+\subsection[sec:main-moves]{Wie sich main bewegt}
 
 Der Klon baut den Merge-Commit, und der Hub rechnet ihn nach.
 
@@ -1202,6 +1236,27 @@ Hat sich \type{main} inzwischen bewegt, holt \type{pr merge} den neuen Stand, re
 signiert neu, eine begrenzte Zahl von Malen.
 Ein gewöhnlicher Push wiederholt dagegen nicht von selbst
 (\in{Abschnitt}[sec:ref-update]).
+Im Kern ist das \type{Repository::merge_gate_remote}: Ein Versuch holt den Stand, nimmt $T$ aus der
+Remote-Referenz von \type{main}, urteilt mit derselben Funktion wie das lokale Gate
+(\in{Abschnitt}[sec:main-verdict]) und schreibt $M$ mit dem einzigen Elter $T$, ohne etwas zu
+bewegen.
+Neben der Policy von $T$ zählt die Namespace-Policy, die der \type{fetch} für diesen Remote
+festgehalten hat, denn der Hub urteilt nach seiner eigenen.
+Das Ref-Update nennt den Hash der Eröffnung als Beleg und läuft durch Upload und Quittung des
+Push.
+Erst nach der Quittung bewegt ein Eintrag \type{push} das lokale \type{main} und seine
+Remote-Referenz auf $M$, danach folgt \type{pr-merge}.
+Das lokale \type{main} nennt so nie ein $M$, das der Hub nicht angenommen hat.
+Es bewegt sich nur, wenn es noch den Wert vom Beginn des Versuchs hat, und wie beim lokalen
+Gate auch dann, wenn ein anderer Worktree es ausgecheckt hat.
+Ein lokales \type{main} mit Commits, die der Hub nicht kennt, lehnt der Kern ab, bevor er etwas
+sendet.
+Nach \type{Stale} beginnt der nächste Versuch, höchstens achtmal.
+Hält der Hub die Änderung schon, weil ein früherer Aufruf nach der Quittung stehen blieb oder
+die Antwort verlor, holt der Kern das lokale \type{main} mit einem Eintrag \type{gate-merge} auf
+die Spitze des Hubs und schreibt \type{pr-merge}; einen Anker sendet er dann nicht.
+Der Klon urteilt mit seinen eigenen Erklärungen; Eröffnung, Freigaben und Ergebnisse müssen also
+auch auf dem Hub liegen.
 Ohne Verbindung bleiben Commits, Branches, das Eröffnen eines Pull Requests, Freigaben und
 Prüfungen möglich; nur die Bewegung des geteilten \type{main} wartet auf den Hub.
 
@@ -1642,7 +1697,8 @@ signieren müsste.
 Ein Hub bestätigt die Spitze eines Operation Log, ohne einen Eintrag zu sehen.
 Dafür braucht jedes Log eine Identität, einen Anker als signierte Nachricht des Akteurs und eine
 Bestätigung als signierte Nachricht des Hubs.
-Der Kern baut alle drei; das Senden nach einem Push und die Befehle kommen mit ihren Teilen.
+Der Kern baut alle drei und sendet den Anker nach einem Push; die Befehle kommen mit ihren
+Teilen.
 
 {\bf Die Log-ID.}
 \type{init} und \type{clone} schreiben die Datei \type{log-id} mit 128 zufälligen Bits als

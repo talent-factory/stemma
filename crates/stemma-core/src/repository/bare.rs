@@ -1344,7 +1344,7 @@ fn an_entry_of_the_log_is_refused_even_past_the_checks_of_the_operations() {
     let change = Change::try_new(
         1,
         daniel(),
-        operation("push"),
+        operation("branch"),
         None,
         None,
         vec![(name("main"), Moved::from_to(None, Some(commit)))],

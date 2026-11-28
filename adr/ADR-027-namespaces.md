@@ -229,7 +229,9 @@ what a hub keeps of a namespace stays with stemma-hub.
   removes the file when the list names none; `remote add` does the same with the list of its
   first contact, before it writes the configuration. The local gate combines the kept policies
   of the configured remotes with the policy of `T`, so a clone and the hub reach the same
-  verdict from the same namespace policy. The tests run both on one change and compare.
+  verdict from the same namespace policy. The tests run both on one change and compare. The
+  merge with a remote (`merge_gate_remote`, STEMMA-309) counts only the kept policy of the
+  remote that it sends to, as that hub judges by its own.
 - **One human owner.** A level 3 change of a namespace repository whose register has one human
   owner, a course with one teacher, is workable under the rule of phase 4 without a change: an
   agent of the teacher writes and opens the pull request, the teacher approves it as the owner,

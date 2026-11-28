@@ -7,8 +7,9 @@ pinning of the key in a clone with the signed list of former keys and the entry 
 (STEMMA-297), the anchors in the core: the ID of the log, the anchor and its confirmation,
 the operation of the bare repository, `op verify` against the anchors, and the bound of the
 register in its log (STEMMA-300), and the commands `remote add`, `clone`, `remote pin`, and
-the check of the pinned key by `fetch` (STEMMA-305). The sending after a push and the
-commands of the anchors are not implemented yet.
+the check of the pinned key by `fetch` (STEMMA-305), and the request `anchor` of the trait
+`Transport` with the sending after a push (STEMMA-309). The commands of the anchors are not
+implemented yet.
 
 ## Context
 
@@ -207,8 +208,11 @@ How it is built (STEMMA-300):
   kept confirmation before it signs, and keeps a confirmation after checking it against the
   pinned key, its log ID, the repository and its log (`Repository::keep_confirmation`); the
   kept number only grows. Where it keeps it is decided in ADR-009: `anchors/<remote>`.
-- **Not built here**: the request in the trait `Transport` and the sending after a push, which
-  come with the slice of `push`, and the commands.
+- **Sent after a push** *(STEMMA-309)*: `Transport::anchor` carries the anchor, and
+  `Repository::push` builds it after its entry, sends it, and keeps the confirmation; a merge
+  with a remote does the same after `pr-merge`, and its repair, which sends no update, sends
+  none. A failure there is named in the result of the
+  push (`AnchorFailure`), which has happened all the same. The commands come with their slices.
 
 ### A contradicting anchor is recorded and blocks nothing
 

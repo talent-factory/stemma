@@ -57,6 +57,14 @@
 //! The line came with version 17 of the repository format (STEMMA-295, ADR-009): a program that
 //! knows only version 16 refuses the repository instead of the line.
 //!
+//! The entry of the operation `push` (STEMMA-309, ADR-008, ADR-011) ends with the line
+//! `receipt <number> <hash>`, after the remote references that it moved: the number and the hash
+//! of the record entry that the hub answered. A push names the remote references that it moved,
+//! and in a repository whose `main` follows a remote the merge of a pull request names the local
+//! branch `main` beside them (or alone, if a fetch brought the remote reference along already).
+//! Only a `push` entry has the line, and every one has it. It came with version 21 of the
+//! repository format.
+//!
 //! # Stubs and purges (version 2)
 //!
 //! A purge (ADR-014) replaces every entry that names a commit it rewrote by a *stub* with the same
@@ -286,6 +294,24 @@ pub const REMOTE_ADD: &str = "remote-add";
 /// a remote and to no change (repository format 20).
 pub const REMOTE_REMOVE: &str = "remote-remove";
 
+// The entry of a push (STEMMA-309).
+
+/// The operation of the entry that a push writes after the receipt of the hub (ADR-008, ADR-011):
+/// the remote references that it moved, the branch `main` that the merge of a pull request moves
+/// with them, and the number and the hash of the receipt ([`Receipt`]). Only its entry has the
+/// line `receipt`, and it always has it (repository format 21).
+pub const PUSH: &str = "push";
+
+/// The receipt that the entry `push` names: the number and the hash of the record entry that the
+/// hub answered to the ref update (ADR-025). It binds the log to the record of the hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receipt {
+    /// The number of the record entry, from 1 on.
+    pub number: u64,
+    /// The hash of the record entry.
+    pub hash: RecordHash,
+}
+
 /// The most reviewers that the entry of an opening names.
 pub const MAX_REVIEWERS: usize = 32;
 
@@ -306,7 +332,7 @@ pub const MAX_NUMBER: u64 = 999_999_999_999;
 
 /// The largest size of an entry that is read, in bytes. An entry is a few hundred bytes; a file much
 /// larger is not one.
-const MAX_ENTRY_LEN: u64 = 64 * 1024;
+pub(crate) const MAX_ENTRY_LEN: u64 = 64 * 1024;
 
 /// How many numbers a writer tries before it gives up. A writer tries the next number only because
 /// another writer took the one before, which means that the other one made progress, so the limit is
@@ -565,6 +591,10 @@ pub enum EntryError {
     /// The entry that adds a remote names remote references, which only a removal names; or a
     /// removal names a remote reference of another remote.
     RemoteConfigForeignRef,
+    // The entry of a push (STEMMA-309).
+    /// A change has the operation `push` and no receipt, a receipt with another operation, or a
+    /// receipt with the number 0.
+    PushReceipt,
 }
 
 impl fmt::Display for EntryError {
@@ -701,6 +731,10 @@ impl fmt::Display for EntryError {
                 "the entry of a remote names a remote reference that it does not remove: an \
                  addition names none, and a removal names those of its own remote",
             ),
+            Self::PushReceipt => f.write_str(
+                "an entry `push` names the receipt of the hub, with a number above 0, and no \
+                 other entry names a receipt",
+            ),
             Self::BadReason => write!(
                 f,
                 "the reason of an override is one line of 1 to {MAX_REASON_LEN} bytes, without a \
@@ -725,6 +759,8 @@ pub struct Change {
     /// The remote references that a `fetch` moved or removed, or that a restore of one puts
     /// back (ADR-008), sorted by name.
     remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
+    /// The receipt of the hub, which the entry `push` names and no other (STEMMA-309).
+    receipt: Option<Receipt>,
     /// The linked worktree of the entry, boxed so that the common entry stays small.
     worktree: Option<Box<WorktreeTag>>,
 }
@@ -738,6 +774,8 @@ pub(crate) struct Pointers {
     pub(crate) branches: Vec<(BranchName, Moved<CommitId>)>,
     pub(crate) tags: Vec<(BranchName, Moved<CommitId>)>,
     pub(crate) remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
+    /// The receipt of the hub: no pointer, but a line of the entry `push` (STEMMA-309).
+    pub(crate) receipt: Option<Receipt>,
 }
 
 /// The worktree that an entry names and the directory of it, if the entry makes or removes one.
@@ -810,6 +848,7 @@ impl Change {
                 branches,
                 tags,
                 remotes: Vec::new(),
+                receipt: None,
             },
         )
     }
@@ -840,6 +879,35 @@ impl Change {
         )
     }
 
+    /// Builds the entry `push` (STEMMA-309, ADR-008, ADR-011): the remote references that a push
+    /// moved after the receipt of the hub, the local branches that move with them (the branch
+    /// `main` of a merge of a pull request in a repository whose `main` follows a remote), and
+    /// the receipt.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_new`](Self::try_new), [`EntryError::DuplicateRemote`] for a remote reference
+    /// that is listed twice, and [`EntryError::PushReceipt`] if the number of the receipt is 0.
+    pub fn try_new_push(
+        time: i64,
+        actor: Actor,
+        branches: Vec<(BranchName, Moved<CommitId>)>,
+        remotes: Vec<(RemoteRefName, Moved<RemoteRef>)>,
+        receipt: Receipt,
+    ) -> Result<Self, EntryError> {
+        Self::build(
+            time,
+            actor,
+            OperationName::try_new(PUSH).expect("`push` is a valid operation name"),
+            Pointers {
+                branches,
+                remotes,
+                receipt: Some(receipt),
+                ..Pointers::default()
+            },
+        )
+    }
+
     /// Builds a change with any of the pointers: the one place that checks the rules of a change.
     pub(crate) fn build(
         time: i64,
@@ -853,7 +921,13 @@ impl Change {
             mut branches,
             mut tags,
             mut remotes,
+            receipt,
         } = pointers;
+        // The entry `push` names what it moved on the hub and the receipt; no other names one.
+        let push = operation.as_str() == PUSH;
+        if push != receipt.is_some() || receipt.is_some_and(|receipt| receipt.number == 0) {
+            return Err(EntryError::PushReceipt);
+        }
         if operation.as_str() == PURGE
             || LeaseKind::from_operation(operation.as_str()).is_some()
             || PullKind::from_operation(operation.as_str()).is_some()
@@ -916,6 +990,7 @@ impl Change {
             branches,
             tags,
             remotes,
+            receipt,
             worktree: None,
         })
     }
@@ -961,6 +1036,12 @@ impl Change {
     /// (ADR-008). Only the entry `fetch` and the restore of one name them.
     pub fn remotes(&self) -> &[(RemoteRefName, Moved<RemoteRef>)] {
         &self.remotes
+    }
+
+    /// The receipt of the hub that the entry `push` names, or `None` for every other change
+    /// (STEMMA-309).
+    pub fn receipt(&self) -> Option<&Receipt> {
+        self.receipt.as_ref()
     }
 
     /// The linked worktree that the entry belongs to, or `None` for the main worktree, whose name
@@ -1120,6 +1201,18 @@ impl EntryHash {
     fn of(text: &str) -> Self {
         Self(digest(HASH_HEADER, text))
     }
+}
+
+/// The size of the largest entry that `change` can make, at the largest number and after an
+/// entry of the chain. An entry larger than [`MAX_ENTRY_LEN`] is never written, so a caller can
+/// refuse a change before it acts on something outside the clone (the entry `push`).
+pub(crate) fn largest_entry_len(change: Change) -> usize {
+    Entry::linked(
+        MAX_NUMBER,
+        Chain::After(EntryHash::of("")),
+        Record::Change(change),
+    )
+    .map_or(usize::MAX, |entry| entry.encode().len())
 }
 
 impl BodyHash {
@@ -2529,6 +2622,9 @@ impl Entry {
                         remote_value(moved.new.as_ref())
                     ));
                 }
+                if let Some(receipt) = &change.receipt {
+                    out.push_str(&format!("receipt {} {}\n", receipt.number, receipt.hash));
+                }
                 Some(out)
             }
         }
@@ -2915,9 +3011,14 @@ impl Entry {
         let mut branches: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
         let mut tags: Vec<(BranchName, Moved<CommitId>)> = Vec::new();
         let mut remotes: Vec<(RemoteRefName, Moved<RemoteRef>)> = Vec::new();
+        let mut receipt: Option<Receipt> = None;
         for (index, line) in lines.iter().enumerate().skip(first) {
             let number = index + 1;
             let tokens: Vec<&str> = line.split(' ').collect();
+            // The receipt of a push is the last line (STEMMA-309).
+            if receipt.is_some() {
+                return Err(malformed(number, EntryMalformed::TrailingLine));
+            }
             let after_branches = !branches.is_empty() || !tags.is_empty() || !remotes.is_empty();
             let after_tags = !remotes.is_empty();
             match tokens.as_slice() {
@@ -3026,6 +3127,22 @@ impl Entry {
                     }
                     remotes.push((name, moved));
                 }
+                ["receipt", record, hash] => {
+                    let record = parse_count(record)
+                        .filter(|record| *record > 0)
+                        .ok_or_else(|| malformed(number, EntryMalformed::BadReceipt))?;
+                    let hash = RecordHash::from_str(hash).map_err(|source| {
+                        EntryParseError::InvalidHash {
+                            line: number,
+                            source,
+                        }
+                    })?;
+                    receipt = Some(Receipt {
+                        number: record,
+                        hash,
+                    });
+                }
+                ["receipt", ..] => return Err(malformed(number, EntryMalformed::BadReceipt)),
                 ["head" | "working-copy" | "branch" | "tag" | "remote", ..] => {
                     return Err(malformed(number, EntryMalformed::WrongValueCount));
                 }
@@ -3050,6 +3167,7 @@ impl Entry {
             branches,
             tags,
             remotes,
+            receipt,
         };
         Change::build(time, actor, operation, pointers)
             .and_then(|change| change.in_worktree(worktree, location))
@@ -3750,6 +3868,9 @@ pub enum EntryMalformed {
     /// A line after the configuration of the entry of a remote is not `ref <name> <commit>
     /// <entry>`, or the names are not in their order.
     ExpectedRemoteRef,
+    // The entry of a push (STEMMA-309).
+    /// The line `receipt` does not hold a number above 0 and the hash of a record entry.
+    BadReceipt,
 }
 
 impl fmt::Display for EntryMalformed {
@@ -3826,6 +3947,7 @@ impl fmt::Display for EntryMalformed {
                 "expected the line `ref <remote reference> <commit> <record entry>`, in the order \
                  of the names"
             }
+            Self::BadReceipt => "expected the line `receipt <number> <hash of the record entry>`",
         })
     }
 }
