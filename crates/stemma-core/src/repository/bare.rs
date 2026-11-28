@@ -169,7 +169,7 @@ fn init_bare_makes_the_layout_without_head_working_copy_and_log() {
     );
     assert_eq!(
         fs::read(root.join("format")).unwrap(),
-        b"stemma-repository 20\n"
+        b"stemma-repository 22\n"
     );
     assert_eq!(fs::read(root.join("bare")).unwrap(), b"stemma-bare\n");
     // The temporary directory of `init_bare` is gone: nothing else lies beside the repository.
@@ -1212,7 +1212,7 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
 
 /// The public methods of `Repository` that run on a bare repository, or that make or open a
 /// repository. Every other public method starts with the check of the bare repository.
-const WITHOUT_CHECK: [&str; 28] = [
+const WITHOUT_CHECK: [&str; 29] = [
     "init",
     "init_bare",
     "open",
@@ -1241,6 +1241,8 @@ const WITHOUT_CHECK: [&str; 28] = [
     "accept_statement",
     "accept_anchor",
     "clone_remote",
+    // The namespace policy (ADR-027, STEMMA-311).
+    "namespace",
 ];
 
 /// The public methods of the `impl Repository` blocks in `source`, each with the first statement

@@ -60,6 +60,9 @@ use crate::refs::{BranchName, BranchNameError, RefKind};
 use crate::signature::{KeyError, PublicKey};
 // The signed list of former keys (STEMMA-297).
 use crate::register::{signature_from_line, signature_to_line};
+// The namespace policy in the list of references (ADR-027, STEMMA-311).
+use crate::namespace::KeptNamespace;
+use crate::policy::Policy;
 use crate::signature::{self, PayloadKind, SignError, Signature, Signer, VerifyError};
 
 /// The protocol version that this module speaks: the number in the first line of every message.
@@ -443,14 +446,24 @@ impl Error for RefListError {}
 /// key ssh-ed25519 <base64>
 /// former <first> <last> ssh-ed25519 <base64>      zero or more
 /// former-signature <SSHSIG signature on one line> once if there is a former key
+/// namespace-policy <commit> <hexadecimal policy>  once if the repository is in a namespace
 /// ref heads/<name> <commit> <record entry>        zero or more, then the tags
 /// ```
+///
+/// The line `namespace-policy` names the namespace policy that holds for the repository
+/// (ADR-027): the commit of the namespace repository whose policy it is, and the policy in its
+/// canonical form ([`Policy::encode`](crate::policy::Policy::encode)), written as lowercase
+/// hexadecimal digits of its bytes, so that the whole policy stands in one line and a cut
+/// message never carries a part of it. A fetch keeps it, and the local gate evaluates it with
+/// the policy of `main` ([`with_namespace`](Self::with_namespace)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefList {
     repository: RepositoryId,
     key: PublicKey,
     former: FormerKeys,
     references: Vec<Reference>,
+    // The namespace policy (ADR-027, STEMMA-311).
+    namespace: Option<KeptNamespace>,
 }
 
 impl RefList {
@@ -486,7 +499,22 @@ impl RefList {
             key,
             former,
             references,
+            namespace: None,
         })
+    }
+
+    // The namespace policy (ADR-027, STEMMA-311).
+
+    /// The list with the namespace policy that holds for the repository.
+    #[must_use]
+    pub fn with_namespace(mut self, namespace: KeptNamespace) -> Self {
+        self.namespace = Some(namespace);
+        self
+    }
+
+    /// The namespace policy that holds for the repository, or `None` outside a namespace.
+    pub fn namespace(&self) -> Option<&KeptNamespace> {
+        self.namespace.as_ref()
     }
 
     /// The ID of the repository.
@@ -524,6 +552,13 @@ impl RefList {
             text.push_str(&format!(
                 "former-signature {}\n",
                 signature_to_line(signature)
+            ));
+        }
+        if let Some(namespace) = &self.namespace {
+            text.push_str(&format!(
+                "namespace-policy {} {}\n",
+                namespace.commit(),
+                to_hex(namespace.policy().encode().as_bytes())
             ));
         }
         for reference in &self.references {
@@ -587,6 +622,10 @@ impl RefList {
             FormerKeys::try_new(repository, &key, former, signature)
                 .map_err(|_| problem(FormerKeysProblem::Signature))?
         };
+        let namespace = match lines.take("namespace-policy")? {
+            Some((line, value)) => Some(parse_namespace(line, value)?),
+            None => None,
+        };
         let mut references: Vec<Reference> = Vec::new();
         while let Some((line, value)) = lines.take("ref")? {
             let fields: Vec<&str> = value.split(' ').collect();
@@ -615,8 +654,49 @@ impl RefList {
             key,
             former,
             references,
+            namespace,
         })
     }
+}
+
+// The namespace policy in the list of references (ADR-027, STEMMA-311).
+
+/// Reads the value of a `namespace-policy` line: the commit and the hexadecimal policy.
+fn parse_namespace(line: usize, value: &str) -> Result<KeptNamespace, ParseError> {
+    let (commit, hex) = value
+        .split_once(' ')
+        .ok_or(malformed(line, Malformed::Fields))?;
+    let commit = parse_commit(line, commit)?;
+    let bad = || malformed(line, Malformed::NamespacePolicy);
+    let bytes = from_hex(hex).ok_or_else(bad)?;
+    let policy = Policy::parse(&bytes).map_err(|_| bad())?;
+    if policy.encode().as_bytes() != bytes.as_slice() {
+        return Err(bad());
+    }
+    Ok(KeptNamespace::new(commit, policy))
+}
+
+/// The bytes as lowercase hexadecimal digits.
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The bytes of lowercase hexadecimal digits, or `None` for an odd count, an empty text, or
+/// another character.
+fn from_hex(text: &str) -> Option<Vec<u8>> {
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    };
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    bytes
+        .chunks(2)
+        .map(|pair| Some(digit(pair[0])? << 4 | digit(pair[1])?))
+        .collect()
 }
 
 // The signed list of the former keys of a hub (ADR-026, STEMMA-297).
@@ -1362,6 +1442,10 @@ pub enum Malformed {
     /// The reason of an error is empty or holds a control character or a line or paragraph
     /// separator.
     Reason,
+    // The namespace policy in the list of references (ADR-027, STEMMA-311).
+    /// The namespace policy of a `namespace-policy` line is not lowercase hexadecimal digits of
+    /// a valid policy in its canonical form.
+    NamespacePolicy,
 }
 
 impl fmt::Display for Malformed {
@@ -1391,6 +1475,10 @@ impl fmt::Display for Malformed {
             Self::Reason => {
                 f.write_str("the reason is empty or holds a control character or a line separator")
             }
+            Self::NamespacePolicy => f.write_str(
+                "the namespace policy is not the hexadecimal form of a valid policy in its \
+                 canonical form",
+            ),
         }
     }
 }
@@ -2149,6 +2237,9 @@ pub mod examples {
         example!("error-anchor-refused", Error),
         // The gate on a hub (STEMMA-303).
         example!("error-refused-gate", Error),
+        // The namespace policy (ADR-027, STEMMA-311).
+        example!("refs-namespace", RefList),
+        example!("error-refused-namespace-owner", Error),
     ];
 }
 

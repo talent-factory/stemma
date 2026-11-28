@@ -588,15 +588,15 @@ ref <qualified name> <reason> <facts>               or one or more `ref` lines
   that does not set `main` in a repository without one.
 - `refused` with `ref` lines names every refused reference with its reason: `denied <operation>`,
   `leased <human or agent> <id> <end of the lease>`, `gate -`, `reserved -`, `no-register -`,
-  `bad-register <text>`, `not-owner -`, `conflict <the name in the way>`, `incomplete <text>`
-  and `policy <text>`. A reference that is not named was not refused itself, and it did not move
+  `bad-register <text>`, `not-owner -`, `conflict <the name in the way>`, `incomplete <text>`,
+  `policy <text>`, and `namespace-owner <human or agent> <id>` (ADR-027, STEMMA-311). A reference that is not named was not refused itself, and it did not move
   either. A refusal with an `incomplete` reference is the 422 of ADR-023: the client uploads
   once more.
 - After a refusal of the names or of the connectivity of the commit of a first push, the other
   references are not judged, because their register lies in that commit.
 
 A reason fits its reference, for the constructor and for the reader: `gate`, `no-register`,
-`bad-register` and `not-owner` are reasons of `heads/main`, `leased` and `policy` of another
+`bad-register`, `not-owner` and `namespace-owner` are reasons of `heads/main`, `leased` and `policy` of another
 branch, and `denied` names `push` for a branch and `tag` or `untag` for a tag. The name of a
 `conflict` is a reference of the same kind or a directory of them, written as a branch name.
 
@@ -741,9 +741,11 @@ by the order of the hub: a retired key for a statement that lies before the firs
 that moved `main` to a commit whose register holds the key as no longer active, a revoked key the
 same for every kind but an approval, whose statements of a revoked key never count.
 
-**On a hub.** The context carries the destination of the held statements and the further
-policies (`AcceptContext::with_statements`, `with_policies`; the namespace policy of ADR-027 is
-one of them later). For a move of `main` after the first push, the operation asks the authorizer
+**On a hub.** The context carries the destination of the held statements and the namespace of
+the repository (`AcceptContext::with_statements`, `with_namespace`, ADR-027): its policy counts
+beside the policy of `T` by the maximum, its commit stands in the `policy` lines of the entry
+after the commit of `T`, and the owners that it demands must stand in the register of the first
+push and of every `M` (`namespace-owner`). For a move of `main` after the first push, the operation asks the authorizer
 for `push` and then the gate: `M` is a commit with the single parent `T`, its evidence line names
 an opening that the hub holds and whose pull request is open, the hub folds its held statements
 and the merges of its record in its order, and the tree of `M` is the tree that the verdict

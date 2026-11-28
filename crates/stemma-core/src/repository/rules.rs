@@ -121,6 +121,25 @@ impl Repository {
         base: &CommitId,
         enforcing: bool,
     ) -> Result<Policy, PolicyError> {
+        match self.policy_file_at(base, policy::FILE_NAME)? {
+            Some(policy) => Ok(policy),
+            None if enforcing => Err(PolicyError::Missing),
+            None => Ok(Policy::default()),
+        }
+    }
+
+    /// The policy in the file `name` in the root of `base`, or `None` if the root has no entry
+    /// of that name: the policy file, or the file of the namespace policy (ADR-027).
+    ///
+    /// # Errors
+    ///
+    /// [`PolicyError::NotAFile`], [`PolicyError::Invalid`] for a file that does not parse, and
+    /// [`PolicyError::Unreadable`] if an object cannot be read.
+    pub(crate) fn policy_file_at(
+        &self,
+        base: &CommitId,
+        name: &str,
+    ) -> Result<Option<Policy>, PolicyError> {
         let store = self.objects();
         let commit = store
             .get_commit(base)
@@ -130,16 +149,8 @@ impl Repository {
             .get_tree(&commit.tree())
             .map_err(unreadable)?
             .ok_or_else(|| not_in_store("the tree of the base commit", commit.tree()))?;
-        let Some(entry) = tree
-            .entries()
-            .iter()
-            .find(|entry| entry.name() == policy::FILE_NAME)
-        else {
-            return if enforcing {
-                Err(PolicyError::Missing)
-            } else {
-                Ok(Policy::default())
-            };
+        let Some(entry) = tree.entries().iter().find(|entry| entry.name() == name) else {
+            return Ok(None);
         };
         let id: ObjectId = entry.id();
         let raw = store
@@ -149,7 +160,9 @@ impl Repository {
         if raw.kind() != Kind::Blob || entry.mode() == EntryMode::Symlink {
             return Err(PolicyError::NotAFile);
         }
-        Policy::parse(raw.body()).map_err(PolicyError::Invalid)
+        Policy::parse(raw.body())
+            .map(Some)
+            .map_err(PolicyError::Invalid)
     }
 
     /// The policy of a base commit for a repository in `mode`: the file [`policy::FILE_NAME`] in
@@ -462,7 +475,7 @@ mod tests {
     fn an_unusable_policy_refuses_the_lease_in_both_modes_and_writes_nothing() {
         for (files, reason) in [
             (
-                vec![("x.txt", "x\n"), (".stemma-policy", "stemma-policy 2\n")],
+                vec![("x.txt", "x\n"), (".stemma-policy", "stemma-policy 3\n")],
                 "unknown version",
             ),
             (

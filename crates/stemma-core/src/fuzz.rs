@@ -202,7 +202,12 @@ pub fn protocol(input: &[u8]) {
                 list.key().clone(),
                 former,
                 list.references().to_vec(),
-            );
+            )
+            // The namespace policy (ADR-027, STEMMA-311): the reader checked its canonical form.
+            .map(|rebuilt| match list.namespace() {
+                Some(namespace) => rebuilt.with_namespace(namespace.clone()),
+                None => rebuilt,
+            });
             assert_eq!(
                 rebuilt.as_ref(),
                 Ok(&list),

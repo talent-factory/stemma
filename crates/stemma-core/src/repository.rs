@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! .stemma/
-//! ├── format          "stemma-repository 20" and a newline; 2 to 19 before `remote-add`
+//! ├── format          "stemma-repository 22" and a newline; 2 to 21 before `namespaces/`
 //! ├── log-id          "stemma-log-id 1" and the ID of the log, made by `init` (ADR-026)
 //! ├── HEAD            "branch <name>" and a newline (the branch may not exist yet)
 //! ├── working-copy    the ID of the working-copy commit and a newline (ADR-010)
@@ -15,6 +15,7 @@
 //! ├── refs/remotes/   remote references, below `<remote>/heads/` and `<remote>/tags/` (ADR-008)
 //! ├── remotes/        the configuration of the remotes, one file per remote (ADR-009)
 //! ├── anchors/        the last confirmation of an anchor of the log, one file per remote (ADR-026)
+//! ├── namespaces/     the namespace policy that a fetch kept, one file per remote (ADR-027)
 //! ├── oplog/          the operation log: one numbered file per entry (ADR-011)
 //! ├── oplog-tip       the number and the hash of the last entry of the log (ADR-011)
 //! ├── leases/         one file per branch with a lease, made by the first one (ADR-004)
@@ -36,7 +37,7 @@
 //!
 //! ```text
 //! <directory>/
-//! ├── format          "stemma-repository 20" and a newline
+//! ├── format          "stemma-repository 22" and a newline
 //! ├── bare            "stemma-bare" and a newline: the marker of a bare repository
 //! ├── objects/        loose objects (ADR-007)
 //! ├── refs/heads/     branches (ADR-008)
@@ -45,8 +46,8 @@
 //!     └── receive-…/  those of one upload, which holds no lock (ADR-023)
 //! ```
 //!
-//! It has no `HEAD`, no `working-copy`, no `oplog/` and `oplog-tip`, no `log-id` and no
-//! `anchors/`, no `leases/`, no
+//! It has no `HEAD`, no `working-copy`, no `oplog/` and `oplog-tip`, no `log-id`, no
+//! `anchors/` and no `namespaces/`, no `leases/`, no
 //! `worktrees/`, no `purge-pending`, and no `fetch-pending`. An operation that needs one of them
 //! is refused with [`RefError::Bare`] before it reads or writes anything.
 
@@ -73,6 +74,8 @@ mod follow;
 mod gate;
 mod lease;
 mod merge_branch;
+// The namespace policy (ADR-027, STEMMA-311).
+mod namespace;
 mod pin;
 mod pull;
 mod purge;
@@ -116,6 +119,8 @@ pub use follow::{Behind, Followed};
 pub use gate::{Dropped, DroppedReason, GateError, GateMerge, Retry, MAX_ATTEMPTS};
 pub use lease::{Claimed, LeaseError};
 pub use merge_branch::{MergeBranchError, MergeKind, MergeResult, Merged};
+// The namespace policy (ADR-027, STEMMA-311).
+pub use namespace::{KeepNamespaceError, KeptNamespaceReadError, NamespaceError};
 pub use pin::PinError;
 pub use pull::PullError;
 pub use purge::{
@@ -165,7 +170,9 @@ use crate::{Actor, ActorRef, Allowed, Authorizer};
 use worktree::POINTER_PREFIX;
 
 /// The version of the repository format that `init` and `init_bare` write, and that a purge and
-/// every new entry of the log move a repository to: version 20, the entries `remote-add` and
+/// every new entry of the log move a repository to: version 22, the directory `namespaces/` with
+/// the namespace policy that a fetch brought from each remote (STEMMA-311, ADR-027, ADR-009).
+/// Version 21 belongs to STEMMA-309. Version 20 was the entries `remote-add` and
 /// `remote-remove`, which add and remove a remote (STEMMA-305, ADR-009, ADR-011). Version 19
 /// was the file `log-id` with the ID of the log and the directory `anchors/` with the last
 /// confirmation of an anchor per remote (STEMMA-300, ADR-026, ADR-009). Version 18 was the
@@ -181,7 +188,7 @@ use worktree::POINTER_PREFIX;
 /// ADR-014), version 11 was the entry `check` (ADR-019, ADR-011),
 /// version 10 was the entry `pr-approve` (ADR-004, ADR-011), version 9 the pull request entries
 /// `pr-open`, `pr-close`, and `pr-merge`, version 8 the lease of a branch (ADR-009).
-const FORMAT_VERSION: u32 = 20;
+const FORMAT_VERSION: u32 = 22;
 
 /// The versions of the repository format that this code reads. Version 3 adds the stub and the
 /// `purge` entry to the operation log and the journal `purge-pending` (ADR-014). A repository
@@ -236,9 +243,15 @@ const FORMAT_VERSION: u32 = 20;
 /// Version 20 adds the entries `remote-add` and `remote-remove` (STEMMA-305, ADR-011), which add
 /// and remove a remote with its configuration. A program that knows only version 19 reads such an
 /// entry as a change without a pointer, which is damage, so the repository rises with its next
-/// entry or purge.
-const READ_VERSIONS: [u32; 19] = [
-    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+/// entry or purge. Version 21 belongs to STEMMA-309, which adds it here; until then this code
+/// refuses it, as it does not know what it adds. Version 22 adds the directory
+/// `namespaces/` (STEMMA-311, ADR-027): a fetch or a `remote add` keeps there the namespace
+/// policy that the list of references names, and the local gate evaluates it beside the policy
+/// of `main`. A program that knows only version 21 would merge without the namespace policy, so
+/// the repository rises to 22 before a fetch or a `remote add` writes the first file, and with
+/// its next entry or purge.
+const READ_VERSIONS: [u32; 20] = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22,
 ];
 
 /// The name that the temporary directory of `init_bare` starts with. It differs from
@@ -3543,7 +3556,7 @@ mod tests {
         );
         assert_eq!(
             fs::read(meta.join("format")).unwrap(),
-            b"stemma-repository 20\n"
+            b"stemma-repository 22\n"
         );
         assert_eq!(fs::read(meta.join("HEAD")).unwrap(), b"branch main\n");
         let first = FsOpLog::new(&meta).read(1).unwrap();
@@ -4877,6 +4890,7 @@ mod tests {
             "0",
             "1",
             "21",
+            "23",
             "99",
             "4294967295",
             "4294967296",
@@ -4926,7 +4940,7 @@ mod tests {
         assert_eq!(entry.chain(), Chain::Start);
         assert_eq!(
             fs::read_to_string(meta.join("format")).unwrap(),
-            "stemma-repository 20\n"
+            "stemma-repository 22\n"
         );
         assert_eq!(repository.oplog().entries().unwrap().len(), 2);
     }
@@ -4952,7 +4966,7 @@ mod tests {
         // A program that knows only version 5 refuses what the entry may now carry.
         assert_eq!(
             fs::read_to_string(dir.path().join(METADATA_DIR).join("format")).unwrap(),
-            "stemma-repository 20\n"
+            "stemma-repository 22\n"
         );
     }
 
@@ -4983,7 +4997,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 20\n"
+            "stemma-repository 22\n"
         );
     }
 
@@ -5016,7 +5030,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 20\n"
+            "stemma-repository 22\n"
         );
         // The move of the working-copy commit kept the owner.
         let id = repository.refs().working_copy().unwrap();
@@ -5260,7 +5274,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(dir.path().join(".stemma/format")).unwrap(),
-            "stemma-repository 20\n"
+            "stemma-repository 22\n"
         );
     }
 
@@ -5337,7 +5351,7 @@ mod tests {
         let meta = dir.path().join(METADATA_DIR);
         let read = || fs::read_to_string(meta.join("format")).unwrap();
         raise_format(&meta, 3).unwrap();
-        assert_eq!(read(), "stemma-repository 20\n");
+        assert_eq!(read(), "stemma-repository 22\n");
         set_format(dir.path(), "stemma-repository 2\n");
         raise_format(&meta, 3).unwrap();
         assert_eq!(read(), "stemma-repository 3\n");
@@ -5375,6 +5389,8 @@ mod tests {
         assert_eq!(read(), "stemma-repository 19\n");
         raise_format(&meta, 20).unwrap();
         assert_eq!(read(), "stemma-repository 20\n");
+        raise_format(&meta, 22).unwrap();
+        assert_eq!(read(), "stemma-repository 22\n");
     }
 
     #[test]
@@ -5419,7 +5435,7 @@ mod tests {
         let dir = TempDir::new();
         init(dir.path()).unwrap();
         let format = fs::read_to_string(dir.path().join(".stemma/format")).unwrap();
-        assert_eq!(format, "stemma-repository 20\n");
+        assert_eq!(format, "stemma-repository 22\n");
         for version in ["2", "3", "4", "5"] {
             set_format(dir.path(), format!("stemma-repository {version}\n"));
             Repository::open(dir.path()).unwrap();
@@ -5591,14 +5607,14 @@ mod tests {
             ),
             (
                 OpenError::MalformedFormat { path: path.clone() },
-                "stemma-repository 20",
+                "stemma-repository 22",
             ),
             (
                 OpenError::UnsupportedFormat {
                     path: path.clone(),
-                    found: "21".to_string(),
+                    found: "23".to_string(),
                 },
-                "version 21, but this code supports versions 2 to 20",
+                "version 23, but this code supports versions 2 to 20 and 22",
             ),
         ];
         for (error, text) in cases {
