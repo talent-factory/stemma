@@ -832,7 +832,8 @@ impl fmt::Display for PushError {
             Self::TooLarge { moves, size } => write!(
                 f,
                 "the entry of a push of {moves} references would be {size} bytes, but an entry \
-                 holds at most {MAX_ENTRY_LEN}; nothing was sent, push fewer references at a time"
+                 holds at most {MAX_ENTRY_LEN} bytes; nothing was sent, push fewer references at \
+                 a time"
             ),
             Self::Objects(error) => write!(f, "the upload cannot be read from the store: {error}"),
             Self::Upload { confirmed, source } if transient(source) => write!(
