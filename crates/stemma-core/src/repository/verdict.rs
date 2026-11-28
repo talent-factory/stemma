@@ -33,7 +33,7 @@ use crate::check::{self, Check};
 use crate::evidence::Evidence;
 use crate::merge::merge_commits;
 use crate::object::{CommitId, Kind, ObjectId, TreeId};
-use crate::policy::{Policy, RiskLevel};
+use crate::policy::{Combined, Policy, RiskLevel};
 use crate::protocol::refusal::LevelSource;
 use crate::protocol::statement::Statement;
 use crate::pull::{self, Approval, PullRequest};
@@ -240,11 +240,7 @@ impl Repository {
                 new: new.as_deref(),
             })
             .collect();
-        let weakened = policies
-            .iter()
-            .map(|policy| policy.weakening(&changes).level)
-            .max()
-            .unwrap_or(RiskLevel::Zero);
+        let weakened = Combined::new(policies).weakening(&changes).level;
         if weakened > paths {
             Ok((weakened, LevelSource::Weakened))
         } else {
@@ -367,11 +363,7 @@ fn approvals_missing(
     let humans = count(&|kind, role| {
         kind == IdentityKind::Human && (level < RiskLevel::Three || role == Role::Owner)
     });
-    let agents_needed = policies
-        .iter()
-        .map(|policy| policy.agent_approvals(level))
-        .max()
-        .unwrap_or(0);
+    let agents_needed = Combined::new(policies).agent_approvals(level);
     let humans_needed = u32::from(level >= RiskLevel::Two);
     if agents >= agents_needed && humans >= humans_needed {
         return None;

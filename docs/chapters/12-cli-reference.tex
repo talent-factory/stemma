@@ -3836,10 +3836,12 @@ Der Kern fragt den Autorisierer nach \type{remote-add} mit dem Namen des Remote 
 ADR-004) und lehnt einen Namen ab, den es schon gibt, bevor er den Hub fragt oder sich dort
 anmeldet.
 Dann liest er die Liste der Referenzen, nimmt die Repository-ID daraus und hält den Schlüssel
-des Hubs fest. Unter der Sperre der Referenzen prüft er den Namen noch einmal, schreibt den
-Eintrag \type{remote-add} mit der ganzen Konfiguration und danach die Datei
-\type{remotes/NAME} (ADR-011). Eine Remote-Referenz bewegt der Befehl nicht; das tut
-\type{fetch}.
+des Hubs fest. Unter der Sperre der Referenzen prüft er den Namen noch einmal, hält die
+Namespace-Policy der Liste in \type{namespaces/NAME} fest (oder entfernt die Datei, wenn die
+Liste keine nennt; ADR-027), schreibt den Eintrag \type{remote-add} mit der ganzen
+Konfiguration und danach die Datei \type{remotes/NAME} (ADR-011).
+Mit der ersten Namespace-Policy steigt das Repository-Format auf Version 22 (ADR-009).
+Eine Remote-Referenz bewegt der Befehl nicht; das tut \type{fetch}.
 
 {\bf Textform.} Zwei Zeilen: \type{Added the remote `NAME` at ADRESSE.} und eine Zeile mit dem
 Fingerabdruck, die sagt, ob er dem erwarteten entspricht oder zu vergleichen ist.
@@ -3852,15 +3854,18 @@ ihn bestätigt hat) und \type{entry}, die Nummer des Eintrags.
 Schlüssel, der nicht den erwarteten Fingerabdruck hat (die Meldung nennt beide), ein Hub, der
 ablehnt, keine Antwort des Protokolls gibt, umleitet (die Meldung nennt die neue Adresse; der
 Client folgt nie) oder das Repository nicht liefert (es fehlt, darf nicht gelesen werden oder
-wurde umbenannt), eine Anmeldung, die scheitert oder ohne \type{--key} ist, und eine CA-Datei, die
-sich nicht lesen lässt. Exit-Code 6: Die Sperre der Referenzen ist gehalten, oder der Hub ist
-beschäftigt (503) oder begrenzt die Anfragen (429); ein späterer Aufruf kann gelingen.
+wurde umbenannt), eine Anmeldung, die scheitert oder ohne \type{--key} ist, eine CA-Datei, die
+sich nicht lesen lässt, und eine Namespace-Policy, die sich nicht festhalten lässt.
+Exit-Code 6: Die Sperre der Referenzen ist gehalten, oder der Hub ist beschäftigt (503) oder
+begrenzt die Anfragen (429); ein späterer Aufruf kann gelingen.
 Exit-Code 3: Der Eintrag steht im Log, aber die Konfiguration liess sich nicht schreiben, oder
 die Ausgabe nicht. Eine geschlossene Pipe ist kein Fehler, denn \type{op log} nennt den Eintrag;
 das gilt ebenso für \type{remote remove}, \type{remote pin} und \type{fetch}.
 Exit-Code 5: Eine Konfiguration eines Remote ist beschädigt.
 
-{\bf Wiederholen.} Nach Exit-Code 1 und 6 ist nichts geschrieben. Nach Exit-Code 3 zeigt
+{\bf Wiederholen.} Nach Exit-Code 1 und 6 stehen weder Eintrag noch Konfiguration da; nur das
+Format kann gestiegen und die Namespace-Policy festgehalten sein, die für einen Remote ohne
+Konfiguration nicht zählt. Nach Exit-Code 3 zeigt
 \type{remote list}, ob der Remote da ist; fehlt er, schreibt ein zweiter Aufruf einen zweiten
 Eintrag. Nach einem Erfolg lehnt ein zweiter Aufruf den Namen ab.
 

@@ -39,6 +39,7 @@ das Festhalten des Schlüssels des Hubs im Klon,
 der HTTP-Client des Klons,
 die Kompression seines Rumpfs mit zstd,
 die Anker des Operation Log im Kern, mit Log-ID, Bestätigung und Prüfung gegen den Hub,
+die Namespace-Policy im Kern, mit dem Maximum über die Policies und den verlangten Ownern,
 die Befehle \type{remote}, \type{clone} und \type{fetch},
 und der Push im Kern mit dem Merge eines Pull Requests über einen Remote.
 Dieses Kapitel beschreibt den entschiedenen Entwurf; jeder Abschnitt wächst mit dem Teil, der
@@ -352,7 +353,8 @@ Remote-Referenzen und der Nummer und dem Hash der Quittung, und erst dann bewege
 den neuen Commit und den Hash der Quittung als ihren Eintrag der Aufzeichnung.
 Danach sendet er den Anker der neuen Spitze des Log; scheitert das, hat der Push trotzdem
 stattgefunden.
-Mit dem Eintrag \type{push} steigt das Repository-Format auf Version 21 (ADR-009).
+Der Eintrag \type{push} kam mit Version 21 des Repository-Formats; ein Repository, das ihn
+schreibt, steigt auf die aktuelle Version (ADR-009).
 
 \subsection{Was der Empfänger prüft}
 
@@ -558,8 +560,8 @@ Rumpf der Antwort.
 Der Klon folgt keiner Weiterleitung, damit ein Token nie an einen anderen Host geht.
 Ein Fetch oder Klon eines öffentlichen Repositorys kostet 2 Anfragen, der eines privaten 4, ein
 Push 5: die Anmeldung mit zwei Anfragen, der Upload, das Ref-Update und der Anker.
-Ein Fetch liest ausserdem die Erklärungen offener Pull Requests und die Namespace-Policy, was je
-eine Anfrage hinzufügen kann.
+Ein Fetch liest ausserdem die Erklärungen offener Pull Requests, was eine Anfrage hinzufügen kann;
+die Namespace-Policy steht in der Liste der Referenzen und kostet keine.
 
 \startinfobox
 {\bf Wann ein Pack-Format nötig wird.}
@@ -1220,6 +1222,8 @@ Im Kern ist das \type{Repository::merge_gate_remote}: Ein Versuch holt den Stand
 Remote-Referenz von \type{main}, urteilt mit derselben Funktion wie das lokale Gate
 (\in{Abschnitt}[sec:main-verdict]) und schreibt $M$ mit dem einzigen Elter $T$, ohne etwas zu
 bewegen.
+Neben der Policy von $T$ zählt die Namespace-Policy, die der \type{fetch} für diesen Remote
+festgehalten hat, denn der Hub urteilt nach seiner eigenen.
 Das Ref-Update nennt den Hash der Eröffnung als Beleg und läuft durch Upload und Quittung des
 Push.
 Erst nach der Quittung bewegt ein Eintrag \type{push} das lokale \type{main} und seine
@@ -1249,8 +1253,9 @@ Die annehmende Operation urteilt über eine Bewegung von \type{main} mit derselb
 das lokale Gate (\in{Abschnitt}[sec:main-verdict]).
 Vom Absender nimmt sie nur $M$ und die Zeile \type{evidence}, die den Pull Request mit dem Hash
 seiner Eröffnung nennt; alles andere rechnet sie selbst.
-Der Hub übergibt dafür im Kontext den Ort seiner gehaltenen Erklärungen und, für die
-Namespace-Policy, weitere Policies, die mit der Policy von $T$ nach dem Maximum zählen.
+Der Hub übergibt dafür im Kontext den Ort seiner gehaltenen Erklärungen und den Namespace des
+Repositorys, dessen Policy mit der Policy von $T$ nach dem Maximum zählt
+(\in{Abschnitt}[sec:namespaces]).
 
 \startitemize[n]
 \item $M$ ist ein Commit mit dem einzigen Elternteil $T$.
@@ -1473,10 +1478,16 @@ als aktiven Schlüssel eines Owners führt. \stopxcell
 \startxcell \type{incomplete} \stopxcell
 \startxcell Objekte des neuen Commits fehlen; der Klon lädt noch einmal hoch. \stopxcell
 \stopxrow
-\startxrow[bottomframe=on]
+\startxrow
 \startxcell \type{policy} \stopxcell
 \startxcell Die Policy an der Spitze von \type{main}, die die Dauer der Lease nennt, lässt sich
 nicht verwenden. \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{namespace-owner} \stopxcell
+\startxcell Die Namespace-Policy verlangt die Owner des Namespace, und das Register des neuen
+Commits von \type{main} führt den genannten nicht als Owner mit seinen Schlüsseln
+(\in{Abschnitt}[sec:namespaces]). \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
@@ -1783,18 +1794,80 @@ Die annehmende Operation liest die Policy von $T$ und die Namespace-Policy an de
 berührten Pfade, die Zahl der Freigaben, die engeren Schranken.
 Eine Namespace-Policy kann deshalb nur anheben, und die Mindeststufen des Kerns bleiben, weil ein
 Maximum nie unter sie fällt.
-Die Datei der Namespace-Policy ist selbst immer Stufe 3.
-Ein Fetch bringt sie in den Klon, damit das lokale Gate zum selben Urteil kommt.
+Die Datei der Namespace-Policy heisst \type{.stemma-namespace-policy}, liegt in der Wurzel des
+Namespace-Repositorys und ist in jedem Repository immer Stufe 3; die \type{.stemma-policy} des
+Namespace-Repositorys regelt nur dieses selbst.
+
+{\bf Das Maximum über eine Liste.}
+Der Kern kombiniert beliebig viele Policies desselben Formats, nicht genau zwei
+(im Code \type{Combined}).
+Für einen Pfad zählt die höchste Stufe, die eine der Policies ihm gibt, für eine Stufe die
+grösste Zahl von Freigaben, für \type{reservation} und \type{max-unverified} der kleinste
+Wert, für die Eskalation abgeschwächter Tests die höchste Stufe.
+Lease und Operationen bleiben Sache der Policy des Repositorys.
+Die Invariante: Eine weitere Policy senkt nie, was eine andere verlangt, und die Reihenfolge der
+Policies spielt keine Rolle, denn das Maximum ist kommutativ und assoziativ.
+Die Kosten wachsen linear mit der Zahl der Policies, $O(k\,p\,l)$ Mustervergleiche für $k$
+Policies.
+Eine Folge ist zu beachten: Auch für die Namespace-Policy hat ein Pfad, den sie nicht nennt,
+Stufe 2.
+Soll sie nur einzelne Pfade anheben, nennt sie die übrigen mit ihrer niedrigeren Stufe, etwa
+\type{level 0 docs/}; eine Zeile für alle Pfade gibt es nicht, weil sie die Policy-Dateien senken
+würde.
+
+{\bf Die Zeilen des Hubs.}
+Der Eintrag der Aufzeichnung nennt in seinen Zeilen \type{policy} die Commits der Policies, auf
+denen das Urteil beruht: den Commit $T$ und den Commit des Namespace-Repositorys, dessen
+Namespace-Policy galt.
+Der Hub liest sie im Augenblick des Ref-Updates; eine Anhebung wirkt also sofort auch auf offene
+Pull Requests.
+
+{\bf Im Klon.}
+Die Liste der Referenzen nennt die Namespace-Policy mit einer Zeile \type{namespace-policy}:
+den Commit und die Policy in ihrer kanonischen Form, hexadezimal in einer Zeile, damit eine
+abgeschnittene Antwort nie einen Teil von ihr trägt.
+Ein Fetch hält sie unter der Sperre der Referenzen in \type{namespaces/<Remote>} fest, bevor die
+Remote-Referenzen sich bewegen, und entfernt die Datei, wenn die Liste keine nennt.
+\type{remote add} tut dasselbe mit der Liste, die es für den ersten Kontakt liest, bevor es die
+Konfiguration schreibt; so urteilt das Gate schon vor dem ersten Fetch mit der Namespace-Policy.
+Mit dem Verzeichnis \type{namespaces/} steigt das Repository-Format auf Version 22 (ADR-009),
+denn ein Programm, das es nicht kennt, würde ohne die Namespace-Policy mergen.
+Das Gate nach der Policy wertet die festgehaltenen Namespace-Policies aller eingerichteten
+Remotes neben der Policy von $T$ aus, liest sie bei jedem Versuch neu und kommt damit zum selben
+Urteil wie der Hub.
+\type{pr merge} mit der Stufe aus \type{--level} liest wie bisher keine Policy, also auch keine
+Namespace-Policy (\in{Abschnitt}[sec:policy-file]).
+Durchgesetzt wird die Namespace-Policy aber vom Hub allein: Der Klon prüft die Policy, die er
+zuletzt geholt hat, und kann ihre Herkunft nicht nachrechnen.
 
 Das Register bleibt die einzige Quelle der Rollen in einem Repository.
 Owner eines Namespace haben Rechte nur oberhalb des Repositorys: anlegen, umbenennen, löschen,
 Leser bestimmen.
 Die Namespace-Policy kann aber mit einer Zeile verlangen, dass das Register jedes Repositorys die
 Owner des Namespace als Owner führt.
+Die Zeile heisst \type{demand-namespace-owners} und steht erst in Version 2 des Formats.
+Verlangt sind die Menschen mit der Rolle Owner im Register an der Spitze des
+Namespace-Repositorys, jeder mit seinen aktiven Schlüsseln.
+Ein Register führt einen solchen Owner, wenn es dieselbe Identität mit der Rolle Owner enthält
+und jeden dieser Schlüssel als aktiven Schlüssel dieser Identität; der Name allein genügt nicht,
+denn er ist nur eine Behauptung.
 Der Hub lehnt dann einen ersten Push und jede Bewegung von \type{main} ab, deren Register sie
-nicht enthält.
+nicht enthält (Grund \type{namespace-owner}).
 So kann ein Kurs den Owner-Override der Lehrperson garantieren, und \type{op verify} kommt ohne
 Hub zum selben Ergebnis, weil die Rolle im Register steht.
+
+\startinfobox
+{\bf Stufe 3 mit einer einzigen Lehrperson.}
+Eine Änderung der Namespace-Policy ist Stufe 3 und braucht die Freigabe eines menschlichen
+Owners, der weder die Änderung eröffnet noch einen ihrer Commits geschrieben hat.
+In einem Kurs mit einer Lehrperson als einzigem Owner geht das mit der Regel von Phase 4
+unverändert:
+Ein Agent der Lehrperson schreibt und eröffnet die Änderung, die Lehrperson gibt sie frei, und ein
+zweiter Agent der Lehrperson hält die Prüfung fest; ein Agent zählt dafür, solange sein Sponsor
+nicht der Eröffner ist.
+Schreibt die Lehrperson die Änderung selbst, nimmt der Hub ihre Freigabe nicht an, und auch die
+Prüfung ihrer Agenten zählt nicht; dann braucht es einen zweiten Owner.
+\stopinfobox
 
 \startitemize
 \item Ein Owner des Namespace gewährt einem Konto \type{create} (Repositories anlegen) oder
@@ -1962,8 +2035,6 @@ Hub und die Zahl der Wiederholungen eines Merges wegen \type{Stale} sind nicht g
 (ADR-015, ADR-023).
 \item Einträge aus der Zeit vor der Hash-Kette des Operation Log deckt kein Anker des Hubs.
 \item Ein Repository kann seinen Namespace nicht wechseln.
-\item Wie eine Änderung der Stufe 3 in einem Namespace-Repository mit einem einzigen menschlichen
-Owner freigegeben wird, etwa in einem Kurs mit einer Lehrperson.
 \item Strengere Mindeststufen für Firmenkunden bleiben ausserhalb des Umfangs; ADR-027 hält fest,
 was das Modell dafür offen lässt.
 \item Ob und wie der Hub an Dritte weitergegeben wird.

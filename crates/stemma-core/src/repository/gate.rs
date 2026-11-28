@@ -30,7 +30,7 @@ use std::error::Error;
 use std::fmt;
 
 use super::verdict::{Case, LogProofs, Refusal, Rules, Verdict};
-use super::{now, Pause, Repository};
+use super::{now, KeptNamespaceReadError, Pause, Repository};
 use crate::change::{ChangeId, GenerateError};
 use crate::conflict::FromSumError;
 use crate::history::HistoryError;
@@ -211,6 +211,10 @@ pub enum GateError {
     Policy(PolicyError),
     /// The level of the change cannot be told. The merge is refused.
     Level(LevelError),
+    // The namespace policy (ADR-027, STEMMA-311).
+    /// The namespace policy that a fetch kept cannot be read. The merge is refused, and nothing
+    /// was written.
+    Namespace(KeptNamespaceReadError),
     /// The entry of the move is written, and the file system failed before `main` moved. The
     /// pointer is where it was; the entry stays in the log as an intent, and `pr-merge` is not
     /// written. The call can be repeated.
@@ -316,6 +320,7 @@ impl fmt::Display for GateError {
             Self::Log(error) => error.fmt(f),
             Self::Policy(error) => write!(f, "the merge is refused: {error}"),
             Self::Level(error) => write!(f, "the merge is refused: {error}"),
+            Self::Namespace(error) => write!(f, "the merge is refused: {error}"),
             Self::MoveFailed { source, .. } => {
                 write!(f, "the entry of the move is written, but `{TARGET}` did not move: {source}")
             }
@@ -349,6 +354,7 @@ impl Error for GateError {
             Self::Log(error) => Some(error),
             Self::Policy(error) => Some(error),
             Self::Level(error) => Some(error),
+            Self::Namespace(error) => Some(error),
             _ => None,
         }
     }
@@ -673,6 +679,15 @@ impl Repository {
             _ => Vec::new(),
         };
 
+        // The namespace policies that the fetches kept count beside the policy of `T`, as the
+        // namespace policy does on the hub (ADR-027, STEMMA-311).
+        let namespaces = match fixed {
+            Some(_) => Vec::new(),
+            None => self
+                .kept_namespace_policies()
+                .map_err(GateError::Namespace)?,
+        };
+
         // Steps 1 and 2: the verdict about `main` (STEMMA-303), the function that a hub calls
         // as well. The merge writes its blobs and trees before the lock.
         let proofs = LogProofs(register);
@@ -686,7 +701,7 @@ impl Repository {
             proofs: &proofs,
             rules: match fixed {
                 Some(level) => Rules::Level(level),
-                None => Rules::Policies(&[]),
+                None => Rules::Policies(&namespaces),
             },
             now: now(),
         };
@@ -1818,7 +1833,7 @@ mod tests {
     #[test]
     fn an_enforcing_repository_refuses_an_unreadable_or_unknown_policy() {
         for (text, reason) in [
-            ("stemma-policy 2\n", "unknown version"),
+            ("stemma-policy 3\n", "unknown version"),
             ("not a policy\n", "first line has to be"),
             ("", "no header"),
             ("stemma-policy 1\nlevel 9 x\n", "not a level"),
@@ -3457,4 +3472,7 @@ mod tests {
             "no signature"
         );
     }
+
+    // The namespace policy that a fetch kept (ADR-027, STEMMA-311).
+    mod namespace;
 }

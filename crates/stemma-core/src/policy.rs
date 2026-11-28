@@ -83,6 +83,11 @@ use crate::weakened::{self, FileChange, Reason};
 /// The name of the policy file, in the root of the repository.
 pub const FILE_NAME: &str = ".stemma-policy";
 
+/// The name of the file of the namespace policy, in the root of the namespace repository
+/// (ADR-027). It has the format of the policy file and level 3 in every repository, as the
+/// policy file has.
+pub const NAMESPACE_FILE_NAME: &str = ".stemma-namespace-policy";
+
 /// The directory of the actor register. Its files have level 3 (ADR-003, ADR-004). The register
 /// itself is the file `register` in it ([`crate::register::FILE`]).
 pub const REGISTER_DIR: &str = ".stemma-actors";
@@ -90,8 +95,17 @@ pub const REGISTER_DIR: &str = ".stemma-actors";
 /// The header of the first line.
 const HEADER: &str = "stemma-policy";
 
-/// The version that this reader knows.
-const VERSION: &str = "1";
+/// The newest version of the format, which this reader knows with every older one
+/// ([`VERSIONS`]). Version 2 adds the line `demand-namespace-owners` (ADR-027, STEMMA-311).
+const VERSION: &str = "2";
+
+/// The versions of the format that this reader knows, from the oldest. A line that a version
+/// added is refused in a file of an older version, so a program that knows only the older one
+/// refuses the file by its header and never reads it without the line.
+const VERSIONS: [&str; 2] = ["1", VERSION];
+
+/// The keyword of the line that demands the owners of the namespace (version 2).
+const DEMAND_OWNERS: &str = "demand-namespace-owners";
 
 /// The level of a path that no line names.
 pub const DEFAULT_LEVEL: RiskLevel = RiskLevel::Two;
@@ -281,6 +295,10 @@ pub struct Policy {
     /// The paths of the extra assertion macros, in order.
     assertions: Vec<String>,
     weakened_level: Option<RiskLevel>,
+    /// The version of the header, as an index into [`VERSIONS`]: 0 for version 1.
+    version: usize,
+    /// The line `demand-namespace-owners` (version 2).
+    demand_owners: bool,
 }
 
 /// A `level` line. Equal if the level and the pattern text are, whatever the line it stood on.
@@ -321,13 +339,14 @@ impl Policy {
         scan_lines(bytes, |at, line| {
             if !header {
                 return match line.split_once(' ') {
-                    Some((HEADER, VERSION)) => {
-                        header = true;
-                        Ok(())
-                    }
-                    Some((HEADER, version)) => {
-                        Err(PolicyProblem::UnknownVersion(version.to_owned()))
-                    }
+                    Some((HEADER, version)) => match VERSIONS.iter().position(|v| *v == version) {
+                        Some(index) => {
+                            header = true;
+                            policy.version = index;
+                            Ok(())
+                        }
+                        None => Err(PolicyProblem::UnknownVersion(version.to_owned())),
+                    },
                     _ => Err(PolicyProblem::MissingHeader),
                 };
             }
@@ -487,6 +506,19 @@ impl Policy {
                 once("weakened-level".to_owned())?;
                 self.weakened_level = Some(level);
             }
+            DEMAND_OWNERS => {
+                if fields.len() != 1 {
+                    return Err(PolicyProblem::Usage(DEMAND_OWNERS));
+                }
+                if self.version < 1 {
+                    return Err(PolicyProblem::NeedsVersion {
+                        line: DEMAND_OWNERS,
+                        version: VERSIONS[1],
+                    });
+                }
+                once(DEMAND_OWNERS.to_owned())?;
+                self.demand_owners = true;
+            }
             HEADER => return Err(PolicyProblem::SecondHeader),
             other => return Err(PolicyProblem::UnknownLine(other.to_owned())),
         }
@@ -498,7 +530,7 @@ impl Policy {
     /// order. Reading the result gives a policy that evaluates like this one; comments and empty
     /// lines are not kept.
     pub fn encode(&self) -> String {
-        let mut text = format!("{HEADER} {VERSION}\n");
+        let mut text = format!("{HEADER} {}\n", VERSIONS[self.version]);
         if let Some(minutes) = self.lease_minutes {
             text.push_str(&format!("lease {minutes}\n"));
         }
@@ -521,6 +553,9 @@ impl Policy {
         }
         for path in &self.assertions {
             text.push_str(&format!("assertion {path}\n"));
+        }
+        if self.demand_owners {
+            text.push_str(&format!("{DEMAND_OWNERS}\n"));
         }
         for rule in &self.paths {
             text.push_str(&format!("level {} {}\n", rule.level, rule.text));
@@ -639,6 +674,113 @@ impl Policy {
     pub fn max_unverified(&self) -> u32 {
         self.max_unverified.unwrap_or(DEFAULT_MAX_UNVERIFIED)
     }
+
+    /// Whether the policy has the line `demand-namespace-owners`: as a namespace policy, it
+    /// demands that the register of every repository of the namespace holds the human owners of
+    /// the namespace repository as owners (ADR-027). The line counts in a namespace policy only;
+    /// in the policy file of a repository it is valid and has no effect.
+    pub fn demands_namespace_owners(&self) -> bool {
+        self.demand_owners
+    }
+}
+
+/// Any number of policies of the same format, combined by the maximum per change (ADR-027):
+/// the highest level over the touched paths, the most approvals, and the tighter bounds of the
+/// gate. The combination never falls below a floor of the core, as no policy does, and it never
+/// falls below one of its policies, so a further policy can only raise. An empty combination
+/// evaluates as [`Policy::default`].
+///
+/// The lease and the levels of the operations are no part of it: they are read from the policy
+/// of the repository alone (ADR-004).
+#[derive(Debug, Clone, Copy)]
+pub struct Combined<'a> {
+    policies: &'a [Policy],
+}
+
+impl<'a> Combined<'a> {
+    /// The combination of these policies.
+    pub fn new(policies: &'a [Policy]) -> Self {
+        Self { policies }
+    }
+
+    /// The policies, in their order.
+    pub fn policies(&self) -> &'a [Policy] {
+        self.policies
+    }
+
+    /// The policies, or the default policy for an empty combination.
+    fn each(&self) -> impl Iterator<Item = std::borrow::Cow<'a, Policy>> {
+        let default = self
+            .policies
+            .is_empty()
+            .then(|| std::borrow::Cow::Owned(Policy::default()));
+        self.policies
+            .iter()
+            .map(std::borrow::Cow::Borrowed)
+            .chain(default)
+    }
+
+    /// The highest of the values that `of` gives for each policy.
+    fn highest<T: Ord>(&self, of: impl Fn(&Policy) -> T) -> T {
+        self.each()
+            .map(|policy| of(&policy))
+            .max()
+            .expect("a combination evaluates one policy at least")
+    }
+
+    /// The level of a path: the highest level that a policy gives it ([`Policy::level_of_path`]).
+    ///
+    /// # Errors
+    ///
+    /// The [`PathError`] of an invalid path.
+    pub fn level_of_path(&self, path: &str, kind: EntryKind) -> Result<RiskLevel, PathError> {
+        let mut level = RiskLevel::Zero;
+        for policy in self.each() {
+            level = level.max(policy.level_of_path(path, kind)?);
+        }
+        Ok(level)
+    }
+
+    /// The level of a change: the highest level of all paths that it touches by any policy.
+    ///
+    /// # Errors
+    ///
+    /// The [`PathError`] of the first invalid path.
+    pub fn level_of(&self, changes: &[PathChange<'_>]) -> Result<RiskLevel, PathError> {
+        let mut level = RiskLevel::Zero;
+        for change in changes {
+            for (path, kind) in change.touched() {
+                level = level.max(self.level_of_path(path, kind)?);
+            }
+        }
+        Ok(level)
+    }
+
+    /// The agent approvals that a change of this level needs: the most that a policy asks for.
+    pub fn agent_approvals(&self, level: RiskLevel) -> u32 {
+        self.highest(|policy| policy.agent_approvals(level))
+    }
+
+    /// The escalation for weakened tests: the result of the policy that gives the signals the
+    /// highest level. The `assertion` lines of a policy count with its own level only.
+    pub fn weakening(&self, files: &[FileChange<'_>]) -> Weakening {
+        self.each()
+            .map(|policy| policy.weakening(files))
+            .max_by_key(|found| (found.level, found.reasons.len()))
+            .expect("a combination evaluates one policy at least")
+    }
+
+    /// `N` of ADR-019: the fewest invalidated runs after which a policy gives a reservation.
+    pub fn reservation_after(&self) -> u32 {
+        self.highest(|policy| std::cmp::Reverse(policy.reservation_after()))
+            .0
+    }
+
+    /// `max_unverified` of ADR-019: the fewest unverified commits that a policy allows.
+    pub fn max_unverified(&self) -> u32 {
+        self.highest(|policy| std::cmp::Reverse(policy.max_unverified()))
+            .0
+    }
 }
 
 /// The result of the signals of weakened tests for one change.
@@ -680,7 +822,8 @@ fn is_floor_path(path: &str) -> bool {
         name.trim_end_matches(['.', ' ']).to_uppercase() == floor.to_uppercase()
     };
     let top = path.split('/').next().unwrap_or(path);
-    is_name(top, REGISTER_DIR) || (path == top && is_name(path, FILE_NAME))
+    is_name(top, REGISTER_DIR)
+        || (path == top && (is_name(path, FILE_NAME) || is_name(path, NAMESPACE_FILE_NAME)))
 }
 
 /// A floor path that the pattern matches, if any: a line that gives it a level below 3 lowers it.
@@ -690,6 +833,8 @@ fn is_floor_path(path: &str) -> bool {
 fn lowered_floor(pattern: &Pattern) -> Option<&'static str> {
     if pattern.matches_path(FILE_NAME, false) {
         Some(FILE_NAME)
+    } else if pattern.matches_path(NAMESPACE_FILE_NAME, false) {
+        Some(NAMESPACE_FILE_NAME)
     } else if pattern.matches_path(REGISTER_DIR, true) || pattern.matches_below(REGISTER_DIR) {
         Some(REGISTER_DIR)
     } else {
@@ -892,6 +1037,13 @@ pub enum PolicyProblem {
         /// The level as written.
         level: RiskLevel,
     },
+    /// A line that a later version of the format added stands in a file of an older version.
+    NeedsVersion {
+        /// The keyword of the line.
+        line: &'static str,
+        /// The version that added it.
+        version: &'static str,
+    },
     /// A setting that stands a second time.
     Twice {
         /// The setting.
@@ -911,17 +1063,22 @@ impl fmt::Display for PolicyProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Line(problem) | Self::Pattern(problem) => problem.fmt(f),
-            Self::MissingHeader => write!(f, "the first line has to be `{HEADER} {VERSION}`"),
+            Self::MissingHeader => write!(
+                f,
+                "the first line has to be `{HEADER} N`, with N one of {}",
+                VERSIONS.join(", ")
+            ),
             Self::UnknownVersion(version) => write!(
                 f,
-                "unknown version `{}`; this reader knows `{VERSION}`",
-                version.escape_debug()
+                "unknown version `{}`; this reader knows {}",
+                version.escape_debug(),
+                VERSIONS.join(" and ")
             ),
             Self::SecondHeader => f.write_str("the header stands once, in the first line"),
             Self::UnknownLine(word) => write!(
                 f,
                 "unknown line `{}`; expected `level`, `operation`, `approvals`, `lease`, `reservation`, \
-                 `max-unverified`, `assertion`, or `weakened-level`",
+                 `max-unverified`, `assertion`, `weakened-level`, or `{DEMAND_OWNERS}`",
                 word.escape_debug()
             ),
             Self::Usage(form) => write!(f, "expected `{form}`"),
@@ -983,6 +1140,10 @@ impl fmt::Display for PolicyProblem {
                 "`weakened-level {level}`: a change that weakens tests has level {WEAKENED_LEVEL} \
                  at least, and a policy cannot lower that"
             ),
+            Self::NeedsVersion { line, version } => write!(
+                f,
+                "the line `{line}` needs the header `{HEADER} {version}`"
+            ),
             Self::Twice { key, first } => write!(f, "`{key}` is set again; first in line {first}"),
         }
     }
@@ -992,7 +1153,7 @@ impl fmt::Display for PolicyParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File(problem) => write!(f, "the file {problem}"),
-            Self::NoHeader => write!(f, "the file has no header `{HEADER} {VERSION}`"),
+            Self::NoHeader => write!(f, "the file has no header `{HEADER} N`"),
             Self::Line { line, problem } => write!(f, "line {line}: {problem}"),
         }
     }
@@ -1595,21 +1756,21 @@ mod tests {
     #[test]
     fn an_unknown_version_or_line_is_an_error() {
         assert_eq!(
-            message("stemma-policy 2\n"),
-            "line 1: unknown version `2`; this reader knows `1`"
+            message("stemma-policy 3\n"),
+            "line 1: unknown version `3`; this reader knows 1 and 2"
         );
         assert!(message("stemma-policy 1.0\n").contains("unknown version"));
         assert!(message("stemma-policy\n").contains("first line has to be"));
         assert!(message("level 1 a\nstemma-policy 1\n").contains("first line has to be"));
-        assert_eq!(message(""), "the file has no header `stemma-policy 1`");
+        assert_eq!(message(""), "the file has no header `stemma-policy N`");
         assert_eq!(
             message("# only\n\n"),
-            "the file has no header `stemma-policy 1`"
+            "the file has no header `stemma-policy N`"
         );
         assert_eq!(
             message("stemma-policy 1\nowner alice\n"),
             "line 2: unknown line `owner`; expected `level`, `operation`, `approvals`, `lease`, `reservation`, \
-             `max-unverified`, `assertion`, or `weakened-level`"
+             `max-unverified`, `assertion`, `weakened-level`, or `demand-namespace-owners`"
         );
         assert!(message("stemma-policy 1\nLevel 1 a\n").contains("unknown line `Level`"));
         assert_eq!(
@@ -1990,5 +2151,216 @@ mod tests {
             new: Some(b"fn f( {"),
         };
         assert_eq!(docs_only.weakening(&[broken]).level, RiskLevel::Two);
+    }
+
+    #[test]
+    fn version_2_adds_the_line_that_demands_the_owners_of_the_namespace() {
+        let demanding = policy("stemma-policy 2\ndemand-namespace-owners\nlevel 1 src/\n");
+        assert!(demanding.demands_namespace_owners());
+        assert_eq!(level(&demanding, "src/a.rs"), 1);
+        assert_eq!(
+            demanding.encode(),
+            "stemma-policy 2\ndemand-namespace-owners\nlevel 1 src/\n"
+        );
+        assert_eq!(policy(&demanding.encode()), demanding);
+        // Version 2 without the line is valid, keeps its header, and demands nothing.
+        let plain = policy("stemma-policy 2\n");
+        assert!(!plain.demands_namespace_owners());
+        assert_eq!(plain.encode(), "stemma-policy 2\n");
+        assert_ne!(plain, Policy::default());
+        assert!(!Policy::default().demands_namespace_owners());
+    }
+
+    #[test]
+    fn the_line_of_version_2_is_refused_in_a_file_of_version_1() {
+        // A program that knows version 1 only refuses the header of version 2; this one refuses
+        // the line in a file of version 1, so no file holds the line that an older program
+        // would read without it.
+        assert_eq!(
+            message("stemma-policy 1\ndemand-namespace-owners\n"),
+            "line 2: the line `demand-namespace-owners` needs the header `stemma-policy 2`"
+        );
+        assert_eq!(
+            message("stemma-policy 2\ndemand-namespace-owners yes\n"),
+            "line 2: expected `demand-namespace-owners`"
+        );
+        // The scanner of the lines refuses the repetition of a line before the reader sees it.
+        assert_eq!(
+            message(
+                "stemma-policy 2\ndemand-namespace-owners\nlevel 1 a\ndemand-namespace-owners\n"
+            ),
+            "line 4: repeats line 2"
+        );
+    }
+
+    #[test]
+    fn the_namespace_policy_file_is_always_level_3() {
+        let p = policy("stemma-policy 1\nlevel 0 docs/\n");
+        assert_eq!(level(&p, NAMESPACE_FILE_NAME), 3);
+        assert_eq!(level(&Policy::default(), ".Stemma-Namespace-Policy."), 3);
+        // Only the file in the root is the namespace policy.
+        assert_eq!(level(&p, "docs/.stemma-namespace-policy"), 0);
+        // No line lowers it, not one that names it, nor one that matches it by a wildcard.
+        for line in [
+            "level 0 .stemma-namespace-policy",
+            "level 2 /.stemma-namespace-policy",
+            "level 1 .stemma-*",
+        ] {
+            let text = format!("stemma-policy 1\n{line}\n");
+            assert!(
+                matches!(
+                    parse(&text),
+                    Err(PolicyParseError::Line {
+                        problem: PolicyProblem::LowersFloor { .. },
+                        ..
+                    })
+                ),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            level(
+                &policy("stemma-policy 1\nlevel 3 .stemma-namespace-policy\n"),
+                NAMESPACE_FILE_NAME
+            ),
+            3
+        );
+    }
+
+    fn combined_level(policies: &[Policy], path: &str) -> u32 {
+        Combined::new(policies)
+            .level_of_path(path, EntryKind::File)
+            .unwrap()
+            .number()
+    }
+
+    #[test]
+    fn a_combination_of_one_policy_evaluates_as_that_policy() {
+        let p = policy(ADR_TABLE);
+        let one = [p.clone()];
+        let combined = Combined::new(&one);
+        for path in ["docs/a.tex", "justfile", "src/x.rs", ".stemma-policy"] {
+            assert_eq!(combined_level(&one, path), level(&p, path), "{path}");
+        }
+        for n in 0..4 {
+            let l = RiskLevel::from_number(n).unwrap();
+            assert_eq!(combined.agent_approvals(l), p.agent_approvals(l));
+        }
+        assert_eq!(combined.max_unverified(), p.max_unverified());
+        assert_eq!(combined.reservation_after(), p.reservation_after());
+        // No policy at all evaluates as the default policy.
+        let none = Combined::new(&[]);
+        assert_eq!(combined_level(&[], "docs/a.tex"), 2);
+        assert_eq!(none.agent_approvals(RiskLevel::Zero), 1);
+        assert_eq!(none.max_unverified(), DEFAULT_MAX_UNVERIFIED);
+    }
+
+    #[test]
+    fn a_combination_of_two_policies_takes_the_maximum_per_change() {
+        let repository = policy(
+            "stemma-policy 1\nlevel 0 docs/\nlevel 1 src/\napprovals 0 2\nmax-unverified 8\n",
+        );
+        let namespace = policy("stemma-policy 2\nlevel 1 docs/\napprovals 1 3\nreservation 2\n");
+        let both = [repository.clone(), namespace.clone()];
+        let combined = Combined::new(&both);
+        assert_eq!(combined_level(&both, "docs/a.tex"), 1);
+        // The namespace policy names no line for `src/`, so it gives the default level 2 there,
+        // and the maximum is 2: a further policy that should leave a path low names it.
+        assert_eq!(combined_level(&both, "src/a.rs"), 2);
+        // A path that one policy does not name has level 2 by it, so the maximum is 2.
+        assert_eq!(
+            combined_level(
+                &[
+                    policy("stemma-policy 1\nlevel 0 docs/\n"),
+                    Policy::default()
+                ],
+                "docs/a"
+            ),
+            2
+        );
+        assert_eq!(combined.agent_approvals(RiskLevel::Zero), 2);
+        assert_eq!(combined.agent_approvals(RiskLevel::One), 3);
+        assert_eq!(combined.agent_approvals(RiskLevel::Three), 0);
+        // The tighter bound counts: the fewer unverified commits, the earlier reservation.
+        assert_eq!(combined.max_unverified(), 8);
+        assert_eq!(combined.reservation_after(), 2);
+        // The order does not matter.
+        let reversed = [namespace, repository];
+        assert_eq!(combined_level(&reversed, "docs/a.tex"), 1);
+        assert_eq!(Combined::new(&reversed).agent_approvals(RiskLevel::One), 3);
+    }
+
+    #[test]
+    fn a_combination_of_three_policies_takes_the_maximum_over_all() {
+        let policies = [
+            policy("stemma-policy 1\nlevel 0 docs/\nlevel 0 adr/\nlevel 0 src/\n"),
+            policy("stemma-policy 2\nlevel 0 docs/\nlevel 1 adr/\nlevel 0 src/\n"),
+            policy(
+                "stemma-policy 2\nlevel 0 docs/\nlevel 0 adr/\nlevel 3 src/\nmax-unverified 4\n",
+            ),
+        ];
+        assert_eq!(combined_level(&policies, "docs/a.tex"), 0);
+        assert_eq!(combined_level(&policies, "adr/a.md"), 1);
+        assert_eq!(combined_level(&policies, "src/a.rs"), 3);
+        let combined = Combined::new(&policies);
+        assert_eq!(
+            combined
+                .level_of(&[file("docs/a.tex"), file("adr/a.md")])
+                .unwrap(),
+            RiskLevel::One
+        );
+        assert_eq!(combined.max_unverified(), 4);
+        // An invalid path is an error, as for one policy.
+        assert!(combined.level_of_path("a//b", EntryKind::File).is_err());
+    }
+
+    #[test]
+    fn a_further_policy_never_lowers_the_level() {
+        // A policy that would lower a path by itself cannot lower the combination: the floor
+        // holds in every policy, and the maximum never falls below one of them.
+        let strict = policy(ADR_TABLE);
+        let lax = policy("stemma-policy 2\nlevel 0 justfile\nlevel 0 crates/\nlevel 0 .github/\n");
+        let both = [strict.clone(), lax];
+        for path in [
+            "justfile",
+            "crates/stemma-core/src/actor.rs",
+            ".github/workflows/ci.yml",
+            ".stemma-policy",
+            ".stemma-namespace-policy",
+            ".stemma-actors/register",
+        ] {
+            assert!(
+                combined_level(&both, path) >= level(&strict, path),
+                "{path}"
+            );
+        }
+        assert_eq!(combined_level(&both, ".stemma-namespace-policy"), 3);
+    }
+
+    #[test]
+    fn a_combination_escalates_by_the_policy_with_the_highest_weakened_level() {
+        let old = b"#[test] fn t() { assert!(a); assert!(b); }".as_slice();
+        let new = b"#[test] fn t() { assert!(a); }".as_slice();
+        let files = [FileChange {
+            path: "src/lib.rs",
+            old: Some(old),
+            new: Some(new),
+        }];
+        let policies = [
+            Policy::default(),
+            policy("stemma-policy 2\nweakened-level 3\n"),
+        ];
+        let found = Combined::new(&policies).weakening(&files);
+        assert_eq!(found.level, RiskLevel::Three);
+        assert!(!found.reasons.is_empty());
+        let unchanged = [FileChange {
+            path: "src/lib.rs",
+            old: Some(old),
+            new: Some(old),
+        }];
+        assert_eq!(
+            Combined::new(&policies).weakening(&unchanged).level,
+            RiskLevel::Zero
+        );
     }
 }

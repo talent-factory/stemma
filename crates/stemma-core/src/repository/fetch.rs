@@ -25,6 +25,11 @@
 //!    objects that it wrote itself, which the stream would have to bring with the same content.
 //! 7. The journal is removed.
 //!
+//! In step 6, before the remote references move, the namespace policy that the list names is kept
+//! in `namespaces/<remote>`, or the kept one is removed if the list names none (ADR-027,
+//! [`Repository::kept_namespace`]); the gate by policy evaluates it beside the policy of `main`
+//! (a gate at a fixed level reads neither).
+//!
 //! A fetch that stops before step 6 leaves the journal, and the next fetch resumes from it. A
 //! fetch whose remote references have their values already writes no entry.
 //!
@@ -46,7 +51,7 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use super::{now, InitError, InitOptions, Repository, UpdateError};
+use super::{now, InitError, InitOptions, KeepNamespaceError, Repository, UpdateError};
 use crate::object::CommitId;
 use crate::oplog::{Change, Entry, Moved, OpLogError, OperationName, Record};
 use crate::protocol::{ErrorMessage, FetchRequest, ParseError, RefList, RepositoryId};
@@ -295,6 +300,11 @@ impl Repository {
         if self.remote(remote).map_err(FetchError::Remote)?.as_ref() != Some(config) {
             return Err(FetchError::RemoteChanged(remote.clone()));
         }
+        // The namespace policy of the list is kept before the remote references move, so the
+        // local gate never evaluates a newer `main` of the remote with an older namespace policy
+        // (ADR-027, STEMMA-311).
+        self.keep_namespace(remote, list.namespace())
+            .map_err(FetchError::Namespace)?;
         // The references to remove are read under the lock, so that none that a writer made in
         // between stays beside the list.
         let kept: BTreeSet<RemoteRefName> = targets.iter().map(|(name, _)| name.clone()).collect();
@@ -491,6 +501,10 @@ pub enum FetchError {
     /// `remote remove` or a pinning does. What arrived stays in the store and in the journal;
     /// nothing moved.
     RemoteChanged(RemoteName),
+    // The namespace policy (ADR-027, STEMMA-311).
+    /// The namespace policy that the list names could not be kept. Nothing moved; what arrived
+    /// stays in the store and in the journal.
+    Namespace(KeepNamespaceError),
 }
 
 impl FetchError {
@@ -514,6 +528,8 @@ impl FetchError {
             Self::Receive(error) => error.io_error(),
             Self::Connectivity(error) => error.io_error(),
             Self::JournalLeft { source, .. } => source.io_error(),
+            Self::Namespace(KeepNamespaceError::Io { source, .. }) => Some(source),
+            Self::Namespace(KeepNamespaceError::Format(error)) => error.io_error(),
             Self::NoSuchRemote(_)
             | Self::TooLarge
             | Self::List(_)
@@ -565,6 +581,11 @@ impl fmt::Display for FetchError {
                 "the remote `{name}` was removed or changed while the fetch received; no remote \
                  reference moved, and a fetch of the remote as it is now goes on"
             ),
+            Self::Namespace(error) => write!(
+                f,
+                "the namespace policy of the hub could not be kept: {error}; no remote reference \
+                 moved"
+            ),
         }
     }
 }
@@ -583,6 +604,7 @@ impl Error for FetchError {
             Self::Receive(error) => error.source(),
             Self::Connectivity(error) => error.source(),
             Self::JournalLeft { source, .. } => source.source(),
+            Self::Namespace(error) => error.source(),
             Self::NoSuchRemote(_)
             | Self::TooLarge
             | Self::Refused(_)

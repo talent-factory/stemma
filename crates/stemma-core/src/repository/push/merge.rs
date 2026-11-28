@@ -253,6 +253,15 @@ impl Repository {
                 .map_err(|error| gate(GateError::Pull(error)))?,
             None => Vec::new(),
         };
+        // The namespace policy that the fetch of this attempt kept counts beside the policy of
+        // `T`, as it does on the hub (ADR-027): the hub judges by its own namespace policy, so
+        // the ones of other remotes do not count here.
+        let namespaces: Vec<_> = self
+            .kept_namespace(remote)
+            .map_err(|error| gate(GateError::Namespace(error)))?
+            .map(|kept| kept.policy().clone())
+            .into_iter()
+            .collect();
         let proofs = LogProofs(register);
         let case = Case {
             tip,
@@ -262,7 +271,7 @@ impl Repository {
             heads: &heads,
             register,
             proofs: &proofs,
-            rules: Rules::Policies(&[]),
+            rules: Rules::Policies(&namespaces),
             now: now(),
         };
         let tree = match self.judge_main(&case).map_err(gate)? {

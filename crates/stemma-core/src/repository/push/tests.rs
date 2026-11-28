@@ -190,6 +190,8 @@ struct Hub {
     before_update: RefCell<Option<Hook>>,
     /// Whether the hub fails every anchor.
     no_anchors: Cell<bool>,
+    /// The namespace of the repository on the hub, whose policy the list names (ADR-027).
+    namespace: RefCell<Option<crate::namespace::Namespace>>,
 }
 
 impl Hub {
@@ -212,6 +214,7 @@ impl Hub {
             rogue: Cell::new(false),
             before_update: RefCell::new(None),
             no_anchors: Cell::new(false),
+            namespace: RefCell::new(None),
         }
     }
 
@@ -247,8 +250,13 @@ impl Hub {
         };
         let mut record = self.record.borrow_mut();
         let mut statements = self.statements.borrow_mut();
-        let context = AcceptContext::new(&hub, repository_id(), &mut *record, self.tick(), &signer)
-            .with_statements(&mut *statements);
+        let namespace = self.namespace.borrow();
+        let mut context =
+            AcceptContext::new(&hub, repository_id(), &mut *record, self.tick(), &signer)
+                .with_statements(&mut *statements);
+        if let Some(namespace) = namespace.as_ref() {
+            context = context.with_namespace(namespace);
+        }
         self.repository.accept_ref_update(update, context)
     }
 
@@ -296,7 +304,11 @@ impl OtherSide for Hub {
     fn refs(&self) -> Result<RefList, Refusal> {
         let chain = self.chain();
         let keys = HubKeys::try_new(hub_key().public(), FormerKeys::none()).unwrap();
-        let facts = ListFacts::of_chain(&chain, &keys);
+        let namespace = self.namespace.borrow();
+        let mut facts = ListFacts::of_chain(&chain, &keys);
+        if let Some(namespace) = namespace.as_ref() {
+            facts = facts.with_namespace(namespace);
+        }
         self.repository.answer_refs(&facts).map_err(refused)
     }
 
@@ -1880,4 +1892,30 @@ fn a_merge_whose_receipt_is_cut_is_not_known_and_the_next_call_records_it() {
     assert_eq!(repaired.commit, landed);
     assert_eq!(m.f.local("main"), Some(landed));
     assert_eq!(m.pr_merges(), 1);
+}
+
+#[test]
+fn the_namespace_policy_of_the_hub_counts_in_the_local_verdict_of_a_merge() {
+    let mut m = Merging::new();
+    m.approve(true);
+    // The namespace policy of the hub raises `docs/` to level 3: the change needs an approval
+    // of an owner, which the clone does not hold.
+    let policy = policy::Policy::parse(b"stemma-policy 2\nlevel 3 docs/\n").unwrap();
+    let namespace = crate::namespace::Namespace::new(m.root, policy, &register_of()).unwrap();
+    *m.f.hub().namespace.borrow_mut() = Some(namespace);
+    let updates = m.f.hub().updates.get();
+
+    let error = m.merge().unwrap_err();
+
+    // The fetch of the attempt kept the namespace policy, and the local verdict refused before
+    // anything was sent; without it the hub would have refused the update.
+    assert!(matches!(error, RemoteMergeError::Gate(_)), "{error:?}");
+    assert_eq!(m.f.hub().updates.get(), updates);
+    assert!(m.f.clone.kept_namespace(&origin()).unwrap().is_some());
+    assert_eq!(m.f.local("main"), Some(m.root));
+
+    // Without the namespace policy the same change lands.
+    *m.f.hub().namespace.borrow_mut() = None;
+    let merged = m.merge().unwrap();
+    assert_eq!(m.f.local("main"), Some(merged.commit));
 }

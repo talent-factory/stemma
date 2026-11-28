@@ -126,7 +126,7 @@ fn a_remote_is_added_with_the_key_of_the_hub_pinned_and_one_entry() {
     assert!(repository.refs_store().remote_refs().unwrap().is_empty());
     assert_eq!(
         fs::read_to_string(repository.metadata_dir().join("format")).unwrap(),
-        "stemma-repository 21\n"
+        "stemma-repository 22\n"
     );
     // `op restore` does not undo it.
     assert!(matches!(

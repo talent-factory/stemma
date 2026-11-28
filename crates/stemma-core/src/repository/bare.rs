@@ -169,7 +169,7 @@ fn init_bare_makes_the_layout_without_head_working_copy_and_log() {
     );
     assert_eq!(
         fs::read(root.join("format")).unwrap(),
-        b"stemma-repository 21\n"
+        b"stemma-repository 22\n"
     );
     assert_eq!(fs::read(root.join("bare")).unwrap(), b"stemma-bare\n");
     // The temporary directory of `init_bare` is gone: nothing else lies beside the repository.
@@ -1118,7 +1118,7 @@ fn the_checks_run_while_a_writer_holds_the_lock_of_the_references() {
         vec![base],
     );
     set_branch(&repository, "main", &base);
-    let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("branch"), "main").unwrap();
+    let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("push"), "main").unwrap();
     let lock = repository.refs_store().lock_writer(&allowed).unwrap();
     assert!(repository.refs().is_locked().unwrap());
 
@@ -1212,7 +1212,7 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
 
 /// The public methods of `Repository` that run on a bare repository, or that make or open a
 /// repository. Every other public method starts with the check of the bare repository.
-const WITHOUT_CHECK: [&str; 28] = [
+const WITHOUT_CHECK: [&str; 29] = [
     "init",
     "init_bare",
     "open",
@@ -1241,6 +1241,8 @@ const WITHOUT_CHECK: [&str; 28] = [
     "accept_statement",
     "accept_anchor",
     "clone_remote",
+    // The namespace policy (ADR-027, STEMMA-311).
+    "namespace",
 ];
 
 /// The public methods of the `impl Repository` blocks in `source`, each with the first statement
@@ -1334,13 +1336,13 @@ fn an_entry_of_the_log_is_refused_even_past_the_checks_of_the_operations() {
     // A directory that someone gave a log by hand: without the refusal an entry would be
     // written into it.
     fs::create_dir(repository.path().join("oplog")).unwrap();
-    let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("branch"), "main").unwrap();
+    let allowed = Allowed::ask(&AllowAll, &daniel(), &operation("push"), "main").unwrap();
     let lock = repository.refs_store().lock_writer(&allowed).unwrap();
     let commit = commit_of(&repository, &[("a.txt", "one\n")], vec![]);
     let change = Change::try_new(
         1,
         daniel(),
-        operation("branch"),
+        operation("push"),
         None,
         None,
         vec![(name("main"), Moved::from_to(None, Some(commit)))],

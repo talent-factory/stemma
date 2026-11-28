@@ -372,7 +372,7 @@ mod tests {
         // The entry moved the repository to the current format, and the log verifies.
         assert_eq!(
             fs::read_to_string(&format).unwrap(),
-            "stemma-repository 21\n"
+            "stemma-repository 22\n"
         );
         assert!(repository.oplog().verify().is_ok());
 

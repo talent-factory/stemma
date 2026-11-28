@@ -7,8 +7,8 @@
 //!
 //! - **The list of references.** [`Repository::answer_refs`] lists the branches and the tags of
 //!   the store. What a list names beyond them (the ID of the repository, the keys of the hub,
-//!   and the record entry of each name) is not kept by a store and comes from the caller
-//!   ([`ListFacts`]).
+//!   the record entry of each name, and the namespace policy of the repository) is not kept by
+//!   a store and comes from the caller ([`ListFacts`]).
 //! - **The fetch.** [`Repository::answer_fetch`] writes the object stream for a request. A
 //!   `want` must be reachable from a branch or a tag of the repository, the references that the
 //!   list names; a remote reference of a clone names nothing that is served. A `have` counts
@@ -47,7 +47,9 @@ use std::fmt;
 use std::io::{self, Write};
 
 use crate::conflict::AnyCommit;
+// The namespace policy (ADR-027, STEMMA-311).
 use crate::history::{read_commit, HistoryError};
+use crate::namespace::{KeptNamespace, Namespace};
 use crate::object::{CommitId, EntryMode, Kind, ObjectId, Tree, TreeEntry, TreeId};
 use crate::protocol::record::{Chain, HubKeys};
 use crate::protocol::{
@@ -73,6 +75,8 @@ pub struct ListFacts<'a> {
     repository: RepositoryId,
     keys: &'a HubKeys,
     entry_of: EntryOf<'a>,
+    // The namespace policy (ADR-027, STEMMA-311).
+    namespace: Option<&'a Namespace>,
 }
 
 impl<'a> ListFacts<'a> {
@@ -87,7 +91,16 @@ impl<'a> ListFacts<'a> {
             repository,
             keys,
             entry_of: Box::new(entry_of),
+            namespace: None,
         }
+    }
+
+    /// The facts with the namespace of the repository, whose namespace policy the list names
+    /// (ADR-027): the one that the accepting operation of the repository evaluates.
+    #[must_use]
+    pub fn with_namespace(mut self, namespace: &'a Namespace) -> Self {
+        self.namespace = Some(namespace);
+        self
     }
 
     /// The facts as the record of a repository leaves them: the ID and the entries of `chain`,
@@ -105,6 +118,7 @@ impl fmt::Debug for ListFacts<'_> {
         f.debug_struct("ListFacts")
             .field("repository", &self.repository)
             .field("keys", &self.keys)
+            .field("namespace", &self.namespace)
             .finish_non_exhaustive()
     }
 }
@@ -642,13 +656,20 @@ impl Repository {
         }
         // The keys of a hub hold former keys that their current key signed, and a store lists a
         // name once per kind.
-        Ok(RefList::try_new(
+        let list = RefList::try_new(
             facts.repository,
             facts.keys.current().clone(),
             facts.keys.former_keys().clone(),
             references,
         )
-        .expect("the keys of a hub and the references of a store make a list"))
+        .expect("the keys of a hub and the references of a store make a list");
+        Ok(match facts.namespace {
+            Some(namespace) => list.with_namespace(KeptNamespace::new(
+                namespace.commit(),
+                namespace.policy().clone(),
+            )),
+            None => list,
+        })
     }
 
     /// Answers a fetch request (ADR-023): writes to `stream` the object stream of everything

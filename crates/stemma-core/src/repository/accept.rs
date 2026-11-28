@@ -15,6 +15,8 @@ use crate::allowed::Allowed;
 use crate::conflict::AnyCommit;
 use crate::history::HistoryError;
 use crate::merge_base::merge_bases;
+// The namespace policy (ADR-027, STEMMA-311).
+use crate::namespace::Namespace;
 use crate::object::CommitId;
 use crate::policy::Policy;
 use crate::protocol::record::{
@@ -93,9 +95,12 @@ pub struct AcceptContext<'a> {
     /// refused for want of a pull request. [`accept_statement`](Repository::accept_statement)
     /// takes its destination as a parameter and does not read this one.
     pub statements: Option<&'a mut dyn StatementDestination>,
-    /// The policies that count beside the policy of the tip of `main`, combined with it by the
-    /// maximum: the namespace policy of ADR-027, when it comes. Empty by default.
-    pub policies: &'a [Policy],
+    // The namespace policy (ADR-027, STEMMA-311).
+    /// The namespace of the repository, read from the tip of `main` of its namespace repository
+    /// ([`Repository::namespace`]): its policy counts beside the policy of the tip of `main`,
+    /// combined with it by the maximum, and the owners that it demands must stand in the
+    /// register of every new commit of `main`. `None` outside a namespace.
+    pub namespace: Option<&'a Namespace>,
 }
 
 impl<'a> AcceptContext<'a> {
@@ -116,7 +121,7 @@ impl<'a> AcceptContext<'a> {
             time,
             signer,
             statements: None,
-            policies: &[],
+            namespace: None,
         }
     }
 
@@ -130,11 +135,14 @@ impl<'a> AcceptContext<'a> {
         self
     }
 
-    /// The context with policies that count beside the policy of the tip of `main`, combined
-    /// with it by the maximum (ADR-027).
+    // The namespace policy (ADR-027, STEMMA-311).
+
+    /// The context with the namespace of the repository (ADR-027): its policy counts beside the
+    /// policy of the tip of `main`, and the owners that it demands must stand in the register of
+    /// the first push and of every update of `main`.
     #[must_use]
-    pub fn with_policies(mut self, policies: &'a [Policy]) -> Self {
-        self.policies = policies;
+    pub fn with_namespace(mut self, namespace: &'a Namespace) -> Self {
+        self.namespace = Some(namespace);
         self
     }
 }
@@ -146,7 +154,7 @@ impl fmt::Debug for AcceptContext<'_> {
             .field("hub", &self.hub)
             .field("repository", &self.repository)
             .field("time", &self.time)
-            .field("policies", &self.policies)
+            .field("namespace", &self.namespace)
             .finish_non_exhaustive()
     }
 }
@@ -735,6 +743,10 @@ impl Repository {
         }
         let sender = self.sender_of(update, main_tip)?;
         let identity = Identity::of(sender.verified.actor());
+        let further: Vec<Policy> = context
+            .namespace
+            .map(|namespace| vec![namespace.policy().clone()])
+            .unwrap_or_default();
         let mut policies = Vec::new();
         let mut proof = None;
         for moved in moves {
@@ -758,7 +770,7 @@ impl Repository {
                         record: &record,
                         held: &held,
                         register: sender.register_of(),
-                        policies: context.policies,
+                        policies: &further,
                         now: context.time,
                     };
                     let verdict = self.gate_on_hub(moved, &state)?;
@@ -773,6 +785,17 @@ impl Repository {
                     self.write_ownership(moved, &record, &sender, &identity, context.time)?
                 }
                 Err(reason) => Err(reason),
+            };
+            // The owners that the namespace demands stand in the register of every new commit
+            // of `main`, the first push included (ADR-027).
+            let verdict = match (verdict, context.namespace) {
+                (Ok(policy), Some(namespace)) if moved.name() == &main => {
+                    self.namespace_owners(namespace, moved, &sender)?.map(|()| {
+                        policies.extend(policy);
+                        Some(namespace.commit())
+                    })
+                }
+                (verdict, _) => verdict,
             };
             match verdict {
                 Ok(policy) => policies.extend(policy),
@@ -828,6 +851,44 @@ impl Repository {
                 source: Box::new(source),
             }),
         }
+    }
+
+    // The namespace policy (ADR-027, STEMMA-311).
+
+    /// Whether the register of the new commit of `main` holds every owner that `namespace`
+    /// demands: the register of the first push, which the sender was read from, or the register
+    /// of the merge `M`, which the gate found usable.
+    ///
+    /// # Errors
+    ///
+    /// [`AcceptError::Register`] if the register of `M` cannot be read from the store.
+    fn namespace_owners(
+        &self,
+        namespace: &Namespace,
+        moved: &Move,
+        sender: &Sender,
+    ) -> Result<Result<(), RefusalReason>, AcceptError> {
+        if namespace.owners().is_empty() {
+            return Ok(Ok(()));
+        }
+        let read;
+        let register = if sender.first {
+            sender.register_of()
+        } else {
+            let Some(merged) = moved.new_commit() else {
+                return Ok(Err(RefusalReason::Gate));
+            };
+            // The gate refused an `M` without a usable register before (`unusable`), so a
+            // failure here is one of the store.
+            read = Register::at_commit(self.objects(), &merged)
+                .map_err(|error| AcceptError::Register(Box::new(error)))?
+                .ok_or_else(|| AcceptError::Register(Box::new(ModeError::RegisterMissing)))?;
+            &read
+        };
+        Ok(match namespace.missing_owner(register) {
+            Some(owner) => Err(RefusalReason::NamespaceOwner(owner.identity().clone())),
+            None => Ok(()),
+        })
     }
 
     /// The tip of `main`, or `None` in a repository that no first push has reached.

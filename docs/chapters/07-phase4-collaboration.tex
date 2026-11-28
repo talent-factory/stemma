@@ -999,10 +999,16 @@ Der Entwurf der Policy dieses Repositorys verankert deshalb seine Muster:
 \type{/docs/} senkt nur das Verzeichnis der Wurzel.
 
 {\bf Die Zeilen.}
-Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}.
+Die erste Zeile, die weder leer noch ein Kommentar ist, ist der Kopf \type{stemma-policy 1}
+oder \type{stemma-policy 2}.
 Eine andere Version oder ein fehlender Kopf macht die Datei ungültig.
 Leere Zeilen und Kommentare mit \type{\#} sind erlaubt.
-Jede weitere Zeile hat eine der acht Formen von \in{Tabelle}[tab:policy-lines].
+Jede weitere Zeile hat eine der neun Formen von \in{Tabelle}[tab:policy-lines].
+Version 2 fügt die Zeile \type{demand-namespace-owners} hinzu, die nur in einer
+Namespace-Policy wirkt (\in{Abschnitt}[sec:namespaces]).
+In einer Datei der Version 1 ist sie ungültig, und ein Programm, das nur Version 1 kennt, lehnt
+schon den Kopf der Version 2 ab:
+Keine Datei mit der neuen Zeile wird je ohne sie gelesen.
 
 \startplacetable[title={Die Zeilen einer Policy-Datei},reference=tab:policy-lines]
 \startxtable[frame=off,option=stretch]
@@ -1043,10 +1049,15 @@ Folge eine Reservierung (1 bis 100, Standard 3). \stopxcell
 Zusicherung; ein letzter Name, der mit \type{debug_} beginnt, zählt nur im Debug-Build.
 \stopxcell
 \stopxrow
-\startxrow[bottomframe=on]
+\startxrow
 \startxcell \type{weakened-level N} \stopxcell
 \startxcell Eine Änderung, die Tests abschwächt, hat mindestens Stufe \type{N} (2 oder 3).
 \stopxcell
+\stopxrow
+\startxrow[bottomframe=on]
+\startxcell \type{demand-namespace-owners} \stopxcell
+\startxcell Nur Version 2: Das Register jedes Repositorys des Namespace führt die menschlichen
+Owner des Namespace-Repositorys als Owner (nur in einer Namespace-Policy wirksam). \stopxcell
 \stopxrow
 \stopxtable
 \stopplacetable
@@ -1061,6 +1072,8 @@ höchstens einmal, \type{approvals} einmal je Stufe,
 Das Gate und die Lease lesen die Policy des Basis-Commits, also der Spitze von \type{main},
 nie die des Arbeitsverzeichnisses und nie die des Branches, der geprüft wird.
 Wer die Policy ändert, steht damit noch unter der Policy davor.
+Hat ein Fetch eine Namespace-Policy gebracht, wertet das Gate sie neben der Policy der Spitze
+aus und nimmt das Maximum, wie der Hub (\in{Abschnitt}[sec:namespaces]).
 Das Gate liest sie bei jedem Versuch neu, denn eine Bewegung von \type{main} kann eine neue
 Policy bringen; die Stufe ist die höchste Stufe der Dateien, in denen sich der Merge-Tree vom
 Tree der Spitze unterscheidet.
@@ -1125,9 +1138,11 @@ höchstens 1024 \type{level}-Zeilen und Pfade bis 128 Teile;
 ein längerer Pfad ist ein Fehler und keine tiefere Stufe, ebenso ein Rückwärtsstrich im Pfad.
 
 {\bf Der eingebaute Boden.}
-Die Policy-Datei und die Dateien des Akteursregisters haben immer Stufe 3.
+Die Policy-Datei, die Datei einer Namespace-Policy und die Dateien des Akteursregisters haben
+immer Stufe 3.
+Die Namespace-Policy liegt in der Datei \type{.stemma-namespace-policy} in der Wurzel.
 Eine \type{level}-Zeile unter 3, deren Muster sie offensichtlich senkt, macht die Policy ungültig:
-ein Muster, das die Policy-Datei oder das Verzeichnis des Registers trifft,
+ein Muster, das eine der beiden Policy-Dateien oder das Verzeichnis des Registers trifft,
 oder ein verankertes Muster, das darunter weitergeht.
 Die Auswertung wendet den Boden ohnehin an, was die Zeilen auch sagen,
 und sie vergleicht die Namen ohne Rücksicht auf die Gross- und Kleinschreibung,
