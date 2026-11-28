@@ -1212,7 +1212,7 @@ fn a_link_is_no_marker_and_no_free_place_for_a_bare_repository() {
 
 /// The public methods of `Repository` that run on a bare repository, or that make or open a
 /// repository. Every other public method starts with the check of the bare repository.
-const WITHOUT_CHECK: [&str; 29] = [
+const WITHOUT_CHECK: [&str; 30] = [
     "init",
     "init_bare",
     "open",
@@ -1243,6 +1243,8 @@ const WITHOUT_CHECK: [&str; 29] = [
     "clone_remote",
     // The namespace policy (ADR-027, STEMMA-311).
     "namespace",
+    // The removal of unreachable objects runs on a bare repository only (STEMMA-292).
+    "remove_unreachable_objects",
 ];
 
 /// The public methods of the `impl Repository` blocks in `source`, each with the first statement
